@@ -1080,13 +1080,13 @@ VOID PhSipUpdateCpuPanel(
             break;
         case PhVirtualStatusEnabledHyperV:
         case PhVirtualStatusEnabledFirmware:
-            PhSetWindowText(CpuVirtualizationLabel, L"Enabled");
+            PhSetWindowText(CpuVirtualizationLabel, L"激活");
             break;
         case PhVirtualStatusDisabledWithHyperV:
             PhSetWindowText(CpuVirtualizationLabel, L"Disabled / Hyper-V");
             break;
         case PhVirtualStatusDisabled:
-            PhSetWindowText(CpuVirtualizationLabel, L"Disabled");
+            PhSetWindowText(CpuVirtualizationLabel, L"禁止");
             break;
         case PhVirtualStatusNotCapable:
         default:

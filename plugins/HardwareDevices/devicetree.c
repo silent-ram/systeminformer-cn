@@ -841,7 +841,7 @@ BOOLEAN NTAPI DeviceTreeCallback(
             PhInsertEMenuItem(menu, gotoServiceItem = PhCreateEMenuItem(0, 108, L"跳转到服务...", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_ONLINE, L"在线搜索(&o)\bCtrl+M", NULL, NULL), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"Search driver update", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"搜索驱动程序更新", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
             PhInsertEMenuItem(menu, enable = PhCreateEMenuItem(0, 0, L"启用", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, disable = PhCreateEMenuItem(0, 1, L"禁用", NULL, NULL), ULONG_MAX);

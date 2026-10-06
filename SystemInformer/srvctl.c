@@ -139,24 +139,24 @@ VOID PhpFixProcessServicesControls(
         {
         case SERVICE_RUNNING:
             {
-                PhSetWindowText(startButton, L"S&top");
-                PhSetWindowText(pauseButton, L"&Pause");
+                PhSetWindowText(startButton, L"中止(&t)");
+                PhSetWindowText(pauseButton, L"暂停(&P)");
                 EnableWindow(startButton, ServiceItem->ControlsAccepted & SERVICE_ACCEPT_STOP);
                 EnableWindow(pauseButton, ServiceItem->ControlsAccepted & SERVICE_ACCEPT_PAUSE_CONTINUE);
             }
             break;
         case SERVICE_PAUSED:
             {
-                PhSetWindowText(startButton, L"S&top");
-                PhSetWindowText(pauseButton, L"C&ontinue");
+                PhSetWindowText(startButton, L"中止(&t)");
+                PhSetWindowText(pauseButton, L"继续(C&)");
                 EnableWindow(startButton, ServiceItem->ControlsAccepted & SERVICE_ACCEPT_STOP);
                 EnableWindow(pauseButton, ServiceItem->ControlsAccepted & SERVICE_ACCEPT_PAUSE_CONTINUE);
             }
             break;
         case SERVICE_STOPPED:
             {
-                PhSetWindowText(startButton, L"&Start");
-                PhSetWindowText(pauseButton, L"&Pause");
+                PhSetWindowText(startButton, L"启动(&S)");
+                PhSetWindowText(pauseButton, L"暂停(&P)");
                 EnableWindow(startButton, TRUE);
                 EnableWindow(pauseButton, FALSE);
             }
@@ -166,8 +166,8 @@ VOID PhpFixProcessServicesControls(
         case SERVICE_PAUSE_PENDING:
         case SERVICE_STOP_PENDING:
             {
-                PhSetWindowText(startButton, L"&Start");
-                PhSetWindowText(pauseButton, L"&Pause");
+                PhSetWindowText(startButton, L"启动(&S)");
+                PhSetWindowText(pauseButton, L"暂停(&P)");
                 EnableWindow(startButton, FALSE);
                 EnableWindow(pauseButton, FALSE);
             }
@@ -187,8 +187,8 @@ VOID PhpFixProcessServicesControls(
     }
     else
     {
-        PhSetWindowText(startButton, L"&Start");
-        PhSetWindowText(pauseButton, L"&Pause");
+        PhSetWindowText(startButton, L"启动(&S)");
+        PhSetWindowText(pauseButton, L"暂停(&P)");
         EnableWindow(startButton, FALSE);
         EnableWindow(pauseButton, FALSE);
         PhSetWindowText(descriptionLabel, L"");
@@ -579,7 +579,7 @@ INT_PTR CALLBACK PhpServicesPageProc(
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"跳转到服务", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhServiceListInsertContextMenu(hwndDlg, menu, (PPH_SERVICE_ITEM*)listviewItems, numberOfItems);
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"复制(&C)", NULL, NULL), ULONG_MAX);
                     PhInsertCopyListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle);
 
                     item = PhShowEMenu(

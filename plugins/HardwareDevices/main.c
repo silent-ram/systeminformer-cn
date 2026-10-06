@@ -680,7 +680,7 @@ VOID ShowDeviceMenu(
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"卸载", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_ONLINE, L"在线搜索(&o)\bCtrl+M", NULL, NULL), ULONG_MAX);
-    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"Search driver update", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"搜索驱动程序更新", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     subMenu = PhCreateEMenuItem(0, 0, L"打开注册表", NULL, NULL);
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_HARDWARE, L"硬件", NULL, NULL), ULONG_MAX);
@@ -689,7 +689,7 @@ VOID ShowDeviceMenu(
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_CONFIG, L"配置", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, subMenu, ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SECURITY, L"Secu&rity", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SECURITY, L"安全(&R)", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 10, L"属性", NULL, NULL), ULONG_MAX);
 

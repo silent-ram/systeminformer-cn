@@ -257,7 +257,7 @@ INT_PTR CALLBACK PvpPeStreamsDlgProc(
                 if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"复制(&C)", NULL, NULL), ULONG_MAX);
                     PvInsertCopyListViewEMenuItem(menu, USHRT_MAX, context->ListViewHandle);
 
                     item = PhShowEMenu(

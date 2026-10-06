@@ -54,21 +54,21 @@ FONT 11, "等距更纱黑体 Slab SC", 400, 0, 0x1
 BEGIN
     CONTROL         "启用工具栏",IDC_ENABLE_TOOLBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,42,62,10
     CONTROL         "启用状态栏",IDC_ENABLE_STATUSBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,54,72,10
-    CONTROL         "Resolve ghost windows to hung windows",IDC_RESOLVEGHOSTWINDOWS,
+    CONTROL         "将幽灵窗口解析为无响应窗口",IDC_RESOLVEGHOSTWINDOWS,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,66,152,10
     CONTROL         "自动隐藏主要菜单 (Alt 或 F10 按键切换)",IDC_ENABLE_AUTOHIDE_MENU,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,78,157,10
-    CONTROL         "Enable toolbar menu bar",IDC_ENABLE_MENUBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,90,113,10
+    CONTROL         "启用工具栏菜单栏",IDC_ENABLE_MENUBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,90,113,10
     CONTROL         "自动聚焦到搜索栏",IDC_ENABLE_AUTOFOCUS_SEARCH,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,102,210,10
-    LTEXT           "Note: Right-click the toolbar on the main window to customize the icons and graphs.",IDC_STATIC,7,7,157,18
+    LTEXT           "注意: 右键单击主窗口的工具栏可自定义图标和图形。",IDC_STATIC,7,7,157,18
     COMBOBOX        IDC_CURRENT,14,174,119,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "选择想要展示在任务栏上的图形:",IDC_STATIC,14,163,132,8
     CONTROL         "启用更大的工具栏按钮",IDC_ENABLE_LARGETOOLBARICON,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,114,98,10
-    CONTROL         "Use screen overlay when finding windows",IDC_FINDWINDOW_OVERLAY,
+    CONTROL         "查找窗口时使用屏幕覆盖层",IDC_FINDWINDOW_OVERLAY,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,126,180,10
-    CONTROL         "Use snapshot picker when finding windows",IDC_FINDWINDOW_SNAPSHOT,
+    CONTROL         "查找窗口时使用快照选择器",IDC_FINDWINDOW_SNAPSHOT,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,14,138,180,10
     GROUPBOX        "工具栏设定",IDC_STATIC,7,29,217,122
     GROUPBOX        "任务栏设定",IDC_STATIC,7,151,217,45
@@ -91,8 +91,8 @@ BEGIN
     COMBOBOX        IDC_TEXTOPTIONS,56,139,113,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "搜索栏:",IDC_STATIC,7,158,45,8
     COMBOBOX        IDC_SEARCHOPTIONS,56,155,113,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Enable modern icons",IDC_ENABLE_MODERN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,188,139,83,10
-    CONTROL         "Auto-hide main menu (Alt or F10 key toggle)",IDC_ENABLE_AUTOHIDE_MENU,
+    CONTROL         "启用现代图标",IDC_ENABLE_MODERN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,188,139,83,10
+    CONTROL         "自动隐藏主要菜单 (Alt 或 F10 按键切换)",IDC_ENABLE_AUTOHIDE_MENU,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,188,152,157,10
     PUSHBUTTON      "重置",IDC_RESET,258,167,50,14
     DEFPUSHBUTTON   "关闭",IDCANCEL,312,167,50,14
@@ -100,7 +100,7 @@ END
 
 IDD_CUSTOMIZE_SB DIALOGEX 0, 0, 373, 142
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Customize Status Bar"
+CAPTION "自定义状态栏"
 FONT 11, "等距更纱黑体 Slab SC", 400, 0, 0x1
 BEGIN
     LTEXT           "启用的状态栏对象:",-1,7,7,91,8

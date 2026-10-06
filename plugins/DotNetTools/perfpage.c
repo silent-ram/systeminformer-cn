@@ -2185,7 +2185,7 @@ INT_PTR CALLBACK DotNetPerfPageDlgProc(
                 if (numberOfItems != 0)
                 {
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_CLR_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_CLR_COPY, L"复制(&C)", NULL, NULL), ULONG_MAX);
                     PhInsertCopyListViewEMenuItem(menu, ID_CLR_COPY, context->CountersListViewHandle);
 
                     item = PhShowEMenu(

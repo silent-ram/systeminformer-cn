@@ -993,7 +993,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
         {
             context->ListViewHandle = GetDlgItem(WindowHandle, IDC_REPARSE_LIST);
 
-            PhSetWindowText(WindowHandle, L"NTFS SecurityID");
+            PhSetWindowText(WindowHandle, L"NTFS 安全标识符");
             PhSetApplicationWindowIcon(WindowHandle);
 
             ShowWindow(GetDlgItem(WindowHandle, IDRETRY), SW_HIDE);
@@ -1079,7 +1079,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
                             break;
 
                         menu = PhCreateEMenu();
-                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"&Copy", NULL, NULL), ULONG_MAX);
+                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"复制(&C)", NULL, NULL), ULONG_MAX);
                         PhInsertCopyListViewEMenuItem(menu, USHRT_MAX, context->ListViewHandle);
 
                         selectedItem = PhShowEMenu(
@@ -1413,15 +1413,15 @@ INT_PTR CALLBACK EtReparseDlgProc(
                         {
                         case ID_REPARSE_POINTS:
                         case ID_REPARSE_OBJID:
-                            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Remove...", NULL, NULL), ULONG_MAX);
+                            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"移除...", NULL, NULL), ULONG_MAX);
                             break;
                         case ID_REPARSE_SDDL:
-                            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Find files...", NULL, NULL), ULONG_MAX);
+                            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"查找文件...", NULL, NULL), ULONG_MAX);
                             break;
                         }
 
                         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"&Copy", NULL, NULL), ULONG_MAX);
+                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"复制(&C)", NULL, NULL), ULONG_MAX);
                         PhInsertCopyListViewEMenuItem(menu, USHRT_MAX, context->ListViewHandle);
 
                         selectedItem = PhShowEMenu(

@@ -1021,14 +1021,14 @@ LRESULT CALLBACK PhpSearchWndSubclassProc(
             CallWindowProc(oldWndProc, WindowHandle, EM_GETSEL, (WPARAM)&selStart, (LPARAM)&selEnd);
 
             menu = PhCreateEMenu();
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Undo", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"撤销", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"Cut", NULL, NULL), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"Copy", NULL, NULL), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 4, L"Paste", NULL, NULL), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 5, L"Delete", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"剪切", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"复制", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 4, L"粘贴", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 5, L"删除", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 6, L"Select All", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 6, L"全选", NULL, NULL), ULONG_MAX);
 
             if (selStart == selEnd)
             {

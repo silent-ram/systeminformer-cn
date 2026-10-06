@@ -1432,20 +1432,20 @@ INT_PTR CALLBACK WepWindowsDlgProc(
                     GetWindowRect(GetDlgItem(WindowHandle, IDC_OPTIONS), &rect);
 
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, enumMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_MESSAGEONLY, L"Enumerate message-only windows", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, enumNonVisibleItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_NONVISIBLE, L"Enumerate non-visible windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, enumMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_MESSAGEONLY, L"枚举仅消息窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, enumNonVisibleItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_NONVISIBLE, L"枚举不可见窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, highlightMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_HIGHLIGHT_MESSAGEONLY, L"Highlight message-only windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_HIGHLIGHT_MESSAGEONLY, L"高亮仅消息窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, iconsItem = PhCreateEMenuItem(0, 1, L"Enable icons", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, iconsItem = PhCreateEMenuItem(0, 1, L"启用图标", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, desktopItem = PhCreateEMenuItem(0, 3, L"Show desktop windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, desktopItem = PhCreateEMenuItem(0, 3, L"显示桌面窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, findSnapshotItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_FIND_SNAPSHOT, L"Use snapshot window finder", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, findSnapshotItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_FIND_SNAPSHOT, L"使用快照窗口查找器", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, parentChildItem = PhCreateEMenuItem(0, ID_VIEW_MODE_PARENTCHILD, L"Enumerate windows", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, zOrderItem = PhCreateEMenuItem(0, ID_VIEW_MODE_ZORDER, L"Enumerate windows by z-order", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, ownerItem = PhCreateEMenuItem(0, ID_VIEW_MODE_OWNER, L"Enumerate windows by owner", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, parentChildItem = PhCreateEMenuItem(0, ID_VIEW_MODE_PARENTCHILD, L"枚举窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, zOrderItem = PhCreateEMenuItem(0, ID_VIEW_MODE_ZORDER, L"按 Z 顺序枚举窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, ownerItem = PhCreateEMenuItem(0, ID_VIEW_MODE_OWNER, L"按所有者枚举窗口", NULL, NULL), ULONG_MAX);
 
                     if (PhGetIntegerSetting(SETTING_NAME_WINDOW_ENUM_MESSAGEONLY))
                         enumMessageOnlyItem->Flags |= PH_EMENU_CHECKED;
@@ -1986,11 +1986,11 @@ INT_PTR CALLBACK WepWindowsDlgProc(
 
                     if (context->ProviderPaused)
                     {
-                        SetWindowText(context->PauseResumeButtonHandle, L"Resume");
+                        SetWindowText(context->PauseResumeButtonHandle, L"恢复");
                     }
                     else
                     {
-                        SetWindowText(context->PauseResumeButtonHandle, L"Pause");
+                        SetWindowText(context->PauseResumeButtonHandle, L"暂停");
                     }
                 }
                 break;
@@ -2609,18 +2609,18 @@ INT_PTR CALLBACK WepWindowsPageProc(
                     GetWindowRect(GetDlgItem(WindowHandle, IDC_OPTIONS), &rect);
 
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, enumMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_MESSAGEONLY, L"Enumerate message-only windows", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, enumNonVisibleItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_NONVISIBLE, L"Enumerate non-visible windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, enumMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_MESSAGEONLY, L"枚举仅消息窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, enumNonVisibleItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_ENUM_NONVISIBLE, L"枚举不可见窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, highlightMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_HIGHLIGHT_MESSAGEONLY, L"Highlight message-only windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightMessageOnlyItem = PhCreateEMenuItem(0, ID_WINDOW_OPTIONS_HIGHLIGHT_MESSAGEONLY, L"高亮仅消息窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, iconsItem = PhCreateEMenuItem(0, 1, L"Enable icons", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, iconsItem = PhCreateEMenuItem(0, 1, L"启用图标", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, desktopItem = PhCreateEMenuItem(0, 3, L"Show desktop windows", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, desktopItem = PhCreateEMenuItem(0, 3, L"显示桌面窗口", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, parentChildItem = PhCreateEMenuItem(0, ID_VIEW_MODE_PARENTCHILD, L"Enumerate windows", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, zOrderItem = PhCreateEMenuItem(0, ID_VIEW_MODE_ZORDER, L"Enumerate windows by z-order", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, ownerItem = PhCreateEMenuItem(0, ID_VIEW_MODE_OWNER, L"Enumerate windows by owner", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, parentChildItem = PhCreateEMenuItem(0, ID_VIEW_MODE_PARENTCHILD, L"枚举窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, zOrderItem = PhCreateEMenuItem(0, ID_VIEW_MODE_ZORDER, L"按 Z 顺序枚举窗口", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, ownerItem = PhCreateEMenuItem(0, ID_VIEW_MODE_OWNER, L"按所有者枚举窗口", NULL, NULL), ULONG_MAX);
 
                     if (PhGetIntegerSetting(SETTING_NAME_WINDOW_ENUM_MESSAGEONLY))
                         enumMessageOnlyItem->Flags |= PH_EMENU_CHECKED;

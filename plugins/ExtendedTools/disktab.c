@@ -307,12 +307,12 @@ VOID EtInitializeDiskTreeList(
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READRATEAVERAGE, TRUE, L"平均读取速率", 70, PH_ALIGN_RIGHT, 3, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITERATEAVERAGE, TRUE, L"平均写入速率", 70, PH_ALIGN_RIGHT, 4, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALRATEAVERAGE, TRUE, L"总速率", 70, PH_ALIGN_RIGHT, 5, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READRATE, TRUE, L"Read rate", 70, PH_ALIGN_RIGHT, 6, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITERATE, TRUE, L"Write rate", 70, PH_ALIGN_RIGHT, 7, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALRATE, TRUE, L"Total rate", 70, PH_ALIGN_RIGHT, 8, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READRATE, TRUE, L"读取速率", 70, PH_ALIGN_RIGHT, 6, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITERATE, TRUE, L"写入速率", 70, PH_ALIGN_RIGHT, 7, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALRATE, TRUE, L"总速率", 70, PH_ALIGN_RIGHT, 8, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READBYTES, TRUE, L"读取总量", 70, PH_ALIGN_RIGHT, 9, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITEBYTES, TRUE, L"写入总量", 70, PH_ALIGN_RIGHT, 10, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALBYTES, TRUE, L"Total bytes", 70, PH_ALIGN_RIGHT, 11, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALBYTES, TRUE, L"总共字节", 70, PH_ALIGN_RIGHT, 11, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_IOPRIORITY, TRUE, L"I/O 优先级", 70, PH_ALIGN_LEFT, 12, 0, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_RESPONSETIME, TRUE, L"反应时间 (ms)", 70, PH_ALIGN_RIGHT, 13, 0, TRUE);
     PhAddTreeNewColumn(WindowHandle, ETDSTNC_ORIGINALNAME, FALSE, L"原名", 200, PH_ALIGN_LEFT, ULONG_MAX, DT_PATH_ELLIPSIS);
@@ -1513,12 +1513,12 @@ VOID EtShowDiskContextMenu(
         menu = PhCreateEMenu();
         PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_GOTOPROCESS, L"跳转到进程(&G)", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_OPENFILELOCATION, L"Open &file location\bEnter", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_OPENFILELOCATION, L"打开文件位置(&f)\bEnter", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_INSPECT, L"&Inspect", NULL, NULL), ULONG_MAX);
-        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_PROPERTIES, L"P&roperties", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_INSPECT, L"检测(&I)", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_PROPERTIES, L"属性(&R)", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_COPY, L"&Copy\bCtrl+C", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DISK_COPY, L"复制(&C)\bCtrl+C", NULL, NULL), ULONG_MAX);
         PhInsertCopyCellEMenuItem(menu, ID_DISK_COPY, TreeWindowHandle, ContextMenuEvent->Column);
         PhSetFlagsEMenuItem(menu, ID_DISK_OPENFILELOCATION, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
 

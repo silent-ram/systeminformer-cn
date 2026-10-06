@@ -669,14 +669,14 @@ VOID PvInitializeSymbolTree(
     TreeNew_SetRedraw(TreeNewHandle, FALSE);
 
     PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_INDEX, TRUE, L"#", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_INDEX, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_TYPE, TRUE, L"Type", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_TYPE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_TYPE, TRUE, L"类型", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_TYPE, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_VA, TRUE, L"RVA", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_VA, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_NAME, TRUE, L"Symbol", 150, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_NAME, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SYMBOL, TRUE, L"Tag", 150, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SYMBOL, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SIZE, TRUE, L"Size", 60, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SIZE, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_OFFSET, TRUE, L"Offset", 140, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_OFFSET, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_VALUE, TRUE, L"Value", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_VALUE, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SECTION, TRUE, L"Section", 60, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SECTION, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_NAME, TRUE, L"符号", 150, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_NAME, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SYMBOL, TRUE, L"标记", 150, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SYMBOL, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SIZE, TRUE, L"大小", 60, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_OFFSET, TRUE, L"偏移量", 140, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_OFFSET, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_VALUE, TRUE, L"值", 80, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_VALUE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, TREE_COLUMN_ITEM_SECTION, TRUE, L"节", 60, PH_ALIGN_LEFT, TREE_COLUMN_ITEM_SECTION, 0, 0);
 
     TreeNew_SetRedraw(TreeNewHandle, TRUE);
     TreeNew_SetSort(TreeNewHandle, TREE_COLUMN_ITEM_INDEX, NoSortOrder);
@@ -1009,16 +1009,16 @@ INT_PTR CALLBACK PvpSymbolsDlgProc(
                     if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_SETTINGS), &rect))
                         break;
 
-                    writableMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_WRITE, L"Hide writable", NULL, NULL);
-                    executableMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_EXECUTE, L"Hide executable", NULL, NULL);
-                    codeMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_CODE, L"Hide code", NULL, NULL);
-                    readMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_READ, L"Hide readable", NULL, NULL);
-                    parametersMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_PARAMETERS, L"Hide parameters", NULL, NULL);
-                    filterWriteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_FILTER_WRITE, L"Filter non-writable", NULL, NULL);
-                    highlightWriteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_WRITE, L"Highlight writable", NULL, NULL);
-                    highlightExecuteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_EXECUTE, L"Highlight executable", NULL, NULL);
-                    highlightCodeMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_CODE, L"Highlight code", NULL, NULL);
-                    highlightReadMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_READ, L"Highlight readable", NULL, NULL);
+                    writableMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_WRITE, L"隐藏可写", NULL, NULL);
+                    executableMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_EXECUTE, L"隐藏可执行文件", NULL, NULL);
+                    codeMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_CODE, L"隐藏代码", NULL, NULL);
+                    readMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_READ, L"隐藏可读项", NULL, NULL);
+                    parametersMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIDE_PARAMETERS, L"隐藏参数", NULL, NULL);
+                    filterWriteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_FILTER_WRITE, L"筛选不可写", NULL, NULL);
+                    highlightWriteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_WRITE, L"高亮可写", NULL, NULL);
+                    highlightExecuteMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_EXECUTE, L"高亮可执行", NULL, NULL);
+                    highlightCodeMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_CODE, L"高亮代码", NULL, NULL);
+                    highlightReadMenuItem = PhCreateEMenuItem(0, PV_SYMBOL_TREE_MENU_ITEM_HIGHLIGHT_READ, L"高亮可读", NULL, NULL);
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, writableMenuItem, ULONG_MAX);
@@ -1117,7 +1117,7 @@ INT_PTR CALLBACK PvpSymbolsDlgProc(
             if (numberOfNodes != 0)
             {
                 menu = PhCreateEMenu();
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Copy", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"复制", NULL, NULL), ULONG_MAX);
                 PhInsertCopyCellEMenuItem(menu, 1, context->TreeNewHandle, contextMenuEvent->Column);
 
                 selectedItem = PhShowEMenu(

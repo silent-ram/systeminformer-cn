@@ -1423,10 +1423,10 @@ static INT_PTR CALLBACK EtEnvironmentVariablesDlgProc(
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
                 menu = PhCreateEMenu();
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_ADD, L"&Add", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_ADD, L"添加(&A)", NULL, NULL), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_EDIT, L"&Edit", NULL, NULL), ULONG_MAX);
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_DELETE, L"&Delete", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_EDIT, L"编辑(&E)", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_ENV_DELETE, L"删除(&D)", NULL, NULL), ULONG_MAX);
 
                 {
                     PENV_VARIABLE_ENTRY entry;

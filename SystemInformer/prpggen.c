@@ -864,9 +864,9 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                         break;
 
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"No-Write-Up", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"No-Read-Up", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"No-Execute-Up", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"禁止向上写入", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"禁止向上读取", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"禁止向上执行", NULL, NULL), ULONG_MAX);
 
                     status = PhOpenProcess(
                         &processHandle,

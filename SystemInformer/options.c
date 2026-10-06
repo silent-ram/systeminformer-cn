@@ -1519,7 +1519,7 @@ VOID PhpRefreshTaskManagerState(
     if (PhpIsDefaultTaskManager())
     {
         PhSetWindowText(GetDlgItem(WindowHandle, IDC_DEFSTATE), L"System Informer 是默认的任务管理器:");
-        PhSetWindowText(GetDlgItem(WindowHandle, IDC_REPLACETASKMANAGER), L"Restore default...");
+        PhSetWindowText(GetDlgItem(WindowHandle, IDC_REPLACETASKMANAGER), L"恢复默认...");
     }
     else
     {
@@ -2427,7 +2427,7 @@ static INT_PTR CALLBACK PhpOptionsAdvancedEditDlgProc(
 
             PhSetApplicationWindowIcon(hwndDlg);
 
-            PhSetWindowText(hwndDlg, L"Setting Editor");
+            PhSetWindowText(hwndDlg, L"设置编辑器");
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
             PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, editContext);
@@ -3393,11 +3393,11 @@ VOID InitializeOptionsAdvancedTree(
     TreeNew_SetRedraw(Context->TreeNewHandle, FALSE);
     TreeNew_SetCallback(Context->TreeNewHandle, OptionsAdvancedTreeNewCallback, Context);
 
-    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_NAME, TRUE, L"Name", 200, PH_ALIGN_LEFT, 0, 0, TRUE);
-    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_TYPE, TRUE, L"Type", 100, PH_ALIGN_LEFT, 1, 0, TRUE);
+    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_NAME, TRUE, L"名称", 200, PH_ALIGN_LEFT, 0, 0, TRUE);
+    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_TYPE, TRUE, L"类型", 100, PH_ALIGN_LEFT, 1, 0, TRUE);
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_VALUE, TRUE, L"值", 200, PH_ALIGN_LEFT, 2, 0, TRUE);
-    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DEFAULT, TRUE, L"Default", 200, PH_ALIGN_LEFT, 3, 0, TRUE);
-    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DESCRIPTION, TRUE, L"Description", 300, PH_ALIGN_LEFT, 4, 0, FALSE);
+    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DEFAULT, TRUE, L"默认", 200, PH_ALIGN_LEFT, 3, 0, TRUE);
+    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DESCRIPTION, TRUE, L"描述", 300, PH_ALIGN_LEFT, 4, 0, FALSE);
 
     OptionsAdvancedLoadSchema(Context);
 
@@ -3626,11 +3626,11 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
                         break;
 
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, hidemodifiedMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIDE_MODIFIED, L"Hide modified", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, hidedefaultMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIDE_DEFAULT, L"Hide default", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, hidemodifiedMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIDE_MODIFIED, L"隐藏已修改", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, hidedefaultMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIDE_DEFAULT, L"隐藏默认", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, highlightmodifiedMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIGHLIGHT_MODIFIED, L"Highlight modified", NULL, NULL), ULONG_MAX);
-                    PhInsertEMenuItem(menu, highlightdefaultMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIGHLIGHT_DEFAULT, L"Highlight default", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightmodifiedMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIGHLIGHT_MODIFIED, L"高亮已修改", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightdefaultMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIGHLIGHT_DEFAULT, L"高亮默认", NULL, NULL), ULONG_MAX);
 
                     if (context->HideModified)
                         hidemodifiedMenuItem->Flags |= PH_EMENU_CHECKED;
@@ -3751,9 +3751,9 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
                     PPH_EMENU_ITEM item;
 
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"&Reset", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"重置(&R)", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy\bCtrl+C", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"复制(&C)\bCtrl+C", NULL, NULL), ULONG_MAX);
                     PhInsertCopyCellEMenuItem(menu, IDC_COPY, context->TreeNewHandle, contextMenuEvent->Column);
 
                     item = PhShowEMenu(
@@ -4139,7 +4139,7 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
                 if (ColorItem = PhGetSelectedListViewItemParam(HighlightingListViewHandle))
                 {
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"&Reset", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"重置(&R)", NULL, NULL), ULONG_MAX);
 
                     item = PhShowEMenu(
                         menu,
@@ -4187,7 +4187,7 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
                 point.y = GET_Y_LPARAM(lParam);
 
                 menu = PhCreateEMenu();
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"&Reset", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"重置(&R)", NULL, NULL), ULONG_MAX);
 
                 item = PhShowEMenu(
                     menu,
@@ -4660,7 +4660,7 @@ INT_PTR CALLBACK PhpOptionsGraphsDlgProc(
                 if (ColorItem = PhGetSelectedListViewItemParam(PhpGraphListViewHandle))
                 {
                     menu = PhCreateEMenu();
-                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"&Reset", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESET, L"重置(&R)", NULL, NULL), ULONG_MAX);
 
                     item = PhShowEMenu(
                         menu,

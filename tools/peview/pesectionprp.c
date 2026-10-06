@@ -558,14 +558,14 @@ INT_PTR CALLBACK PvPeSectionsDlgProc(
                     if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_SETTINGS), &rect))
                         break;
 
-                    writableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_WRITE, L"Hide writable", NULL, NULL);
-                    executableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_EXECUTE, L"Hide executable", NULL, NULL);
-                    codeMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_CODE, L"Hide code", NULL, NULL);
-                    readMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_READ, L"Hide readable", NULL, NULL);
-                    highlightWriteMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_WRITE, L"Highlight writable", NULL, NULL);
-                    highlightExecuteMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_EXECUTE, L"Highlight executable", NULL, NULL);
-                    highlightCodeMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_CODE, L"Highlight code", NULL, NULL);
-                    highlightReadMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_READ, L"Highlight readable", NULL, NULL);
+                    writableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_WRITE, L"隐藏可写", NULL, NULL);
+                    executableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_EXECUTE, L"隐藏可执行文件", NULL, NULL);
+                    codeMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_CODE, L"隐藏代码", NULL, NULL);
+                    readMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_READ, L"隐藏可读项", NULL, NULL);
+                    highlightWriteMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_WRITE, L"高亮可写", NULL, NULL);
+                    highlightExecuteMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_EXECUTE, L"高亮可执行", NULL, NULL);
+                    highlightCodeMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_CODE, L"高亮代码", NULL, NULL);
+                    highlightReadMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIGHLIGHT_READ, L"高亮可读", NULL, NULL);
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, writableMenuItem, ULONG_MAX);
@@ -640,7 +640,7 @@ INT_PTR CALLBACK PvPeSectionsDlgProc(
             if (numberOfNodes != 0)
             {
                 menu = PhCreateEMenu();
-                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Copy", NULL, NULL), ULONG_MAX);
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"复制", NULL, NULL), ULONG_MAX);
                 PhInsertCopyCellEMenuItem(menu, 1, context->TreeNewHandle, contextMenuEvent->Column);
 
                 selectedItem = PhShowEMenu(
@@ -1294,17 +1294,17 @@ VOID PvInitializeSectionTree(
     TreeNew_SetRedraw(TreeNewHandle, FALSE);
 
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_INDEX, TRUE, L"#", 40, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_INDEX, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_NAME, TRUE, L"Name", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_NAME, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, TRUE, L"RAW (start)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, TRUE, L"RAW (end)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, TRUE, L"RAW (size)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, TRUE, L"Slack space", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, TRUE, L"RVA (start)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, TRUE, L"RVA (end)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, TRUE, L"RVA (size)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_CHARACTERISTICS, TRUE, L"Characteristics", 250, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_CHARACTERISTICS, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_HASH, TRUE, L"Hash", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_HASH, 0, 0);
-    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_ENTROPY, TRUE, L"Entropy", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_ENTROPY, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_NAME, TRUE, L"名称", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_NAME, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, TRUE, L"RAW (起始)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, TRUE, L"RAW (结束)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, TRUE, L"RAW (大小)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, TRUE, L"空闲空间", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, TRUE, L"RVA (起始)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, TRUE, L"RVA (结束)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, TRUE, L"RVA (大小)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_CHARACTERISTICS, TRUE, L"特性", 250, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_CHARACTERISTICS, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_HASH, TRUE, L"哈希", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_HASH, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_ENTROPY, TRUE, L"熵", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_ENTROPY, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_SSDEEP, TRUE, L"SSDEEP", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_SSDEEP, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_TLSH, TRUE, L"TLSH", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_TLSH, 0, 0);
 

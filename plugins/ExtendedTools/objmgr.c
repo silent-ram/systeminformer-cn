@@ -3297,7 +3297,7 @@ INT_PTR CALLBACK WinObjDlgProc(
                     if (sortOrder != NoSortOrder)
                     {
                         menu = PhCreateEMenu();
-                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESETSORT, L"&Reset sort", NULL, NULL), ULONG_MAX);
+                        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_RESETSORT, L"重置排序(&R)", NULL, NULL), ULONG_MAX);
 
                         item = PhShowEMenu(
                             menu,
@@ -3339,24 +3339,24 @@ INT_PTR CALLBACK WinObjDlgProc(
                     PhInsertEMenuItem(menu, propMenuItem = PhCreateEMenuItem(0, IDC_PROPERTIES,
                         !isSymlink ? L"Prope&rties\bEnter" : L"Prope&rties\bShift+Enter", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, handlesMenuItem = PhCreateEMenuItem(0, IDC_OPENHANDLES, L"&Handles\bCtrl+H", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, handlesMenuItem = PhCreateEMenuItem(0, IDC_OPENHANDLES, L"句柄(&H)\bCtrl+H", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
 
                     if (isSymlink)
                     {
                         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), 0);
-                        PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_OPENLINK, L"&Open link\bEnter", NULL, NULL), 0);
+                        PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_OPENLINK, L"打开链接(&O)\bEnter", NULL, NULL), 0);
                     }
                     else if (entry->EtObjectType == EtObjectDevice)
                     {
                         if (entry->TargetDrvLow && entry->TargetDrvUp && !PhEqualString(entry->TargetDrvLow, entry->TargetDrvUp, TRUE))
                         {
-                            PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_GOTODRIVER2, L"Go to &upper device driver", NULL, NULL), ULONG_MAX);
-                            PhInsertEMenuItem(menu, gotoMenuItem2 = PhCreateEMenuItem(0, IDC_GOTODRIVER, L"&Go to lower device driver", NULL, NULL), ULONG_MAX);
+                            PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_GOTODRIVER2, L"跳转到上层设备驱动程序(&u)", NULL, NULL), ULONG_MAX);
+                            PhInsertEMenuItem(menu, gotoMenuItem2 = PhCreateEMenuItem(0, IDC_GOTODRIVER, L"跳转到下层设备驱动程序(&G)", NULL, NULL), ULONG_MAX);
                         }
                         else
                         {
-                            PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_GOTODRIVER, L"&Go to device driver", NULL, NULL), ULONG_MAX);
+                            PhInsertEMenuItem(menu, gotoMenuItem = PhCreateEMenuItem(0, IDC_GOTODRIVER, L"跳转到设备驱动程序(&G)", NULL, NULL), ULONG_MAX);
                         }
                         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     }
@@ -3389,7 +3389,7 @@ INT_PTR CALLBACK WinObjDlgProc(
 
                     PhInsertEMenuItem(menu, secMenuItem = PhCreateEMenuItem(0, IDC_SECURITY, L"安全(&S)\bCtrl+Enter", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
-                    PhInsertEMenuItem(menu, copyAddressMenuItem = PhCreateEMenuItem(0, IDC_COPYOBJECTADDRESS, L"Copy Object &Address\bCtrl+Shift+C", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, copyAddressMenuItem = PhCreateEMenuItem(0, IDC_COPYOBJECTADDRESS, L"复制对象地址(&A)\bCtrl+Shift+C", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, copyPathMenuItem = PhCreateEMenuItem(0, IDC_COPYPATH, L"复制全名(&F)\bCtrl+Alt+C", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"复制(&C)\bCtrl+C", NULL, NULL), ULONG_MAX);
