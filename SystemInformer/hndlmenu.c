@@ -121,8 +121,8 @@ VOID PhShowHandleObjectProperties1(
     if (PhIsNullOrEmptyString(Info->TypeName))
         return;
 
-    if (PhEqualString2(Info->TypeName, L"文件", TRUE) || PhEqualString2(Info->TypeName, L"DLL", TRUE) ||
-        PhEqualString2(Info->TypeName, L"映射文件", TRUE) || PhEqualString2(Info->TypeName, L"Mapped image", TRUE))
+    if (PhEqualString2(Info->TypeName, L"File", TRUE) || PhEqualString2(Info->TypeName, L"DLL", TRUE) ||
+        PhEqualString2(Info->TypeName, L"Mapped file", TRUE) || PhEqualString2(Info->TypeName, L"Mapped image", TRUE))
     {
         if (Info->BestObjectName)
         {
@@ -144,7 +144,7 @@ VOID PhShowHandleObjectProperties1(
         else
             PhShowError2(hWnd, L"无法打开注册表.", L"%s", L"The object is unnamed.");
     }
-    else if (PhEqualString2(Info->TypeName, L"进程", TRUE))
+    else if (PhEqualString2(Info->TypeName, L"Process", TRUE))
     {
         HANDLE processHandle;
         HANDLE processId;

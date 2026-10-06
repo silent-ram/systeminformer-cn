@@ -918,7 +918,7 @@ VOID WtcInitializeWaitTree(
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_PROCESSID, TRUE, L"ProcessId", 50, PH_ALIGN_LEFT, 2, 0);
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_STATUS, TRUE, L"状态", 80, PH_ALIGN_LEFT, 3, 0);
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_CONTEXTSWITCH, TRUE, L"上下文切换数", 70, PH_ALIGN_LEFT, 4, 0);
-    PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_WAITTIME, TRUE, L"WaitTime", 60, PH_ALIGN_LEFT, 5, 0);
+    PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_WAITTIME, TRUE, L"等待时间", 60, PH_ALIGN_LEFT, 5, 0);
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_TIMEOUT, TRUE, L"超时", 60, PH_ALIGN_LEFT, 6, 0);
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_ALERTABLE, TRUE, L"可警告", 50, PH_ALIGN_LEFT, 7, 0);
     PhAddTreeNewColumn(WindowHandle, TREE_COLUMN_ITEM_NAME, TRUE, L"名称", 100, PH_ALIGN_LEFT, 8, 0);

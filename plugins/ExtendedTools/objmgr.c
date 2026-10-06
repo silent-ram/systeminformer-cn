@@ -602,7 +602,7 @@ static NTSTATUS NTAPI EtEnumCurrentDirectoryObjectsCallback(
         {
             entry->EtObjectType = EtObjectAlpcPort;
         }
-        else if (PhEqualStringRef2(TypeName, L"回调", TRUE))
+        else if (PhEqualStringRef2(TypeName, L"Callback", TRUE))
         {
             entry->EtObjectType = EtObjectCallback;
         }
@@ -610,11 +610,11 @@ static NTSTATUS NTAPI EtEnumCurrentDirectoryObjectsCallback(
         {
             entry->EtObjectType = EtObjectCpuPartition;
         }
-        else if (PhEqualStringRef2(TypeName, L"设备", TRUE))
+        else if (PhEqualStringRef2(TypeName, L"Device", TRUE))
         {
             entry->EtObjectType = EtObjectDevice;
         }
-        else if (PhEqualStringRef2(TypeName, L"驱动", TRUE))
+        else if (PhEqualStringRef2(TypeName, L"Driver", TRUE))
         {
             entry->EtObjectType = EtObjectDriver;
         }
@@ -642,7 +642,7 @@ static NTSTATUS NTAPI EtEnumCurrentDirectoryObjectsCallback(
         {
             entry->EtObjectType = EtObjectMutant;
         }
-        else if (PhEqualStringRef2(TypeName, L"分区", TRUE))
+        else if (PhEqualStringRef2(TypeName, L"Partition", TRUE))
         {
             entry->EtObjectType = EtObjectMemoryPartition;
         }

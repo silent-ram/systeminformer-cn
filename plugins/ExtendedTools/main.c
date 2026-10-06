@@ -302,7 +302,7 @@ VOID NTAPI MainMenuInitializingCallback(
 
     if (!(systemMenu = PhFindEMenuItem(menuInfo->Menu, 0, L"System", 0)))
     {
-        PhInsertEMenuItem(menuInfo->Menu, systemMenu = PhPluginCreateEMenuItem(PluginInstance, 0, 0, L"&系统", NULL), ULONG_MAX);
+        PhInsertEMenuItem(menuInfo->Menu, systemMenu = PhPluginCreateEMenuItem(PluginInstance, 0, 0, L"系统(&S)", NULL), ULONG_MAX);
     }
 
     PhInsertEMenuItem(systemMenu, PhPluginCreateEMenuItem(PluginInstance, 0, ID_POOL_TABLE, L"Poo&l Table", NULL), ULONG_MAX);

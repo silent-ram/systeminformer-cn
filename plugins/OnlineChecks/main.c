@@ -375,7 +375,7 @@ VOID NTAPI MainMenuInitializingCallback(
     if (menuInfo->u.MainMenu.SubMenuIndex != PH_MENU_ITEM_LOCATION_TOOLS)
         return;
 
-    onlineMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, 0, L"&在线扫描", NULL);
+    onlineMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, 0, L"在线检查(&O)", NULL);
     PhInsertEMenuItem(onlineMenuItem, PhPluginCreateEMenuItem(PluginInstance, 0, MENUITEM_FILESCANIO_UPLOAD_FILE, L"上传文件到&Filescan...", NULL), ULONG_MAX);
     PhInsertEMenuItem(onlineMenuItem, PhPluginCreateEMenuItem(PluginInstance, 0, MENUITEM_HYBRIDANALYSIS_UPLOAD_FILE, L"上传文件到&Hybrid-Analysis...", NULL), ULONG_MAX);
     PhInsertEMenuItem(onlineMenuItem, PhPluginCreateEMenuItem(PluginInstance, 0, MENUITEM_VIRUSTOTAL_UPLOAD_FILE, L"上传文件到&VirusTotal...", NULL), ULONG_MAX);

@@ -245,8 +245,12 @@ VOID PhSetWindowOpacity(
     _In_ ULONG OpacityPercent
     );
 
-#define PH_OPACITY_TO_ID(Opacity) (ID_OPACITY_10 + (100 - (Opacity)) - 10)
-#define PH_ID_TO_OPACITY(Id) (100 - (((Id) - ID_OPACITY_10) + 10))
+#define PH_OPACITY_TO_ID(Opacity) \
+    ((ULONG)((Opacity) >= 100 ? ID_OPACITY_OPAQUE : (Opacity) == 95 ? ID_OPACITY_95 : \
+        ID_OPACITY_10 + ((((Opacity) < 10 ? 10 : (Opacity)) / 10) - 1)))
+#define PH_ID_TO_OPACITY(Id) \
+    ((ULONG)((Id) == ID_OPACITY_OPAQUE ? 100 : (Id) == ID_OPACITY_95 ? 95 : \
+        10 + (((Id) - ID_OPACITY_10) * 10)))
 
 // begin_phapppub
 PHAPPAPI

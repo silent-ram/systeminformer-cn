@@ -1469,8 +1469,8 @@ VOID PhMwpOnCommand(
         break;
     case ID_OPACITY_95:
         {
-            PhSetIntegerSetting(L"MainWindowOpacity", 5);
-            PhSetWindowOpacity(WindowHandle, 5);
+            PhSetIntegerSetting(SETTING_MAIN_WINDOW_OPACITY, 95);
+            PhSetWindowOpacity(WindowHandle, 95);
         }
         break;
     case ID_VIEW_REFRESH:

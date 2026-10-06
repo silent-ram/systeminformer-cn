@@ -1848,7 +1848,7 @@ some cases doesn't actually use these names at all). */
   "*MARK", "*PRUNE", "*PRUNE", "*SKIP", "*SKIP",                  \
   "*THEN", "*THEN", "*COMMIT", "*COMMIT", "*FAIL",                \
   "*ACCEPT", "*ASSERT_ACCEPT",                                    \
-  "关闭", "Skip zero", "Define", "\\B (ucp)", "\\b (ucp)"
+  "Close", "Skip zero", "Define", "\\B (ucp)", "\\b (ucp)"
 
 
 /* This macro defines the length of fixed length operations in the compiled

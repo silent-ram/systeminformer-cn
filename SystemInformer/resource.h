@@ -837,6 +837,7 @@
 #define ID_OPACITY_80                   10149
 #define ID_OPACITY_90                   10150
 #define ID_OPACITY_OPAQUE               10151
+#define ID_OPACITY_95                   10152
 #define ID_VIEW_ALWAYSONTOP             10153
 #define ID_UPDATEINTERVAL_FAST          10155
 #define ID_UPDATEINTERVAL_NORMAL        10156
