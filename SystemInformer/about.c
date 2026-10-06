@@ -66,7 +66,7 @@ static INT_PTR CALLBACK PhpAboutDlgProc(
                 L"    <a href=\"https://github.com/json-c/json-c\">json-c</a> by Michael Clark\n"
                 L"    MD5 code by Jouni Malinen\n"
                 L"    SHA1 code by Filip Navara, based on code by Steve Reid\n"
-                L"    <a href=\"https://github.com/Amarillys\">Amarillys</a> 汉化\n"
+                L"    <a href=\"https://github.com/silent-ram\">silent-ram</a> 汉化\n"
                 );
 
             PhSetDialogFocus(hwndDlg, GetDlgItem(hwndDlg, IDOK));

@@ -444,7 +444,7 @@ INT_PTR CALLBACK PhOptionsDialogProc(
                 section = PhOptionsCreateSection(L"常规", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTGENERAL), PhpOptionsGeneralDlgProc, NULL);
                 PhOptionsCreateSectionAdvanced(L"高级", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTADVANCED), PhpOptionsAdvancedDlgProc, NULL);
                 PhOptionsCreateSection(L"高亮", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTHIGHLIGHTING), PhpOptionsHighlightingDlgProc, NULL);
-                PhOptionsCreateSection(L"Tray Icon", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTTRAYICON), PhpOptionsTrayIconDlgProc, NULL);
+                PhOptionsCreateSection(L"托盘图标", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTTRAYICON), PhpOptionsTrayIconDlgProc, NULL);
                 PhOptionsCreateSection(L"图像", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTGRAPHS), PhpOptionsGraphsDlgProc, NULL);
                 PhOptionsCreateSection(L"插件", PhInstanceHandle, MAKEINTRESOURCE(IDD_PLUGINS), PhPluginsDlgProc, NULL);
 
@@ -1594,7 +1594,7 @@ static VOID PhpAdvancedPageLoad(
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_AVX_EXTENSIONS, L"启用AVX拓展(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_COLUMN_HEADER_TOTALS, L"启用列标题总计(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_CYCLE_CPU_USAGE, L"启用基于周期的 CPU 使用率(试验)", NULL);
-        PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE, L"Enable low-latency mode (experimental)", NULL);
+        PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE, L"启用低延迟模式(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_GRAPH_SCALING, L"启用固定图形缩放 (试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_MINIINFO_WINDOW, L"启用托盘信息窗口", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_MEMSTRINGS_TREE, L"使用新的内存字符串对话框", NULL);
@@ -1613,7 +1613,7 @@ static VOID PhpAdvancedPageLoad(
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ICON_TOGGLE_VISIBILITY, L"单击图标可切换可见性", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_PROPAGATE_CPU_USAGE, L"使用率统计包括折叠进程", NULL);
         if (WindowsVersion >= WINDOWS_10)
-            PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_PROCESS_MONITOR, L"Enable process monitor (experimental)", NULL);
+            PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_PROCESS_MONITOR, L"启用进程监视器(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_SHOW_ADVANCED_OPTIONS, L"显示高级选项", NULL);
     }
 
