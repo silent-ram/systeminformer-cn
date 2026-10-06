@@ -1,0 +1,44 @@
+name: 'cn-build'
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['cn-4.0']
+
+jobs:
+  build-release:
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: NuGet Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          packages
+          ~\.nuget\packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.config', '**/*.csproj', '**/NuGet.Config') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: NuGet Restore
+      shell: cmd
+      run: nuget restore .\packages.config -PackagesDirectory .\packages\
+
+    - name: Build Tools
+      shell: cmd
+      run: build\build_init.cmd
+
+    - name: Build Solution (Release)
+      shell: cmd
+      run: build\build_release.cmd
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: systeminformer-cn-${{ github.sha }}
+        path: bin/Release64/**
+        if-no-files-found: error
+        retention-days: 14
