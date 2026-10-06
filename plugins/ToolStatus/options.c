@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2011-2022
+ *     dmex    2011-2026
  *
  */
 
@@ -87,6 +87,9 @@ INT_PTR CALLBACK OptionsDlgProc(
             Button_SetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_STATUSBAR), ToolStatusConfig.StatusBarEnabled ? BST_CHECKED : BST_UNCHECKED);
             Button_SetCheck(GetDlgItem(WindowHandle, IDC_RESOLVEGHOSTWINDOWS), ToolStatusConfig.ResolveGhostWindows ? BST_CHECKED : BST_UNCHECKED);
             Button_SetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_AUTOHIDE_MENU), ToolStatusConfig.AutoHideMenu ? BST_CHECKED : BST_UNCHECKED);
+#if TOOLSTATUS_ENABLE_MENUBAR
+            Button_SetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_MENUBAR), ToolStatusConfig.EnableMenuBar ? BST_CHECKED : BST_UNCHECKED);
+#endif
             Button_SetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_AUTOFOCUS_SEARCH), ToolStatusConfig.SearchAutoFocus ? BST_CHECKED : BST_UNCHECKED);
             Button_SetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_LARGETOOLBARICON), ToolStatusConfig.ToolBarLargeIcons ? BST_CHECKED : BST_UNCHECKED);
 
@@ -99,30 +102,33 @@ INT_PTR CALLBACK OptionsDlgProc(
         {
             PPH_STRING graphTypeString;
 
+            ReBarSaveLayoutSettings();
+
             ToolStatusConfig.ToolBarEnabled = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_TOOLBAR)) == BST_CHECKED;
             ToolStatusConfig.StatusBarEnabled = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_STATUSBAR)) == BST_CHECKED;
             ToolStatusConfig.ResolveGhostWindows = Button_GetCheck(GetDlgItem(WindowHandle, IDC_RESOLVEGHOSTWINDOWS)) == BST_CHECKED;
             ToolStatusConfig.AutoHideMenu = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_AUTOHIDE_MENU)) == BST_CHECKED;
+#if TOOLSTATUS_ENABLE_MENUBAR
+            ToolStatusConfig.EnableMenuBar = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_MENUBAR)) == BST_CHECKED;
+#endif
             ToolStatusConfig.SearchAutoFocus = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_AUTOFOCUS_SEARCH)) == BST_CHECKED;
             ToolStatusConfig.ToolBarLargeIcons = Button_GetCheck(GetDlgItem(WindowHandle, IDC_ENABLE_LARGETOOLBARICON)) == BST_CHECKED;
 
             PhSetIntegerSetting(SETTING_NAME_TOOLSTATUS_CONFIG, ToolStatusConfig.Flags);
 
-            ToolbarLoadSettings(FALSE);
-            ToolbarCreateGraphs();
+            {
+                ULONG bandStyle;
 
-            if (ToolStatusConfig.AutoHideMenu)
-            {
-                SetMenu(MainWindowHandle, NULL);
-            }
-            else
-            {
-                SetMenu(MainWindowHandle, MainMenu);
-                DrawMenuBar(MainWindowHandle);
+                if (RebarGetBandIndexStyle(0, &bandStyle))
+                {
+                    ClearFlag(bandStyle, RBBS_BREAK);
+                    RebarSetBandIndexStyle(0, bandStyle);
+                }
             }
 
-            if (ToolStatusConfig.SearchBoxEnabled && ToolStatusConfig.SearchAutoFocus && SearchboxHandle)
-                SetFocus(SearchboxHandle);
+            ToolbarDestroyControls();
+            ToolbarCreateControls();
+            ReBarSaveLayoutSettings();
 
             graphTypeString = PH_AUTO(PhGetWindowText(GetDlgItem(WindowHandle, IDC_CURRENT)));
             PhSetIntegerSetting(SETTING_NAME_TASKBARDISPLAYSTYLE, GraphTypeGetTypeInteger(graphTypeString->Buffer));

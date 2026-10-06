@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     jxy-s   2022-2024
+ *     jxy-s   2022-2026
  *
  */
 
@@ -65,11 +65,14 @@ static KPH_DYN_ATOMIC KphpDynData = { .Atomic = KPH_ATOMIC_OBJECT_REF_INIT };
  * \return Pointer to the dynamic configuration, NULL if not activated. The
  * caller must eventually dereference the object.
  */
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_DYN KphReferenceDynData(
     VOID
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
     return KphAtomicReferenceObject(&KphpDynData.Atomic);
 }
 
@@ -145,6 +148,10 @@ NTSTATUS KSIAPI KphpInitializeDynData(
     KPH_LOAD_DYNITEM_KERNEL(AlpcPortObjectLock);
     KPH_LOAD_DYNITEM_KERNEL(AlpcSequenceNo);
     KPH_LOAD_DYNITEM_KERNEL(AlpcState);
+    KPH_LOAD_DYNITEM_KERNEL(KtInitialStack);
+    KPH_LOAD_DYNITEM_KERNEL(KtStackLimit);
+    KPH_LOAD_DYNITEM_KERNEL(KtStackBase);
+    KPH_LOAD_DYNITEM_KERNEL(KtKernelStack);
     KPH_LOAD_DYNITEM_KERNEL(KtReadOperationCount);
     KPH_LOAD_DYNITEM_KERNEL(KtWriteOperationCount);
     KPH_LOAD_DYNITEM_KERNEL(KtOtherOperationCount);
@@ -183,7 +190,7 @@ NTSTATUS KSIAPI KphpInitializeDynData(
  *
  * \param[in] Object Dynamic configuration object to delete.
  */
-_Function_class_(KPH_TYPE_ALLOCATE_PROCEDURE)
+_Function_class_(KPH_TYPE_DELETE_PROCEDURE)
 _IRQL_requires_max_(PASSIVE_LEVEL)
 VOID KSIAPI KphpDeleteDynData(
     _In_freesMem_ PVOID Object
@@ -206,7 +213,7 @@ VOID KSIAPI KphpDeleteDynData(
  *
  * \param[in] Object Dynamic configuration object to free.
  */
-_Function_class_(KPH_TYPE_ALLOCATE_PROCEDURE)
+_Function_class_(KPH_TYPE_FREE_PROCEDURE)
 _IRQL_requires_max_(PASSIVE_LEVEL)
 VOID KSIAPI KphpFreeDynData(
     _In_freesMem_ PVOID Object
@@ -275,6 +282,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynNtoskrnl].TimeDateStamp,
                                   KphpDynModules[KphDynNtoskrnl].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_NTOSKRNL_FIELDS),
                                   &kernel);
     }
     else if (KphpDynModules[KphDynNtkrla57].Valid)
@@ -286,6 +294,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynNtkrla57].TimeDateStamp,
                                   KphpDynModules[KphDynNtkrla57].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_NTKRLA57_FIELDS),
                                   &kernel);
     }
     else
@@ -315,6 +324,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynLxcore].TimeDateStamp,
                                   KphpDynModules[KphDynLxcore].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_LXCORE_FIELDS),
                                   &lxcore);
     }
     else
@@ -434,11 +444,8 @@ NTSTATUS KphActivateDynData(
 
         __try
         {
-            ProbeInputBytes(DynData, DynDataLength);
-            RtlCopyVolatileMemory(dynData, DynData, DynDataLength);
-
-            ProbeInputBytes(Signature, DynDataLength);
-            RtlCopyVolatileMemory(signature, Signature, SignatureLength);
+            CopyFromUser(dynData, DynData, DynDataLength);
+            CopyFromUser(signature, Signature, SignatureLength);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -464,12 +471,46 @@ Exit:
         KphFree(dynData, KPH_TAG_DYNDATA);
     }
 
-    if (signature && (signature != DynData))
+    if (signature && (signature != Signature))
     {
         KphFree(signature, KPH_TAG_DYNDATA);
     }
 
     return status;
+}
+
+/**
+ * \brief Checks if dynamic data is active.
+ *
+ * \param[out] IsActive Receives TRUE if active, FALSE otherwise.
+ * \param[in] AccessMode The access mode of the caller.
+ *
+ * \return Successful or errant status.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS KphIsDynDataActive(
+    _Out_ PBOOLEAN IsActive,
+    _In_ KPROCESSOR_MODE AccessMode
+    )
+{
+    PKPH_DYN dyn;
+    BOOLEAN isActive;
+
+    KPH_PAGED_CODE_PASSIVE();
+
+    dyn = KphReferenceDynData();
+    if (dyn)
+    {
+        isActive = TRUE;
+        KphDereferenceObject(dyn);
+    }
+    else
+    {
+        isActive = FALSE;
+    }
+
+    return KphWriteUCharToMode(IsActive, isActive, AccessMode);
 }
 
 /**
@@ -590,6 +631,8 @@ VOID KphInitializeDynData(
                                      KphDynConfigLength,
                                      NULL,
                                      0);
+
+        NT_ANALYSIS_ASSUME(NT_SUCCESS(status));
 
         KphTracePrint(TRACE_LEVEL_VERBOSE,
                       GENERAL,

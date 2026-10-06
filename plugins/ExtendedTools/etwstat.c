@@ -6,25 +6,40 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2019-2024
+ *     dmex    2019-2026
  *
  */
 
 #include "exttools.h"
 #include "etwmon.h"
 
+/**
+ * Callback for process provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
 
+/**
+ * Callback for network item provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
 
+/**
+ * Updates the internal process information cache.
+ */
 VOID EtpUpdateProcessInformation(
     VOID
     );
@@ -32,6 +47,13 @@ VOID EtpUpdateProcessInformation(
 BOOLEAN EtDiskCountersEnabled = FALSE;
 static PH_CALLBACK_REGISTRATION EtpProcessesUpdatedCallbackRegistration;
 static PH_CALLBACK_REGISTRATION EtpNetworkItemsUpdatedCallbackRegistration;
+
+#define ET_UPDATE_PROCESS_STATISTICS_MINMAX(Minimum, Maximum, Difference, Value) \
+    if ((Value) != 0 && ((Minimum) == 0 || (Value) < (Minimum))) \
+        (Minimum) = (Value); \
+    if ((Value) != 0 && ((Maximum) == 0 || (Value) > (Maximum))) \
+        (Maximum) = (Value); \
+    (Difference) = (Maximum) - (Minimum);
 
 static PVOID EtpProcessInformation = NULL;
 static PH_QUEUED_LOCK EtpProcessInformationLock = PH_QUEUED_LOCK_INIT;
@@ -67,6 +89,9 @@ PH_CIRCULAR_BUFFER_ULONG64 PhMaxDiskUsageHistory;
 PH_CIRCULAR_BUFFER_ULONG64 PhMaxNetworkUsageHistory;
 #endif
 
+/**
+ * Initializes ETW statistics collection.
+ */
 VOID EtEtwStatisticsInitialization(
     VOID
     )
@@ -110,6 +135,9 @@ VOID EtEtwStatisticsInitialization(
     }
 }
 
+/**
+ * Uninitializes ETW statistics collection.
+ */
 VOID EtEtwStatisticsUninitialization(
     VOID
     )
@@ -117,6 +145,12 @@ VOID EtEtwStatisticsUninitialization(
     EtEtwMonitorUninitialization();
 }
 
+
+/**
+ * Processes a disk I/O event and updates statistics.
+ *
+ * \param Event The disk I/O event.
+ */
 VOID EtProcessDiskEvent(
     _In_ PET_ETW_DISK_EVENT Event
     )
@@ -154,6 +188,11 @@ VOID EtProcessDiskEvent(
     }
 }
 
+/**
+ * Processes a network event and updates statistics.
+ *
+ * \param Event The network event.
+ */
 VOID EtProcessNetworkEvent(
     _In_ PET_ETW_NETWORK_EVENT Event
     )
@@ -261,7 +300,8 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
     _In_opt_ PVOID Context
     )
 {
-    ULONG runCount = PtrToUlong(Parameter);
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
+    ULONG runCount = updateEvent->RunCount;
     ULONG64 maxDiskValue = 0;
     ULONG64 maxNetworkValue = 0;
     PET_PROCESS_BLOCK maxDiskBlock = NULL;
@@ -341,6 +381,41 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
         PhUpdateDelta(&block->NetworkReceiveRawDelta, block->NetworkReceiveRaw);
         PhUpdateDelta(&block->NetworkSendDelta, block->NetworkSendCount);
         PhUpdateDelta(&block->NetworkSendRawDelta, block->NetworkSendRaw);
+        PhUpdateDelta(&block->FirewallAllowDelta, block->FirewallAllowCount);
+        PhUpdateDelta(&block->FirewallBlockDelta, block->FirewallBlockCount);
+
+        if (!block->HaveDiskSample)
+        {
+            block->DiskReadDelta.Delta = 0;
+            block->DiskReadRawDelta.Delta = 0;
+            block->DiskWriteDelta.Delta = 0;
+            block->DiskWriteRawDelta.Delta = 0;
+            block->NetworkReceiveDelta.Delta = 0;
+            block->NetworkReceiveRawDelta.Delta = 0;
+            block->NetworkSendDelta.Delta = 0;
+            block->NetworkSendRawDelta.Delta = 0;
+            block->HaveDiskSample = TRUE;
+        }
+
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadCountMin, block->DiskReadCountMax, block->DiskReadCountDiff, block->DiskReadCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadRawMin, block->DiskReadRawMax, block->DiskReadRawDiff, block->DiskReadRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadRawDeltaMin, block->DiskReadRawDeltaMax, block->DiskReadRawDeltaDiff, block->DiskReadRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteCountMin, block->DiskWriteCountMax, block->DiskWriteCountDiff, block->DiskWriteCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteRawMin, block->DiskWriteRawMax, block->DiskWriteRawDiff, block->DiskWriteRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteRawDeltaMin, block->DiskWriteRawDeltaMax, block->DiskWriteRawDeltaDiff, block->DiskWriteRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalCountMin, block->DiskTotalCountMax, block->DiskTotalCountDiff, block->DiskReadCount + block->DiskWriteCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalRawMin, block->DiskTotalRawMax, block->DiskTotalRawDiff, block->DiskReadRawDelta.Value + block->DiskWriteRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalRawDeltaMin, block->DiskTotalRawDeltaMax, block->DiskTotalRawDeltaDiff, block->DiskReadRawDelta.Delta + block->DiskWriteRawDelta.Delta);
+
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveCountMin, block->NetworkReceiveCountMax, block->NetworkReceiveCountDiff, block->NetworkReceiveCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveRawMin, block->NetworkReceiveRawMax, block->NetworkReceiveRawDiff, block->NetworkReceiveRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveRawDeltaMin, block->NetworkReceiveRawDeltaMax, block->NetworkReceiveRawDeltaDiff, block->NetworkReceiveRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendCountMin, block->NetworkSendCountMax, block->NetworkSendCountDiff, block->NetworkSendCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendRawMin, block->NetworkSendRawMax, block->NetworkSendRawDiff, block->NetworkSendRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendRawDeltaMin, block->NetworkSendRawDeltaMax, block->NetworkSendRawDeltaDiff, block->NetworkSendRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalCountMin, block->NetworkTotalCountMax, block->NetworkTotalCountDiff, block->NetworkReceiveCount + block->NetworkSendCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalRawMin, block->NetworkTotalRawMax, block->NetworkTotalRawDiff, block->NetworkReceiveRawDelta.Value + block->NetworkSendRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalRawDeltaMin, block->NetworkTotalRawDeltaMax, block->NetworkTotalRawDeltaDiff, block->NetworkReceiveRawDelta.Delta + block->NetworkSendRawDelta.Delta);
 
         if (maxDiskValue < block->DiskReadRawDelta.Delta + block->DiskWriteRawDelta.Delta)
         {
@@ -361,10 +436,12 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
             block->CurrentNetworkSend = block->NetworkSendRawDelta.Delta;
             block->CurrentNetworkReceive = block->NetworkReceiveRawDelta.Delta;
 
-            PhAddItemCircularBuffer_ULONG64(&block->DiskReadHistory, block->CurrentDiskRead);
-            PhAddItemCircularBuffer_ULONG64(&block->DiskWriteHistory, block->CurrentDiskWrite);
-            PhAddItemCircularBuffer_ULONG64(&block->NetworkSendHistory, block->CurrentNetworkSend);
-            PhAddItemCircularBuffer_ULONG64(&block->NetworkReceiveHistory, block->CurrentNetworkReceive);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->DiskReadHistory, block->CurrentDiskRead);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->DiskWriteHistory, block->CurrentDiskWrite);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->NetworkSendHistory, block->CurrentNetworkSend);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->NetworkReceiveHistory, block->CurrentNetworkReceive);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->FirewallAllowHistory, block->FirewallAllowDelta.Delta);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->FirewallBlockHistory, block->FirewallBlockDelta.Delta);
         }
 
         listEntry = listEntry->Flink;
@@ -419,6 +496,7 @@ VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
     _In_opt_ PVOID Context
     )
 {
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
     PLIST_ENTRY listEntry;
 
     // ETW is flushed in the processes-updated callback above. This may cause us the network
@@ -442,6 +520,15 @@ VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
         PhUpdateDelta(&block->ReceiveRawDelta, block->ReceiveRaw);
         PhUpdateDelta(&block->SendDelta, block->SendCount);
         PhUpdateDelta(&block->SendRawDelta, block->SendRaw);
+
+        if (!block->HaveFirstSample)
+        {
+            block->ReceiveDelta.Delta = 0;
+            block->ReceiveRawDelta.Delta = 0;
+            block->SendDelta.Delta = 0;
+            block->SendRawDelta.Delta = 0;
+            block->HaveFirstSample = TRUE;
+        }
 
         if (memcmp(oldDeltas, block->Deltas, sizeof(block->Deltas)))
         {
@@ -472,6 +559,12 @@ VOID EtpUpdateProcessInformation(
     PhReleaseQueuedLockExclusive(&EtpProcessInformationLock);
 }
 
+/**
+ * Converts a thread ID to its corresponding process ID using the cached process information.
+ *
+ * \param ThreadId The thread ID to look up.
+ * \return The corresponding process ID, or SYSTEM_PROCESS_ID if not found.
+ */
 HANDLE EtThreadIdToProcessId(
     _In_ HANDLE ThreadId
     )
@@ -508,3 +601,4 @@ HANDLE EtThreadIdToProcessId(
 
     return SYSTEM_PROCESS_ID;
 }
+

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2015-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -115,7 +115,7 @@ _Success_(return)
 BOOLEAN
 PhMipOnCtlColorXxx(
     _In_ ULONG Message,
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ HDC hdc,
     _Out_ HBRUSH *Brush
     );
@@ -140,6 +140,7 @@ typedef enum _PH_MIP_ADJUST_PIN_RESULT
     HideAdjustPinResult
 } PH_MIP_ADJUST_PIN_RESULT;
 
+_Function_class_(PH_MESSAGE_LOOP_FILTER)
 BOOLEAN NTAPI PhMipMessageLoopFilter(
     _In_ PMSG Message,
     _In_ PVOID Context
@@ -158,6 +159,7 @@ PH_MIP_ADJUST_PIN_RESULT PhMipAdjustPin(
 
 VOID PhMipCalculateWindowRectangle(
     _In_ PPOINT SourcePoint,
+    _In_ ULONG Flags,
     _Out_ PPH_RECTANGLE WindowRectangle
     );
 
@@ -165,6 +167,7 @@ VOID PhMipInitializeParameters(
     VOID
     );
 
+_Function_class_(PH_MINIINFO_CREATE_SECTION)
 PPH_MINIINFO_SECTION PhMipCreateSection(
     _In_ PPH_MINIINFO_SECTION Template
     );
@@ -173,6 +176,7 @@ VOID PhMipDestroySection(
     _In_ PPH_MINIINFO_SECTION Section
     );
 
+_Function_class_(PH_MINIINFO_FIND_SECTION)
 PPH_MINIINFO_SECTION PhMipFindSection(
     _In_ PPH_STRINGREF Name
     );
@@ -191,6 +195,7 @@ VOID PhMipChangeSection(
     _In_ PPH_MINIINFO_SECTION NewSection
     );
 
+_Function_class_(PH_MINIINFO_SET_SECTION_TEXT)
 VOID PhMipSetSectionText(
     _In_ struct _PH_MINIINFO_SECTION *Section,
     _In_opt_ PPH_STRING Text
@@ -220,6 +225,10 @@ VOID PhMipToggleRefreshAutomatically(
     VOID
     );
 
+BOOLEAN PhMipIsPinned(
+    _In_ PH_MINIINFO_PIN_TYPE PinType
+    );
+
 VOID PhMipSetPinned(
     _In_ BOOLEAN Pinned,
     _In_ BOOLEAN Update
@@ -234,7 +243,7 @@ VOID PhMipShowOptionsMenu(
     );
 
 LRESULT CALLBACK PhMipSectionControlHookWndProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
@@ -276,6 +285,7 @@ PPH_MINIINFO_LIST_SECTION PhMipCreateInternalListSection(
     _In_ PPH_MINIINFO_LIST_SECTION_CALLBACK Callback
     );
 
+_Function_class_(PH_MINIINFO_SECTION_CALLBACK)
 BOOLEAN PhMipListSectionCallback(
     _In_ PPH_MINIINFO_SECTION Section,
     _In_ PH_MINIINFO_SECTION_MESSAGE Message,
@@ -304,7 +314,7 @@ VOID PhMipClearListSection(
     );
 
 LONG PhMipCalculateRowHeight(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     );
 
 PPH_MIP_GROUP_NODE PhMipAddGroupNode(
@@ -317,7 +327,7 @@ VOID PhMipDestroyGroupNode(
     );
 
 BOOLEAN PhMipListSectionTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_opt_ PVOID Parameter1,
     _In_opt_ PVOID Parameter2,
@@ -344,8 +354,19 @@ VOID PhMipHandleListSectionCommand(
     _In_ ULONG Id
     );
 
+// Graph section
+
+_Function_class_(PH_MINIINFO_LIST_SECTION_CALLBACK)
+BOOLEAN PhMipGraphsListSectionCallback(
+    _In_ PPH_MINIINFO_LIST_SECTION ListSection,
+    _In_ PH_MINIINFO_LIST_SECTION_MESSAGE Message,
+    _In_opt_ PVOID Parameter1,
+    _In_opt_ PVOID Parameter2
+    );
+
 // CPU section
 
+_Function_class_(PH_MINIINFO_LIST_SECTION_CALLBACK)
 BOOLEAN PhMipCpuListSectionCallback(
     _In_ PPH_MINIINFO_LIST_SECTION ListSection,
     _In_ PH_MINIINFO_LIST_SECTION_MESSAGE Message,
@@ -365,6 +386,7 @@ int __cdecl PhMipCpuListSectionNodeCompareFunction(
 
 // Commit charge section
 
+_Function_class_(PH_MINIINFO_LIST_SECTION_CALLBACK)
 BOOLEAN PhMipCommitListSectionCallback(
     _In_ PPH_MINIINFO_LIST_SECTION ListSection,
     _In_ PH_MINIINFO_LIST_SECTION_MESSAGE Message,
@@ -384,6 +406,7 @@ int __cdecl PhMipCommitListSectionNodeCompareFunction(
 
 // Physical memory section
 
+_Function_class_(PH_MINIINFO_LIST_SECTION_CALLBACK)
 BOOLEAN PhMipPhysicalListSectionCallback(
     _In_ PPH_MINIINFO_LIST_SECTION ListSection,
     _In_ PH_MINIINFO_LIST_SECTION_MESSAGE Message,
@@ -403,6 +426,7 @@ int __cdecl PhMipPhysicalListSectionNodeCompareFunction(
 
 // I/O section
 
+_Function_class_(PH_MINIINFO_LIST_SECTION_CALLBACK)
 BOOLEAN PhMipIoListSectionCallback(
     _In_ PPH_MINIINFO_LIST_SECTION ListSection,
     _In_ PH_MINIINFO_LIST_SECTION_MESSAGE Message,

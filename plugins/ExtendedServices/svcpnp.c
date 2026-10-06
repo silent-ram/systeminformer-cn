@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2022-2023
+ *     dmex    2022-2026
  *
  */
 
@@ -202,48 +202,32 @@ BOOLEAN HardwareDeviceOpenKey(
     _In_ ULONG KeyIndex
     )
 {
-    CONFIGRET result;
-    DEVINST deviceInstanceHandle;
-    ULONG keyIndex;
-    HKEY keyHandle;
-
-    result = CM_Locate_DevNode(
-        &deviceInstanceHandle,
-        DeviceInstance->Buffer,
-        CM_LOCATE_DEVNODE_PHANTOM
-        );
-
-    if (result != CR_SUCCESS)
-    {
-        PhShowStatus(ParentWindow, L"Failed to locate the device.", 0, CM_MapCrToWin32Err(result, ERROR_UNKNOWN_PROPERTY));
-        return FALSE;
-    }
+    ULONG keyFlags;
+    HANDLE keyHandle;
 
     switch (KeyIndex)
     {
     case 4:
     default:
-        keyIndex = CM_REGISTRY_HARDWARE;
+        keyFlags = PH_DEVKEY_HARDWARE;
         break;
     case 5:
-        keyIndex = CM_REGISTRY_SOFTWARE;
+        keyFlags = PH_DEVKEY_SOFTWARE;
         break;
     case 6:
-        keyIndex = CM_REGISTRY_USER;
+        keyFlags = PH_DEVKEY_USER;
         break;
     case 7:
-        keyIndex = CM_REGISTRY_CONFIG;
+        keyFlags = PH_DEVKEY_CONFIG;
         break;
     }
 
-    if (CM_Open_DevInst_Key(
-        deviceInstanceHandle,
+    if (NT_SUCCESS(PhDevOpenObjectKey(
+        DeviceInstance,
         KEY_READ,
-        0,
-        RegDisposition_OpenExisting,
-        &keyHandle,
-        keyIndex
-        ) == CR_SUCCESS)
+        keyFlags,
+        &keyHandle
+        )))
     {
         PPH_STRING bestObjectName = NULL;
 
@@ -259,7 +243,7 @@ BOOLEAN HardwareDeviceOpenKey(
 
         if (bestObjectName)
         {
-            // HKLM\SYSTEM\ControlSet\Control\Class\ += DEVPKEY_Device_Driver
+            PhMoveReference(&bestObjectName, PhFormatNativeKeyName(bestObjectName));
             PhShellOpenKey2(ParentWindow, bestObjectName);
             PhDereferenceObject(bestObjectName);
         }
@@ -280,7 +264,8 @@ VOID EspShowDeviceInstanceMenu(
     PPH_EMENU subMenu;
     PPH_EMENU_ITEM selectedItem;
 
-    GetCursorPos(&cursorPos);
+    if (!PhGetMessagePos(&cursorPos))
+        return;
 
     menu = PhCreateEMenu();
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 0, L"启用", NULL, NULL), ULONG_MAX);
@@ -347,44 +332,58 @@ VOID EspLoadDeviceInstanceImage(
     )
 {
     HICON largeIcon;
-    CONFIGRET result;
-    ULONG deviceIconPathLength;
-    DEVPROPTYPE deviceIconPathPropertyType;
+    ULONG deviceInstallerClassPropertyCount = 0;
+    const DEVPROPERTY* deviceInstallerClassProperties = NULL;
+    const DEVPROPERTY* deviceIconPathProperty;
+    PPH_STRING classGuidString;
     PPH_STRING deviceIconPath;
     LONG dpiValue;
-
-    deviceIconPathLength = 0x40;
-    deviceIconPath = PhCreateStringEx(NULL, deviceIconPathLength);
-
-    if ((result = CM_Get_Class_Property(
-        &DeviceClass,
-        &DEVPKEY_DeviceClass_IconPath,
-        &deviceIconPathPropertyType,
-        (PBYTE)deviceIconPath->Buffer,
-        &deviceIconPathLength,
-        0
-        )) != CR_SUCCESS)
+    DEVPROPCOMPKEY requestedProperties[] =
     {
-        PhDereferenceObject(deviceIconPath);
-        deviceIconPath = PhCreateStringEx(NULL, deviceIconPathLength);
+        { DEVPKEY_DeviceClass_IconPath, DEVPROP_STORE_SYSTEM, NULL },
+    };
 
-        result = CM_Get_Class_Property(
-            &DeviceClass,
-            &DEVPKEY_DeviceClass_IconPath,
-            &deviceIconPathPropertyType,
-            (PBYTE)deviceIconPath->Buffer,
-            &deviceIconPathLength,
-            0
-            );
-    }
+    classGuidString = PhFormatGuid(&DeviceClass);
 
-    if (result != CR_SUCCESS)
+    if (!classGuidString)
+        return;
+
+    if (HR_FAILED(PhDevGetObjectProperties(
+        DevObjectTypeDeviceInstallerClass,
+        PhGetString(classGuidString),
+        DevQueryFlagNone,
+        RTL_NUMBER_OF(requestedProperties),
+        requestedProperties,
+        &deviceInstallerClassPropertyCount,
+        &deviceInstallerClassProperties
+        )))
     {
-        PhDereferenceObject(deviceIconPath);
+        PhDereferenceObject(classGuidString);
         return;
     }
 
+    PhDereferenceObject(classGuidString);
+
+    deviceIconPathProperty = PhDevFindProperty(
+        &DEVPKEY_DeviceClass_IconPath,
+        DEVPROP_STORE_SYSTEM,
+        deviceInstallerClassPropertyCount,
+        deviceInstallerClassProperties
+        );
+
+    if (
+        !deviceIconPathProperty ||
+        (deviceIconPathProperty->Type != DEVPROP_TYPE_STRING && deviceIconPathProperty->Type != DEVPROP_TYPE_STRING_LIST) ||
+        !deviceIconPathProperty->Buffer || deviceIconPathProperty->BufferSize < sizeof(UNICODE_NULL)
+        )
+    {
+        PhDevFreeObjectProperties(deviceInstallerClassPropertyCount, deviceInstallerClassProperties);
+        return;
+    }
+
+    deviceIconPath = PhCreateStringEx((PWSTR)deviceIconPathProperty->Buffer, deviceIconPathProperty->BufferSize);
     PhTrimToNullTerminatorString(deviceIconPath);
+    PhDevFreeObjectProperties(deviceInstallerClassPropertyCount, deviceInstallerClassProperties);
 
     {
         PPH_STRING dllIconPath;
@@ -752,8 +751,8 @@ INT_PTR CALLBACK EspPnPServiceDlgProc(
 
             dpiValue = PhGetWindowDpi(WindowHandle);
             context->ImageList = PhImageListCreate(
-                PhGetDpi(24, dpiValue), // PhGetSystemMetrics(SM_CXSMICON, dpiValue)
-                PhGetDpi(24, dpiValue), // PhGetSystemMetrics(SM_CYSMICON, dpiValue)
+                PhScaleToDisplay(24, dpiValue), // PhGetSystemMetrics(SM_CXSMICON, dpiValue)
+                PhScaleToDisplay(24, dpiValue), // PhGetSystemMetrics(SM_CYSMICON, dpiValue)
                 ILC_MASK | ILC_COLOR32,
                 1, 1
                 );

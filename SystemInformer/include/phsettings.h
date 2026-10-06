@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_SETTINGS_H
 #define PH_SETTINGS_H
+
+EXTERN_C_START
 
 //
 // Application Typedefs
@@ -103,6 +105,72 @@ EXT ULONG PhCsUseColorPartiallySuspended;
 EXT ULONG PhCsColorPartiallySuspended;
 EXT ULONG PhCsUseColorGuiThreads;
 EXT ULONG PhCsColorGuiThreads;
+EXT ULONG PhCsUseColorThreadSuspended;
+EXT ULONG PhCsColorThreadSuspended;
+EXT ULONG PhCsUseColorThreadDelayExecution;
+EXT ULONG PhCsColorThreadDelayExecution;
+EXT ULONG PhCsUseColorThreadUserRequest;
+EXT ULONG PhCsColorThreadUserRequest;
+EXT ULONG PhCsUseColorThreadAlertByThreadId;
+EXT ULONG PhCsColorThreadAlertByThreadId;
+EXT ULONG PhCsUseColorThreadQueue;
+EXT ULONG PhCsColorThreadQueue;
+EXT ULONG PhCsUseColorThreadExecutive;
+EXT ULONG PhCsColorThreadExecutive;
+EXT ULONG PhCsUseColorThreadGuiThreads;
+EXT ULONG PhCsColorThreadGuiThreads;
+EXT ULONG PhCsUseColorTokenEnabledDefault;
+EXT ULONG PhCsColorTokenEnabledDefault;
+EXT ULONG PhCsUseColorTokenEnabled;
+EXT ULONG PhCsColorTokenEnabled;
+EXT ULONG PhCsUseColorTokenDisabledDefault;
+EXT ULONG PhCsColorTokenDisabledDefault;
+EXT ULONG PhCsUseColorTokenDisabled;
+EXT ULONG PhCsColorTokenDisabled;
+EXT ULONG PhCsUseColorTokenRemoved;
+EXT ULONG PhCsColorTokenRemoved;
+EXT ULONG PhCsUseColorTokenDangerousFlag;
+EXT ULONG PhCsColorTokenDangerousFlag;
+EXT ULONG PhCsUseColorTokenNormalFlag;
+EXT ULONG PhCsColorTokenNormalFlag;
+EXT ULONG PhCsUseColorModuleUnknown;
+EXT ULONG PhCsColorModuleUnknown;
+EXT ULONG PhCsUseColorModuleLowImageCoherency;
+EXT ULONG PhCsColorModuleLowImageCoherency;
+EXT ULONG PhCsUseColorModuleDotNet;
+EXT ULONG PhCsColorModuleDotNet;
+EXT ULONG PhCsUseColorModuleImmersive;
+EXT ULONG PhCsColorModuleImmersive;
+EXT ULONG PhCsUseColorModuleRelocated;
+EXT ULONG PhCsColorModuleRelocated;
+EXT ULONG PhCsUseColorModuleImageKnownDll;
+EXT ULONG PhCsColorModuleImageKnownDll;
+EXT ULONG PhCsUseColorModuleSystem;
+EXT ULONG PhCsColorModuleSystem;
+EXT ULONG PhCsUseColorModuleMapped;
+EXT ULONG PhCsColorModuleMapped;
+EXT ULONG PhCsUseColorNetworkUnknownProcess;
+EXT ULONG PhCsColorNetworkUnknownProcess;
+EXT ULONG PhCsUseColorNetworkSubsystemProcess;
+EXT ULONG PhCsColorNetworkSubsystemProcess;
+EXT ULONG PhCsUseColorEnvironmentCmd;
+EXT ULONG PhCsColorEnvironmentCmd;
+EXT ULONG PhCsUseColorEnvironmentProcess;
+EXT ULONG PhCsColorEnvironmentProcess;
+EXT ULONG PhCsUseColorEnvironmentUser;
+EXT ULONG PhCsColorEnvironmentUser;
+EXT ULONG PhCsUseColorEnvironmentSystem;
+EXT ULONG PhCsColorEnvironmentSystem;
+EXT ULONG PhCsUseColorWmiDefaultNamespace;
+EXT ULONG PhCsColorWmiDefaultNamespace;
+EXT ULONG PhCsUseColorMemoryPrivatePages;
+EXT ULONG PhCsColorMemoryPrivatePages;
+EXT ULONG PhCsUseColorMemorySystemPages;
+EXT ULONG PhCsColorMemorySystemPages;
+EXT ULONG PhCsUseColorMemoryCfgPages;
+EXT ULONG PhCsColorMemoryCfgPages;
+EXT ULONG PhCsUseColorMemoryExecutePages;
+EXT ULONG PhCsColorMemoryExecutePages;
 EXT ULONG PhCsUseColorRelocatedModules;
 EXT ULONG PhCsColorRelocatedModules;
 EXT ULONG PhCsUseColorProtectedHandles;
@@ -141,16 +209,23 @@ EXT ULONG PhCsEnableGraphMaxText;
 EXT ULONG PhCsEnableAvxSupport;
 EXT ULONG PhCsEnableHandleSnapshot;
 
+EXT ULONG PhCsEnableProcessMonitor;
+EXT ULONG PhCsProcessMonitorLookback;
+EXT ULONG PhCsProcessMonitorCacheLimit;
+
 #pragma pop_macro("EXT")
 
 #define PH_GET_INTEGER_CACHED_SETTING(Name) ((PhCs##Name) = PhGetIntegerSetting(TEXT(#Name)))
 #define PH_SET_INTEGER_CACHED_SETTING(Name, Value) (PhSetIntegerSetting(TEXT(#Name), (PhCs##Name) = (Value)))
 
 // begin_phapppub
+
+#define SETTING_SCHEMA_FILE                                         L"$schema"
 #define SETTING_ALLOW_ONLY_ONE_INSTANCE                             L"AllowOnlyOneInstance"
 #define SETTING_CLOSE_ON_ESCAPE                                     L"CloseOnEscape"
 #define SETTING_DBGHELP_SEARCH_PATH                                 L"DbgHelpSearchPath"
 #define SETTING_DBGHELP_UNDECORATE                                  L"DbgHelpUndecorate"
+#define SETTING_DBGHELP_VERIFY_MICROSOFT_CHAIN                      L"DbgHelpVerifyMicrosoftChain"
 #define SETTING_DISABLED_PLUGINS                                    L"DisabledPlugins"
 #define SETTING_ELEVATION_LEVEL                                     L"ElevationLevel"
 #define SETTING_ENABLE_ADVANCED_OPTIONS                             L"EnableAdvancedOptions"
@@ -177,12 +252,14 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_ENABLE_NETWORK_RESOLVE                              L"EnableNetworkResolve"
 #define SETTING_ENABLE_NETWORK_RESOLVE_DOH                          L"EnableNetworkResolveDoH"
 #define SETTING_ENABLE_MEM_STRINGS_TREE_DIALOG                      L"EnableMemStringsTreeDialog"
+#define SETTING_ENABLE_MEM_STRINGS_BULK_SEARCH                      L"EnableMemStringsBulkSearch"
 #define SETTING_ENABLE_PACKAGE_ICON_SUPPORT                         L"EnablePackageIconSupport"
 #define SETTING_ENABLE_PROCESS_HANDLE_PNP_DEVICE_NAME_SUPPORT       L"EnableProcessHandlePnPDeviceNameSupport"
 #define SETTING_ENABLE_PLUGINS                                      L"EnablePlugins"
 #define SETTING_ENABLE_PLUGINS_NATIVE                               L"EnablePluginsNative"
 #define SETTING_ENABLE_GRAPH_MAX_SCALE                              L"EnableGraphMaxScale"
 #define SETTING_ENABLE_GRAPH_MAX_TEXT                               L"EnableGraphMaxText"
+#define SETTING_ENABLE_HIGH_RESOLUTION                              L"EnableHighResolutionProviderTimer"
 #define SETTING_ENABLE_SERVICE_NON_POLL                             L"EnableServiceNonPoll"
 #define SETTING_ENABLE_SERVICE_NON_POLL_NOTIFY                      L"EnableServiceNonPollNotify"
 #define SETTING_ENABLE_SERVICE_STAGE2                               L"EnableServiceStage2"
@@ -199,10 +276,14 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_ENABLE_SHUTDOWN_BOOT_MENU                           L"EnableShutdownBootMenu"
 #define SETTING_ENABLE_SILENT_CRASH_NOTIFY                          L"EnableSilentCrashNotify"
 #define SETTING_ENABLE_THEME_SUPPORT                                L"EnableThemeSupport"
+#define SETTING_THEME_MODE                                          L"ThemeMode"
+#define SETTING_THEME_MODE_MIGRATED                                 L"ThemeModeMigrated"
+#define SETTING_SCROLLBAR_THEME                                     L"ScrollBarTheme"
 #define SETTING_ENABLE_THEME_ACRYLIC_SUPPORT                        L"EnableThemeAcrylicSupport"
 #define SETTING_ENABLE_THEME_ACRYLIC_WINDOW_SUPPORT                 L"EnableThemeAcrylicWindowSupport"
 #define SETTING_ENABLE_THEME_ANIMATION                              L"EnableThemeAnimation"
 #define SETTING_ENABLE_THEME_NATIVE_BUTTONS                         L"EnableThemeNativeButtons"
+#define SETTING_ENABLE_WINDOW_BORDER_COLOR                          L"EnableWindowBorderColor"
 #define SETTING_ENABLE_THREAD_STACK_INLINE_SYMBOLS                  L"EnableThreadStackInlineSymbols"
 #define SETTING_ENABLE_THREAD_STACK_LINE_INFORMATION                L"EnableThreadStackLineInformation"
 #define SETTING_ENABLE_TOKEN_REMOVED_PRIVILEGES                     L"EnableTokenRemovedPrivileges"
@@ -217,6 +298,7 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_ENVIRONMENT_TREE_LIST_FLAGS                         L"EnvironmentTreeListFlags"
 #define SETTING_SEARCH_CONTROL_REGEX                                L"SearchControlRegex"
 #define SETTING_SEARCH_CONTROL_CASE_SENSITIVE                       L"SearchControlCaseSensitive"
+#define SETTING_SEARCH_CONTROL_FUZZY                                L"SearchControlFuzzy"
 #define SETTING_FIND_OBJ_TREE_LIST_COLUMNS                          L"FindObjTreeListColumns"
 #define SETTING_FIND_OBJ_WINDOW_POSITION                            L"FindObjWindowPosition"
 #define SETTING_FIND_OBJ_WINDOW_SIZE                                L"FindObjWindowSize"
@@ -275,7 +357,9 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_MAIN_WINDOW_POSITION                                L"MainWindowPosition"
 #define SETTING_MAIN_WINDOW_SIZE                                    L"MainWindowSize"
 #define SETTING_MAIN_WINDOW_STATE                                   L"MainWindowState"
+#define SETTING_MAIN_WINDOW_TAB_LAYOUT                              L"MainWindowTabLayout"
 #define SETTING_MAIN_WINDOW_TAB_RESTORE_ENABLED                     L"MainWindowTabRestoreEnabled"
+#define SETTING_MAIN_WINDOW_TAB_RESTORE_NAME                        L"MainWindowTabRestoreName"
 #define SETTING_MAIN_WINDOW_TAB_RESTORE_INDEX                       L"MainWindowTabRestoreIndex"
 #define SETTING_MAX_SIZE_UNIT                                       L"MaxSizeUnit"
 #define SETTING_MAX_PRECISION_UNIT                                  L"MaxPrecisionUnit"
@@ -303,6 +387,8 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_MEM_STRINGS_WINDOW_POSITION                         L"MemStringsWindowPosition"
 #define SETTING_MEM_STRINGS_WINDOW_SIZE                             L"MemStringsWindowSize"
 #define SETTING_MINI_INFO_CONTAINER_CLASS_NAME                      L"MiniInfoContainerClassName"
+#define SETTING_MINI_INFO_GRAPH_CLICK_SWITCHES_SECTION              L"MiniInfoGraphClickSwitchesSection"
+#define SETTING_MINI_INFO_SHOW_GRAPHS_DEFAULT                       L"MiniInfoShowGraphsDefault"
 #define SETTING_MINI_INFO_WINDOW_CLASS_NAME                         L"MiniInfoWindowClassName"
 #define SETTING_MINI_INFO_WINDOW_ENABLED                            L"MiniInfoWindowEnabled"
 #define SETTING_MINI_INFO_WINDOW_OPACITY                            L"MiniInfoWindowOpacity"
@@ -315,6 +401,10 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_MODULE_TREE_LIST_SORT                               L"ModuleTreeListSort"
 #define SETTING_NETWORK_TREE_LIST_COLUMNS                           L"NetworkTreeListColumns"
 #define SETTING_NETWORK_TREE_LIST_SORT                              L"NetworkTreeListSort"
+#define SETTING_USE_COLOR_NETWORK_UNKNOWN_PROCESS                   L"UseColorNetworkUnknownProcess"
+#define SETTING_COLOR_NETWORK_UNKNOWN_PROCESS                       L"ColorNetworkUnknownProcess"
+#define SETTING_USE_COLOR_NETWORK_SUBSYSTEM_PROCESS                 L"UseColorNetworkSubsystemProcess"
+#define SETTING_COLOR_NETWORK_SUBSYSTEM_PROCESS                     L"ColorNetworkSubsystemProcess"
 #define SETTING_NON_POLL_FLUSH_INTERVAL                             L"NonPollFlushInterval"
 #define SETTING_NO_PURGE_PROCESS_RECORDS                            L"NoPurgeProcessRecords"
 #define SETTING_OPTIONS_CUSTOM_COLOR_LIST                           L"OptionsCustomColorList"
@@ -325,6 +415,9 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_PAGE_FILE_WINDOW_POSITION                           L"PageFileWindowPosition"
 #define SETTING_PAGE_FILE_WINDOW_SIZE                               L"PageFileWindowSize"
 #define SETTING_PAGE_FILE_LIST_VIEW_COLUMNS                         L"PageFileListViewColumns"
+#define SETTING_ENVIRONMENT_VARIABLES_WINDOW_POSITION               L"EnvironmentVariablesWindowPosition"
+#define SETTING_ENVIRONMENT_VARIABLES_WINDOW_SIZE                   L"EnvironmentVariablesWindowSize"
+#define SETTING_ENVIRONMENT_VARIABLES_LIST_VIEW_COLUMNS             L"EnvironmentVariablesListViewColumns"
 #define SETTING_PLUGIN_MANAGER_TREE_LIST_COLUMNS                    L"PluginManagerTreeListColumns"
 #define SETTING_PROCESS_SERVICE_LIST_VIEW_COLUMNS                   L"ProcessServiceListViewColumns"
 #define SETTING_PROCESS_TREE_COLUMN_SET_CONFIG                      L"ProcessTreeColumnSetConfig"
@@ -340,6 +433,7 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_PROGRAM_INSPECT_EXECUTABLES                         L"ProgramInspectExecutables"
 #define SETTING_PROPAGATE_CPU_USAGE                                 L"PropagateCpuUsage"
 #define SETTING_RELEASE_CHANNEL                                     L"ReleaseChannel"
+#define SETTING_CLIENT_ID                                           L"ClientId"
 #define SETTING_RUN_AS_ENABLE_AUTO_COMPLETE                         L"RunAsEnableAutoComplete"
 #define SETTING_RUN_AS_PROGRAM                                      L"RunAsProgram"
 #define SETTING_RUN_AS_USER_NAME                                    L"RunAsUserName"
@@ -361,6 +455,7 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_SEGMENT_LOCKS_WINDOW_POSITION                       L"SegmentLocksWindowPosition"
 #define SETTING_SEGMENT_LOCKS_WINDOW_SIZE                           L"SegmentLocksWindowSize"
 #define SETTING_SERVICE_WINDOW_POSITION                             L"ServiceWindowPosition"
+#define SETTING_SERVICE_WINDOW_SIZE                                 L"ServiceWindowSize"
 #define SETTING_SERVICE_LIST_VIEW_COLUMNS                           L"ServiceListViewColumns"
 #define SETTING_SERVICE_TREE_LIST_COLUMNS                           L"ServiceTreeListColumns"
 #define SETTING_SERVICE_TREE_LIST_SORT                              L"ServiceTreeListSort"
@@ -372,12 +467,15 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_SORT_CHILD_PROCESSES                                L"SortChildProcesses"
 #define SETTING_SORT_ROOT_PROCESSES                                 L"SortRootProcesses"
 #define SETTING_START_HIDDEN                                        L"StartHidden"
+#define SETTING_SYSINFO_MINIMUM_GRAPH_HEIGHT                        L"SysInfoMinimumGraphHeight"
+#define SETTING_SYSINFO_WINDOW_SCROLL_ENABLED                       L"SysInfoScrollEnabled"
 #define SETTING_SYSINFO_SHOW_CPU_SPEED_MHZ                          L"SysInfoShowCpuSpeedMhz"
 #define SETTING_SYSINFO_SHOW_CPU_SPEED_PER_CPU                      L"SysInfoShowCpuSpeedPerCpu"
 #define SETTING_SYSINFO_WINDOW_ALWAYS_ON_TOP                        L"SysInfoWindowAlwaysOnTop"
 #define SETTING_SYSINFO_WINDOW_ONE_GRAPH_PER_CPU                    L"SysInfoWindowOneGraphPerCpu"
 #define SETTING_SYSINFO_WINDOW_POSITION                             L"SysInfoWindowPosition"
 #define SETTING_SYSINFO_WINDOW_SECTION                              L"SysInfoWindowSection"
+#define SETTING_SYSINFO_SECTION_ORDER                               L"SysInfoSectionOrder"
 #define SETTING_SYSINFO_WINDOW_SIZE                                 L"SysInfoWindowSize"
 #define SETTING_SYSINFO_WINDOW_STATE                                L"SysInfoWindowState"
 #define SETTING_TASKMGR_WINDOW_STATE                                L"TaskmgrWindowState"
@@ -393,6 +491,7 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_THREAD_TREE_LIST_FLAGS                              L"ThreadTreeListFlags"
 #define SETTING_THREAD_STACK_TREE_LIST_COLUMNS                      L"ThreadStackTreeListColumns"
 #define SETTING_THREAD_STACK_WINDOW_SIZE                            L"ThreadStackWindowSize"
+#define SETTING_THREAD_STACK_WINDOW_POSITION                        L"ThreadStackWindowPosition"
 #define SETTING_TOKEN_WINDOW_POSITION                               L"TokenWindowPosition"
 #define SETTING_TOKEN_WINDOW_SIZE                                   L"TokenWindowSize"
 #define SETTING_TOKEN_GROUPS_LIST_VIEW_COLUMNS                      L"TokenGroupsListViewColumns"
@@ -458,6 +557,68 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_COLOR_PARTIALLY_SUSPENDED                           L"ColorPartiallySuspended"
 #define SETTING_USE_COLOR_GUI_THREADS                               L"UseColorGuiThreads"
 #define SETTING_COLOR_GUI_THREADS                                   L"ColorGuiThreads"
+#define SETTING_USE_COLOR_THREAD_SUSPENDED                          L"UseColorThreadSuspended"
+#define SETTING_COLOR_THREAD_SUSPENDED                              L"ColorThreadSuspended"
+#define SETTING_USE_COLOR_THREAD_DELAY_EXECUTION                    L"UseColorThreadDelayExecution"
+#define SETTING_COLOR_THREAD_DELAY_EXECUTION                        L"ColorThreadDelayExecution"
+#define SETTING_USE_COLOR_THREAD_USER_REQUEST                       L"UseColorThreadUserRequest"
+#define SETTING_COLOR_THREAD_USER_REQUEST                           L"ColorThreadUserRequest"
+#define SETTING_USE_COLOR_THREAD_ALERT_BY_THREAD_ID                 L"UseColorThreadAlertByThreadId"
+#define SETTING_COLOR_THREAD_ALERT_BY_THREAD_ID                     L"ColorThreadAlertByThreadId"
+#define SETTING_USE_COLOR_THREAD_QUEUE                              L"UseColorThreadQueue"
+#define SETTING_COLOR_THREAD_QUEUE                                  L"ColorThreadQueue"
+#define SETTING_USE_COLOR_THREAD_EXECUTIVE                          L"UseColorThreadExecutive"
+#define SETTING_COLOR_THREAD_EXECUTIVE                              L"ColorThreadExecutive"
+#define SETTING_USE_COLOR_THREAD_GUI_THREADS                        L"UseColorThreadGuiThreads"
+#define SETTING_COLOR_THREAD_GUI_THREADS                            L"ColorThreadGuiThreads"
+#define SETTING_USE_COLOR_TOKEN_ENABLED_DEFAULT                     L"UseColorTokenEnabledDefault"
+#define SETTING_COLOR_TOKEN_ENABLED_DEFAULT                         L"ColorTokenEnabledDefault"
+#define SETTING_USE_COLOR_TOKEN_ENABLED                             L"UseColorTokenEnabled"
+#define SETTING_COLOR_TOKEN_ENABLED                                 L"ColorTokenEnabled"
+#define SETTING_USE_COLOR_TOKEN_DISABLED_DEFAULT                    L"UseColorTokenDisabledDefault"
+#define SETTING_COLOR_TOKEN_DISABLED_DEFAULT                        L"ColorTokenDisabledDefault"
+#define SETTING_USE_COLOR_TOKEN_DISABLED                            L"UseColorTokenDisabled"
+#define SETTING_COLOR_TOKEN_DISABLED                                L"ColorTokenDisabled"
+#define SETTING_USE_COLOR_TOKEN_REMOVED                             L"UseColorTokenRemoved"
+#define SETTING_COLOR_TOKEN_REMOVED                                 L"ColorTokenRemoved"
+#define SETTING_USE_COLOR_TOKEN_DANGEROUS_FLAG                      L"UseColorTokenDangerousFlag"
+#define SETTING_COLOR_TOKEN_DANGEROUS_FLAG                          L"ColorTokenDangerousFlag"
+#define SETTING_USE_COLOR_TOKEN_NORMAL_FLAG                         L"UseColorTokenNormalFlag"
+#define SETTING_COLOR_TOKEN_NORMAL_FLAG                             L"ColorTokenNormalFlag"
+#define SETTING_USE_COLOR_MODULE_UNKNOWN                            L"UseColorModuleUnknown"
+#define SETTING_COLOR_MODULE_UNKNOWN                                L"ColorModuleUnknown"
+#define SETTING_USE_COLOR_MODULE_LOW_IMAGE_COHERENCY                L"UseColorModuleLowImageCoherency"
+#define SETTING_COLOR_MODULE_LOW_IMAGE_COHERENCY                    L"ColorModuleLowImageCoherency"
+#define SETTING_USE_COLOR_MODULE_DOT_NET                            L"UseColorModuleDotNet"
+#define SETTING_COLOR_MODULE_DOT_NET                                L"ColorModuleDotNet"
+#define SETTING_USE_COLOR_MODULE_IMMERSIVE                          L"UseColorModuleImmersive"
+#define SETTING_COLOR_MODULE_IMMERSIVE                              L"ColorModuleImmersive"
+#define SETTING_USE_COLOR_MODULE_RELOCATED                          L"UseColorModuleRelocated"
+#define SETTING_COLOR_MODULE_RELOCATED                              L"ColorModuleRelocated"
+#define SETTING_USE_COLOR_MODULE_IMAGEKNOWNDLL                      L"UseColorModuleImageKnownDll"
+#define SETTING_COLOR_MODULE_IMAGEKNOWNDLL                          L"ColorModuleImageKnownDll"
+#define SETTING_USE_COLOR_MODULE_SYSTEM                             L"UseColorModuleSystem"
+#define SETTING_COLOR_MODULE_SYSTEM                                 L"ColorModuleSystem"
+#define SETTING_USE_COLOR_MODULE_MAPPED                             L"UseColorModuleMapped"
+#define SETTING_COLOR_MODULE_MAPPED                                 L"ColorModuleMapped"
+#define SETTING_USE_COLOR_ENVIRONMENT_CMD                           L"UseColorEnvironmentCmd"
+#define SETTING_COLOR_ENVIRONMENT_CMD                               L"ColorEnvironmentCmd"
+#define SETTING_USE_COLOR_ENVIRONMENT_PROCESS                       L"UseColorEnvironmentProcess"
+#define SETTING_COLOR_ENVIRONMENT_PROCESS                           L"ColorEnvironmentProcess"
+#define SETTING_USE_COLOR_ENVIRONMENT_USER                          L"UseColorEnvironmentUser"
+#define SETTING_COLOR_ENVIRONMENT_USER                              L"ColorEnvironmentUser"
+#define SETTING_USE_COLOR_ENVIRONMENT_SYSTEM                        L"UseColorEnvironmentSystem"
+#define SETTING_COLOR_ENVIRONMENT_SYSTEM                            L"ColorEnvironmentSystem"
+#define SETTING_USE_COLOR_WMI_DEFAULT_NAMESPACE                     L"UseColorWmiDefaultNamespace"
+#define SETTING_COLOR_WMI_DEFAULT_NAMESPACE                         L"ColorWmiDefaultNamespace"
+#define SETTING_USE_COLOR_MEMORY_PRIVATE_PAGES                      L"UseColorMemoryPrivatePages"
+#define SETTING_COLOR_MEMORY_PRIVATE_PAGES                          L"ColorMemoryPrivatePages"
+#define SETTING_USE_COLOR_MEMORY_SYSTEM_PAGES                       L"UseColorMemorySystemPages"
+#define SETTING_COLOR_MEMORY_SYSTEM_PAGES                           L"ColorMemorySystemPages"
+#define SETTING_USE_COLOR_MEMORY_CFG_PAGES                          L"UseColorMemoryCfgPages"
+#define SETTING_COLOR_MEMORY_CFG_PAGES                              L"ColorMemoryCfgPages"
+#define SETTING_USE_COLOR_MEMORY_EXECUTE_PAGES                      L"UseColorMemoryExecutePages"
+#define SETTING_COLOR_MEMORY_EXECUTE_PAGES                          L"ColorMemoryExecutePages"
 #define SETTING_USE_COLOR_RELOCATED_MODULES                         L"UseColorRelocatedModules"
 #define SETTING_COLOR_RELOCATED_MODULES                             L"ColorRelocatedModules"
 #define SETTING_USE_COLOR_PROTECTED_HANDLES                         L"UseColorProtectedHandles"
@@ -500,6 +661,7 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_KSI_OBJECT_NAME                                     L"KsiObjectName"
 #define SETTING_KSI_PORT_NAME                                       L"KsiPortName"
 #define SETTING_KSI_ALTITUDE                                        L"KsiAltitude"
+#define SETTING_KSI_SYSTEM_PROCESS_NAME                             L"KsiSystemProcessName"
 #define SETTING_KSI_DISABLE_IMAGE_LOAD_PROTECTION                   L"KsiDisableImageLoadProtection"
 #define SETTING_KSI_ENABLE_SPLASH_SCREEN                            L"KsiEnableSplashScreen"
 #define SETTING_KSI_ENABLE_LOAD_NATIVE                              L"KsiEnableLoadNative"
@@ -508,12 +670,26 @@ EXT ULONG PhCsEnableHandleSnapshot;
 #define SETTING_KSI_RANDOMIZED_POOL_TAG                             L"KsiRandomizedPoolTag"
 #define SETTING_KSI_ENABLE_UNLOAD_PROTECTION                        L"KsiEnableUnloadProtection"
 #define SETTING_KSI_DYN_DATA_NO_EMBEDDED                            L"KsiDynDataNoEmbedded"
+#define SETTING_KSI_DISABLE_SYSTEM_PROCESS                          L"KsiDisableSystemProcess"
+#define SETTING_KSI_DISABLE_THREAD_NAMES                            L"KsiDisableThreadNames"
 #define SETTING_KSI_CLIENT_PROCESS_PROTECTION_LEVEL                 L"KsiClientProcessProtectionLevel"
 #define SETTING_KSI_PREVIOUS_TEMPORARY_DRIVER_FILE                  L"KsiPreviousTemporaryDriverFile"
 #define SETTING_KSI_ENABLE_FS_FEATURE_OFFLOAD_READ                  L"KsiEnableFsFeatureOffloadRead"
 #define SETTING_KSI_ENABLE_FS_FEATURE_OFFLOAD_WRITE                 L"KsiEnableFsFeatureOffloadWrite"
 #define SETTING_KSI_ENABLE_FS_FEATURE_QUERY_OPEN                    L"KsiEnableFsFeatureQueryOpen"
 #define SETTING_KSI_ENABLE_FS_FEATURE_BYPASS_IO                     L"KsiEnableFsFeatureBypassIO"
+#define SETTING_KSI_RING_BUFFER_LENGTH                              L"KsiRingBufferLength"
+#define SETTING_ENABLE_PROCESS_MONITOR                              L"EnableProcessMonitor"
+#define SETTING_PROCESS_MONITOR_LOOKBACK                            L"ProcessMonitorLookback"
+#define SETTING_PROCESS_MONITOR_CACHE_LIMIT                         L"ProcessMonitorCacheLimit"
+#define SETTING_PROCESS_MONITOR_TREE_LIST_COLUMNS                   L"ProcessMonitorTreeListColumns"
+#define SETTING_PROCESS_MONITOR_TAB_TREE_LIST_COLUMNS               L"ProcessMonitorTabTreeListColumns"
+#define SETTING_PROCESS_MONITOR_WINDOW_POSITION                     L"ProcessMonitorWindowPosition"
+#define SETTING_PROCESS_MONITOR_WINDOW_SIZE                         L"ProcessMonitorWindowSize"
+#define SETTING_PROCESS_MONITOR_CATEGORY_FILTER                     L"ProcessMonitorCategoryFilter"
+#define SETTING_PROCESS_MONITOR_NODE_LIMIT                          L"ProcessMonitorNodeLimit"
 // end_phapppub
+
+EXTERN_C_END
 
 #endif

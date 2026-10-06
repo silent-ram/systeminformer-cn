@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2012-2023
+ *     dmex    2012-2026
  *
  */
 
@@ -35,9 +35,10 @@
 #define SETTING_NAME_TRACERT_TREE_LIST_COLUMNS (PLUGIN_NAME L".TracertTreeColumns")
 #define SETTING_NAME_TRACERT_TREE_LIST_SORT (PLUGIN_NAME L".TracertTreeSort")
 #define SETTING_NAME_TRACERT_MAX_HOPS (PLUGIN_NAME L".TracertMaxHops")
+#define SETTING_NAME_TRACERT_PING_CONTINUOUS (PLUGIN_NAME L".TracertPingContinuous")
 #define SETTING_NAME_WHOIS_WINDOW_POSITION (PLUGIN_NAME L".WhoisWindowPosition")
 #define SETTING_NAME_WHOIS_WINDOW_SIZE (PLUGIN_NAME L".WhoisWindowSize")
-#define SETTING_NAME_WHOIS_IPV6_SUPPORT (PLUGIN_NAME L".WhoisProtocalSupport")
+#define SETTING_NAME_WHOIS_IPV6_SUPPORT (PLUGIN_NAME L".WhoisProtocolSupport")
 #define SETTING_NAME_EXTENDED_TCP_STATS (PLUGIN_NAME L".EnableExtendedTcpStats")
 #define SETTING_NAME_GEOLITE_API_KEY (PLUGIN_NAME L".MaxMindApiKey")
 #define SETTING_NAME_GEOLITE_API_ID (PLUGIN_NAME L".MaxMindApiId")
@@ -50,6 +51,7 @@ extern SIZE GeoCountryImageSize;
 extern CONST PH_STRINGREF GeoDbCityFileName;
 extern CONST PH_STRINGREF GeoDbCountryFileName;
 extern HWND NetworkTreeNewHandle;
+extern BOOLEAN NetworkExtensionEnabled;
 extern PPH_STRING SearchboxText;
 
 // ICMP Packet Length: (msdn: IcmpSendEcho2/Icmp6SendEcho2)
@@ -104,6 +106,7 @@ typedef struct _NETWORK_PING_CONTEXT
     HWND ParentWindowHandle;
     HWND StatusHandle;
     HWND PingGraphHandle;
+    HWND PanelWindowHandle;
     HFONT FontHandle;
 
     ULONG Timeout;
@@ -120,6 +123,8 @@ typedef struct _NETWORK_PING_CONTEXT
 
     PH_NETWORK_ACTION Action;
     PH_LAYOUT_MANAGER LayoutManager;
+    RECT PingGraphMargin;
+    RECT PingGraphMarginScaled;
     PH_WORK_QUEUE PingWorkQueue;
     PH_GRAPH_STATE PingGraphState;
     PH_CIRCULAR_BUFFER_FLOAT PingSuccessHistory;
@@ -172,6 +177,28 @@ VOID ShowWhoisWindowFromAddress(
     _In_ PH_IP_ENDPOINT RemoteEndpoint
     );
 
+_Success_(return)
+BOOLEAN WhoisExtractServerUrl(
+    _In_ PPH_STRING WhoisResponse,
+    _Out_opt_ PPH_STRING *WhoisServerAddress
+    );
+
+_Success_(return)
+BOOLEAN WhoisExtractReferralServer(
+    _In_ PPH_STRING WhoisResponse,
+    _Out_opt_ PPH_STRING *WhoisServerAddress,
+    _Out_opt_ USHORT *WhoisServerPort
+    );
+
+_Success_(return)
+BOOLEAN WhoisQueryServer(
+    _In_ PWSTR WhoisServerAddress,
+    _In_ USHORT WhoisServerPort,
+    _In_ PWSTR WhoisQueryAddress,
+    _In_ BOOLEAN Ipv6Support,
+    _Out_ PPH_STRING* WhoisQueryResponse
+    );
+
 // tracert.c
 
 typedef struct _NETWORK_TRACERT_CONTEXT
@@ -183,21 +210,33 @@ typedef struct _NETWORK_TRACERT_CONTEXT
     HFONT FontHandle;
     HFONT TreeNewFont;
     PH_LAYOUT_MANAGER LayoutManager;
+    HIMAGELIST CountryImageList;
+    SIZE CountryImageSize;
+    PPH_LIST CountryImageCache;
 
     ULONG Timeout;
     ULONG MaximumHops;
+    volatile LONG MaximumTTL;
     BOOLEAN Cancel;
     PH_WORK_QUEUE WorkQueue;
 
     ULONG TreeNewSortColumn;
     PH_SORT_ORDER TreeNewSortOrder;
+    PH_TN_FILTER_SUPPORT FilterSupport;
+    PPH_TN_FILTER_ENTRY TreeFilterEntry;
     PPH_HASHTABLE NodeHashtable;
     PPH_LIST NodeList;
     PPH_LIST NodeRootList;
+    SLIST_HEADER ReplyListHead;
 
     PH_IP_ENDPOINT RemoteEndpoint;
     ULONG RemoteAddressStringLength;
     WCHAR RemoteAddressString[INET6_ADDRSTRLEN];
+
+    ULONG PingIndex;
+    LONG WindowDpi;
+    volatile BOOLEAN PingContinuous;
+    volatile BOOLEAN TracingActive;
 } NETWORK_TRACERT_CONTEXT, *PNETWORK_TRACERT_CONTEXT;
 
 VOID ShowTracertWindow(
@@ -208,6 +247,11 @@ VOID ShowTracertWindow(
 VOID ShowTracertWindowFromAddress(
     _In_ HWND ParentWindowHandle,
     _In_ PH_IP_ENDPOINT RemoteEndpoint
+    );
+
+BOOLEAN TracertInitializeCountryImageList(
+    _Inout_ PNETWORK_TRACERT_CONTEXT Context,
+    _In_ ULONG WindowDpi
     );
 
 // options.c
@@ -272,6 +316,21 @@ typedef enum _NETWORK_COLUMN_ID
 
 // country.c
 
+_Success_(return)
+BOOLEAN NetToolsLookupCountryResource(
+    _In_ ULONG GeoNameID,
+    _Out_ LONG *ResourceID
+    );
+
+HIMAGELIST NetToolsGetCountryImageList(
+    _In_ HWND WindowHandle
+    );
+
+BOOLEAN NetToolsInitializeCountryImageList(
+    _In_ HWND WindowHandle,
+    _In_ LONG WindowDpi
+    );
+
 VOID FreeGeoLiteDb(
     VOID
     );
@@ -316,6 +375,7 @@ typedef struct _NETWORK_GEODB_UPDATE_CONTEXT
     HWND DialogHandle;
     HWND ParentWindowHandle;
     WNDPROC DefaultWindowProc;
+    LONG WindowDpi;
     ULONG ErrorCode;
     BOOLEAN PortableMode;
 } NETWORK_GEODB_UPDATE_CONTEXT, *PNETWORK_GEODB_UPDATE_CONTEXT;
@@ -324,6 +384,7 @@ BOOLEAN GeoLiteCheckUpdatePlatformSupported(
     VOID
     );
 
+_Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS GeoLiteUpdateThread(
     _In_ PNETWORK_GEODB_UPDATE_CONTEXT Context
     );
@@ -359,15 +420,17 @@ VOID ShowDbInvalidSettingsDialog(
 // ports.c
 typedef struct _RESOLVED_PORT
 {
-    PWSTR Name;
+    PWSTR Name;       // PPH_STRINGREF via SREF()
     USHORT Port;
+    USHORT Protocol;  // IPPROTO_TCP / IPPROTO_UDP
 } RESOLVED_PORT;
 
-extern CONST RESOLVED_PORT ResolvedPortsTable[6265];
+extern CONST RESOLVED_PORT ResolvedPortsTable[];
 
 _Success_(return)
 BOOLEAN LookupPortServiceName(
     _In_ ULONG Port,
+    _In_ ULONG ProtocolType, // IPPROTO_TCP / IPPROTO_UDP
     _Out_ PPH_STRINGREF* ServiceName
     );
 

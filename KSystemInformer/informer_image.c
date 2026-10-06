@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     jxy-s   2022-2024
+ *     jxy-s   2022-2026
  *
  */
 
@@ -58,17 +58,18 @@ VOID KphpLoadImageNotifyInformer(
 {
     NTSTATUS status;
     PKPH_PROCESS_CONTEXT targetProcess;
-    PKPH_PROCESS_CONTEXT actorProcess;
     PKPH_MESSAGE msg;
     PUNICODE_STRING fileName;
     BOOLEAN freeFileName;
 
     KPH_PAGED_CODE_PASSIVE();
 
-    actorProcess = KphGetCurrentProcessContext();
-    targetProcess = KphGetProcessContext(ProcessId);
+    KPH_INFORMER_CONTEXT_ENTER();
 
-    if (!KphInformerEnabled2(ImageLoad, actorProcess, targetProcess))
+    targetProcess = KphGetProcessContext(ProcessId);
+    KphInformerAdd(targetProcess);
+
+    if (!KphInformerEnabled(ImageLoad))
     {
         goto Exit;
     }
@@ -97,24 +98,19 @@ VOID KphpLoadImageNotifyInformer(
 
     KphMsgInit(msg, KphMsgImageLoad);
 
-    msg->Kernel.ImageLoad.LoadingClientId.UniqueProcess = PsGetCurrentProcessId();
-    msg->Kernel.ImageLoad.LoadingClientId.UniqueThread = PsGetCurrentThreadId();
-    msg->Kernel.ImageLoad.LoadingProcessStartKey = KphGetCurrentProcessStartKey();
-    msg->Kernel.ImageLoad.LoadingThreadSubProcessTag = KphGetCurrentThreadSubProcessTag();
+    KphCaptureCurrentContext(&msg->Kernel.ImageLoad.Context);
     msg->Kernel.ImageLoad.TargetProcessId = ProcessId;
     msg->Kernel.ImageLoad.Properties = ImageInfo->ImageInfo.Properties;
     msg->Kernel.ImageLoad.ImageBase = ImageInfo->ImageInfo.ImageBase;
     msg->Kernel.ImageLoad.ImageSelector = ImageInfo->ImageInfo.ImageSelector;
+    msg->Kernel.ImageLoad.ImageSize = ImageInfo->ImageInfo.ImageSize;
     msg->Kernel.ImageLoad.ImageSectionNumber = ImageInfo->ImageInfo.ImageSectionNumber;
     msg->Kernel.ImageLoad.FileObject = ImageInfo->FileObject;
 
     if (targetProcess)
     {
-        ULONG64 startKey;
-
-        startKey = KphGetProcessStartKey(targetProcess->EProcess);
-
-        msg->Kernel.ImageLoad.TargetProcessStartKey = startKey;
+        msg->Kernel.ImageLoad.TargetProcessStartKey =
+            KphGetProcessStartKey(targetProcess->EProcess);
     }
 
     if (fileName)
@@ -134,7 +130,7 @@ VOID KphpLoadImageNotifyInformer(
         }
     }
 
-    if (KphInformerEnabled2(EnableStackTraces, actorProcess, targetProcess))
+    if (KphInformerOpts().EnableStackTraces)
     {
         KphCaptureStackInMessage(msg);
     }
@@ -148,10 +144,7 @@ Exit:
         KphDereferenceObject(targetProcess);
     }
 
-    if (actorProcess)
-    {
-        KphDereferenceObject(actorProcess);
-    }
+    KPH_INFORMER_CONTEXT_EXIT();
 }
 
 /**
@@ -209,7 +202,6 @@ KphpImageVerificationCallback(
     )
 {
     NTSTATUS status;
-    PKPH_PROCESS_CONTEXT actorProcess;
     PKPH_MESSAGE msg;
     KPHM_SIZED_BUFFER buffer;
 
@@ -217,9 +209,9 @@ KphpImageVerificationCallback(
 
     UNREFERENCED_PARAMETER(CallbackContext);
 
-    actorProcess = KphGetCurrentProcessContext();
+    KPH_INFORMER_CONTEXT_ENTER();
 
-    if (!KphInformerEnabled(ImageVerify, actorProcess))
+    if (!KphInformerEnabled(ImageVerify))
     {
         goto Exit;
     }
@@ -235,10 +227,7 @@ KphpImageVerificationCallback(
 
     KphMsgInit(msg, KphMsgImageVerify);
 
-    msg->Kernel.ImageVerify.ClientId.UniqueProcess = PsGetCurrentProcessId();
-    msg->Kernel.ImageVerify.ClientId.UniqueThread = PsGetCurrentThreadId();
-    msg->Kernel.ImageVerify.ProcessStartKey = KphGetCurrentProcessStartKey();
-    msg->Kernel.ImageVerify.ThreadSubProcessTag = KphGetCurrentThreadSubProcessTag();
+    KphCaptureCurrentContext(&msg->Kernel.ImageVerify.Context);
     msg->Kernel.ImageVerify.ImageType = ImageType;
     msg->Kernel.ImageVerify.Classification = ImageInformation->Classification;
     msg->Kernel.ImageVerify.ImageFlags = ImageInformation->ImageFlags;
@@ -315,7 +304,7 @@ KphpImageVerificationCallback(
                       status);
     }
 
-    if (KphInformerEnabled(EnableStackTraces, actorProcess))
+    if (KphInformerOpts().EnableStackTraces)
     {
         KphCaptureStackInMessage(msg);
     }
@@ -324,10 +313,7 @@ KphpImageVerificationCallback(
 
 Exit:
 
-    if (actorProcess)
-    {
-        KphDereferenceObject(actorProcess);
-    }
+    KPH_INFORMER_CONTEXT_EXIT();
 }
 
 /**

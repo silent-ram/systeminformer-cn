@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -153,7 +153,7 @@ DEFINE_GUID(IID_IDesktopAppXActivator1_I, 0x72e3a5b0, 0x8fea, 0x485c, 0x9f, 0x8b
 // "F158268A-D5A5-45CE-99CF-00D6C3F3FC0A"
 DEFINE_GUID(IID_IDesktopAppXActivator2_I, 0xF158268A, 0xD5A5, 0x45CE, 0x99, 0xCF, 0x00, 0xD6, 0xC3, 0xF3, 0xFC, 0x0A);
 
-typedef enum _DESKTOP_APPX_ACTIVATE_OPTIONS
+typedef _Enum_is_bitflag_ enum _DESKTOP_APPX_ACTIVATE_OPTIONS
 {
     DAXAO_NONE = 0,
     DAXAO_ELEVATE = 1,
@@ -171,6 +171,7 @@ typedef enum _DESKTOP_APPX_ACTIVATE_OPTIONS
     DAXAO_APP_SILO = 1024,
     DAXAO_TRUST_LEVEL_FLAGS = 1280
 } DESKTOP_APPX_ACTIVATE_OPTIONS, *PDESKTOP_APPX_ACTIVATE_OPTIONS;
+DEFINE_ENUM_FLAG_OPERATORS(DESKTOP_APPX_ACTIVATE_OPTIONS);
 
 // IDesktopAppXActivator
 #ifndef __IDesktopAppXActivator_INTERFACE_DEFINED__
@@ -366,7 +367,7 @@ interface IStartMenuItemsCache
 #define IStartMenuItemsCache_UnregisterForNotifications(This) ((This)->lpVtbl->UnregisterForNotifications(This))
 #define IStartMenuItemsCache_PauseNotifications(This) ((This)->lpVtbl->PauseNotifications(This))
 #define IStartMenuItemsCache_ResumeNotifications(This) ((This)->lpVtbl->ResumeNotifications(This))
-#define IStartMenuItemsCache_RegisterARNotify(This,p) ((This)->lpVtbl->RegisterARNotify(This,p))
+#define IStartMenuItemsCache_RegisterARNotify(This,Payload) ((This)->lpVtbl->RegisterARNotify(This,Payload))
 #define IStartMenuItemsCache_RefreshCache(This,Flags) ((This)->lpVtbl->RefreshCache(This,Flags))
 #define IStartMenuItemsCache_ReleaseGlobalCacheObject(This) ((This)->lpVtbl->ReleaseGlobalCacheObject(This))
 #define IStartMenuItemsCache_IsCacheMatchingLanguage(This,pLong) ((This)->lpVtbl->IsCacheMatchingLanguage(This,pLong))
@@ -531,7 +532,7 @@ typedef enum tagAPP_RESOLVER_ITEM_FILTER_FLAGS
 
 typedef struct IApplicationResolver2 IApplicationResolver2;
 
-typedef struct IApplicationResolver2Vtbl 
+typedef struct IApplicationResolver2Vtbl
 {
     BEGIN_INTERFACE
 
@@ -671,9 +672,9 @@ typedef struct IApplicationResolver2Vtbl
     END_INTERFACE
 } IApplicationResolver2Vtbl;
 
-interface IApplicationResolver2 
-{ 
-    CONST_VTBL struct IApplicationResolver2Vtbl* lpVtbl; 
+interface IApplicationResolver2
+{
+    CONST_VTBL struct IApplicationResolver2Vtbl* lpVtbl;
 };
 
 #ifdef COBJMACROS
@@ -712,7 +713,7 @@ typedef struct IStartMenuAppItemsVtbl
 
     DECLSPEC_XFGVIRT(IStartMenuAppItems, QueryInterface)
     HRESULT (STDMETHODCALLTYPE* QueryInterface)(
-        _In_ IStartMenuAppItems* This, 
+        _In_ IStartMenuAppItems* This,
         _In_ REFIID riid,
         _COM_Outptr_ void** ppvObject
         );
@@ -728,7 +729,7 @@ typedef struct IStartMenuAppItemsVtbl
 
     DECLSPEC_XFGVIRT(IStartMenuAppItems, EnumItems)
     HRESULT (STDMETHODCALLTYPE* EnumItems)(
-        _In_ IStartMenuAppItems* This, 
+        _In_ IStartMenuAppItems* This,
         _In_ START_MENU_APP_ITEMS_FLAGS Flags,
         _In_ REFIID riid,
          _Outptr_ PVOID* ppvObject
@@ -747,8 +748,8 @@ typedef struct IStartMenuAppItemsVtbl
 } IStartMenuAppItemsVtbl;
 
 struct IStartMenuAppItems
-{ 
-    CONST_VTBL struct IStartMenuAppItemsVtbl* lpVtbl; 
+{
+    CONST_VTBL struct IStartMenuAppItemsVtbl* lpVtbl;
 };
 
 #ifdef COBJMACROS
@@ -767,7 +768,7 @@ struct IStartMenuAppItems
 
 typedef struct IStartMenuAppItems2 IStartMenuAppItems2;
 
-typedef struct IStartMenuAppItems2Vtbl 
+typedef struct IStartMenuAppItems2Vtbl
 {
     BEGIN_INTERFACE
 
@@ -824,8 +825,8 @@ typedef struct IStartMenuAppItems2Vtbl
     END_INTERFACE
 } IStartMenuAppItems2Vtbl;
 
-interface IStartMenuAppItems2 
-{ 
+interface IStartMenuAppItems2
+{
     CONST_VTBL struct IStartMenuAppItems2Vtbl* lpVtbl;
 };
 
@@ -890,9 +891,9 @@ typedef struct IMrtResourceManagerVtbl
     END_INTERFACE
 } IMrtResourceManagerVtbl;
 
-interface IMrtResourceManager 
-{ 
-    CONST_VTBL struct IMrtResourceManagerVtbl* lpVtbl; 
+interface IMrtResourceManager
+{
+    CONST_VTBL struct IMrtResourceManagerVtbl* lpVtbl;
 };
 
 #ifdef COBJMACROS
@@ -919,7 +920,7 @@ interface IMrtResourceManager
 
 typedef struct IResourceContext IResourceContext;
 
-typedef struct IResourceContextVtbl 
+typedef struct IResourceContextVtbl
 {
     BEGIN_INTERFACE
 
@@ -1072,9 +1073,9 @@ typedef struct IResourceContextVtbl
     END_INTERFACE
 } IResourceContextVtbl;
 
-interface IResourceContext 
-{ 
-    CONST_VTBL struct IResourceContextVtbl* lpVtbl; 
+interface IResourceContext
+{
+    CONST_VTBL struct IResourceContextVtbl* lpVtbl;
 };
 
 #ifdef COBJMACROS
@@ -1113,7 +1114,7 @@ interface IResourceContext
 
 typedef struct IResourceMap IResourceMap;
 
-typedef struct IResourceMapVtbl 
+typedef struct IResourceMapVtbl
 {
     BEGIN_INTERFACE
 
@@ -1224,9 +1225,9 @@ typedef struct IResourceMapVtbl
     END_INTERFACE
 } IResourceMapVtbl;
 
-interface IResourceMap 
-{ 
-    CONST_VTBL struct IResourceMapVtbl* lpVtbl; 
+interface IResourceMap
+{
+    CONST_VTBL struct IResourceMapVtbl* lpVtbl;
 };
 
 #ifdef COBJMACROS
@@ -1302,7 +1303,7 @@ DEFINE_GUID(CLSID_OSTaskCompletion_I, 0x07fc2b94, 0x5285, 0x417e, 0x8a, 0xc3, 0x
 // "c7e40572-c36a-43ea-9a40-f3b168da5558"
 DEFINE_GUID(IID_IOSTaskCompletion_I, 0xc7e40572, 0xc36a, 0x43ea, 0x9a, 0x40, 0xf3, 0xb1, 0x68, 0xda, 0x55, 0x58);
 
-typedef enum _PLM_TASKCOMPLETION_CATEGORY_FLAGS
+typedef _Enum_is_bitflag_ enum _PLM_TASKCOMPLETION_CATEGORY_FLAGS
 {
     PT_TC_NONE = 0,
     PT_TC_PBM = 1,
@@ -1331,6 +1332,7 @@ typedef enum _PLM_TASKCOMPLETION_CATEGORY_FLAGS
     PT_TC_REALTIMECOMM = 0x40000000,
     PT_TC_IGNORE_NAV_LEVEL_FOR_CS = 0x80000000
 } PLM_TASKCOMPLETION_CATEGORY_FLAGS;
+DEFINE_ENUM_FLAG_OPERATORS(PLM_TASKCOMPLETION_CATEGORY_FLAGS);
 
 // IOSTaskCompletion
 #ifndef __IOSTaskCompletion_INTERFACE_DEFINED__
@@ -1338,7 +1340,7 @@ typedef enum _PLM_TASKCOMPLETION_CATEGORY_FLAGS
 
 typedef struct IOSTaskCompletion IOSTaskCompletion;
 
-typedef struct IOSTaskCompletionVtbl 
+typedef struct IOSTaskCompletionVtbl
 {
     BEGIN_INTERFACE
 
@@ -1388,8 +1390,8 @@ typedef struct IOSTaskCompletionVtbl
     END_INTERFACE
 } IOSTaskCompletionVtbl;
 
-interface IOSTaskCompletion 
-{ 
+interface IOSTaskCompletion
+{
     CONST_VTBL struct IOSTaskCompletionVtbl* lpVtbl;
 };
 
@@ -1411,7 +1413,7 @@ interface IOSTaskCompletion
 
 typedef struct IOSTaskCompletion2 IOSTaskCompletion2;
 
-typedef struct IOSTaskCompletion2Vtbl 
+typedef struct IOSTaskCompletion2Vtbl
 {
     BEGIN_INTERFACE
 
@@ -1458,8 +1460,8 @@ typedef struct IOSTaskCompletion2Vtbl
     END_INTERFACE
 } IOSTaskCompletion2Vtbl;
 
-interface IOSTaskCompletion2 
-{ 
+interface IOSTaskCompletion2
+{
     CONST_VTBL struct IOSTaskCompletion2Vtbl* lpVtbl;
 };
 
@@ -1477,7 +1479,7 @@ interface IOSTaskCompletion2
 
 // EDP
 
-typedef enum _EDP_CONTEXT_STATES
+typedef _Enum_is_bitflag_ enum _EDP_CONTEXT_STATES
 {
     EDP_CONTEXT_NONE = 0,
     EDP_CONTEXT_IS_EXEMPT = 1,
@@ -1487,6 +1489,7 @@ typedef enum _EDP_CONTEXT_STATES
     EDP_CONTEXT_IS_COPY_EXEMPT = 16,
     EDP_CONTEXT_IS_DENIED = 32,
 } EDP_CONTEXT_STATES;
+DEFINE_ENUM_FLAG_OPERATORS(EDP_CONTEXT_STATES);
 
 typedef struct _EDP_CONTEXT
 {

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -174,6 +174,7 @@ VOID PhShowModuleContextMenu(
     PhFree(modules);
 }
 
+_Function_class_(PH_TN_FILTER_FUNCTION)
 BOOLEAN PhpModulesTreeFilterCallback(
     _In_ PPH_TREENEW_NODE Node,
     _In_opt_ PPH_MODULES_CONTEXT Context
@@ -660,6 +661,7 @@ VOID PhpProcessModulesSave(
     PhFreeFileDialog(fileDialog);
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PhpProcessModulesSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -745,6 +747,13 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
 
             // Initialize the list.
             PhInitializeModuleList(hwndDlg, modulesContext->TreeNewHandle, &modulesContext->ListContext);
+
+            if (PhTreeWindowFont)
+            {
+                modulesContext->TreeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+                SetWindowFont(modulesContext->TreeNewHandle, modulesContext->TreeNewFont, FALSE);
+            }
+
             TreeNew_SetEmptyText(modulesContext->TreeNewHandle, &PhProcessPropPageLoadingText, 0);
             PhInitializeProviderEventQueue(&modulesContext->EventQueue, 100);
             modulesContext->LastRunStatus = -1;
@@ -754,6 +763,7 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             modulesContext->ListContext.ProcessId = processItem->ProcessId;
             modulesContext->ListContext.ProcessCreateTime = processItem->CreateTime;
             modulesContext->ListContext.HasServices = processItem->ServiceList && processItem->ServiceList->Count != 0;
+            modulesContext->ListContext.IsSubsystemProcess = !!processItem->IsSubsystemProcess;
             modulesContext->ListContext.BoldFont = PhDuplicateFontWithNewWeight(GetWindowFont(modulesContext->TreeNewHandle), FW_BOLD);
 
             // Initialize the search box. (dmex)
@@ -793,6 +803,8 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                 );
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, modulesContext->TreeNewHandle);
         }
         break;
     case WM_DESTROY:
@@ -825,6 +837,9 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             PhUnregisterProvider(&modulesContext->ProviderRegistration);
             PhDereferenceObject(modulesContext->Provider);
             PhDeleteProviderEventQueue(&modulesContext->EventQueue);
+
+            if (modulesContext->TreeNewFont)
+                DeleteFont(modulesContext->TreeNewFont);
 
             if (PhPluginsEnabled)
             {
@@ -862,6 +877,11 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
     case WM_DPICHANGED_AFTERPARENT:
         {
             HFONT fontHandle = modulesContext->ListContext.BoldFont;
+            HFONT treeNewFont;
+
+            if (PhTreeWindowFont && (treeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg))))
+                PhSwapReferenceFont(&modulesContext->TreeNewFont, modulesContext->TreeNewHandle, treeNewFont, TRUE);
+
             modulesContext->ListContext.BoldFont = PhDuplicateFontWithNewWeight(GetWindowFont(modulesContext->TreeNewHandle), FW_BOLD);
             if (fontHandle) DeleteFont(fontHandle);
 
@@ -955,10 +975,13 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                     PPH_EMENU_ITEM systemHighlightItem;
                     PPH_EMENU_ITEM coherencyHighlightItem;
                     PPH_EMENU_ITEM knowndllsHighlightItem;
+                    PPH_EMENU_ITEM nativeModulesHighlightItem;
+                    PPH_EMENU_ITEM mappedModulesHighlightItem;
                     PPH_EMENU_ITEM zeroPadItem;
                     PPH_EMENU_ITEM selectedItem;
 
-                    GetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect);
+                    if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect))
+                        break;
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, dynamicItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_DYNAMIC_OPTION, L"Hide dynamic", NULL, NULL), ULONG_MAX);
@@ -976,6 +999,8 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                     PhInsertEMenuItem(menu, systemHighlightItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_HIGHLIGHT_SYSTEM_OPTION, L"Highlight system modules", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, coherencyHighlightItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_HIGHLIGHT_LOWIMAGECOHERENCY_OPTION, L"Highlight low image coherency", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, knowndllsHighlightItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_HIGHLIGHT_IMAGEKNOWNDLL, L"Highlight knowndlls images", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, nativeModulesHighlightItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_HIGHLIGHT_NATIVE_MODULES, L"Highlight native modules", NULL, NULL), ULONG_MAX);
+                    PhInsertEMenuItem(menu, mappedModulesHighlightItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_HIGHLIGHT_MAPPED_MODULES, L"Highlight mapped modules", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, zeroPadItem = PhCreateEMenuItem(0, PH_MODULE_FLAGS_ZERO_PAD_ADDRESSES, L"Zero pad addresses", NULL, NULL), ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
@@ -1012,6 +1037,10 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                         coherencyHighlightItem->Flags |= PH_EMENU_CHECKED;
                     if (modulesContext->ListContext.HighlightImageKnownDll)
                         knowndllsHighlightItem->Flags |= PH_EMENU_CHECKED;
+                    if (PhCsUseColorModuleSystem)
+                        nativeModulesHighlightItem->Flags |= PH_EMENU_CHECKED;
+                    if (PhCsUseColorModuleMapped)
+                        mappedModulesHighlightItem->Flags |= PH_EMENU_CHECKED;
                     if (modulesContext->ListContext.ZeroPadAddresses)
                         zeroPadItem->Flags |= PH_EMENU_CHECKED;
 
@@ -1057,6 +1086,21 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                             PhSaveSettingsModuleList(&modulesContext->ListContext);
 
                             PhInvalidateAllModuleBaseAddressNodes(&modulesContext->ListContext);
+                            PhApplyTreeNewFilters(&modulesContext->ListContext.TreeFilterSupport);
+                        }
+                        else if (selectedItem->Id == PH_MODULE_FLAGS_HIGHLIGHT_NATIVE_MODULES)
+                        {
+                            PhSetIntegerSetting(SETTING_USE_COLOR_MODULE_SYSTEM, !PhCsUseColorModuleSystem);
+                            PhCsUseColorModuleSystem = !PhCsUseColorModuleSystem;
+                            PhInvalidateAllModuleNodes(&modulesContext->ListContext);
+                            PhApplyTreeNewFilters(&modulesContext->ListContext.TreeFilterSupport);
+                        }
+                        else if (selectedItem->Id == PH_MODULE_FLAGS_HIGHLIGHT_MAPPED_MODULES)
+                        {
+                            PhSetIntegerSetting(SETTING_USE_COLOR_MODULE_MAPPED, !PhCsUseColorModuleMapped);
+                            PhCsUseColorModuleMapped = !PhCsUseColorModuleMapped;
+                            PhInvalidateAllModuleNodes(&modulesContext->ListContext);
+                            PhApplyTreeNewFilters(&modulesContext->ListContext.TreeFilterSupport);
                         }
                         else
                         {
@@ -1084,9 +1128,6 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             case PSN_KILLACTIVE:
                 PhSetEnabledProvider(&modulesContext->ProviderRegistration, FALSE);
                 break;
-            case PSN_QUERYINITIALFOCUS:
-                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)modulesContext->TreeNewHandle);
-                return TRUE;
             }
         }
         break;
@@ -1140,11 +1181,10 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
 
             PhTickModuleNodes(&modulesContext->ListContext);
 
+            PhApplyTreeNewFilters(&modulesContext->ListContext.TreeFilterSupport);
+
             if (count != 0)
                 TreeNew_SetRedraw(modulesContext->TreeNewHandle, TRUE);
-
-            // Refresh the visible nodes.
-            PhApplyTreeNewFilters(&modulesContext->ListContext.TreeFilterSupport);
 
             if (modulesContext->LastRunStatus != modulesContext->Provider->RunStatus)
             {
@@ -1173,6 +1213,12 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

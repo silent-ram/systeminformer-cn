@@ -6,11 +6,20 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *
  */
 
 #include "devices.h"
+
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN NetworkDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    );
 
  VOID NetworkDeviceUpdatePanel(
      _Inout_ PDV_NETADAPTER_SYSINFO_CONTEXT Context
@@ -142,43 +151,43 @@
  }
 
 INT_PTR CALLBACK NetworkDevicePanelDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_NETADAPTER_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_NETADAPTER_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->NetAdapterPanelSentLabel = GetDlgItem(hwndDlg, IDC_STAT_BSENT);
-            context->NetAdapterPanelReceivedLabel = GetDlgItem(hwndDlg, IDC_STAT_BRECEIVED);
-            context->NetAdapterPanelTotalLabel = GetDlgItem(hwndDlg, IDC_STAT_BTOTAL);
-            context->NetAdapterPanelStateLabel = GetDlgItem(hwndDlg, IDC_LINK_STATE);
-            context->NetAdapterPanelSpeedLabel = GetDlgItem(hwndDlg, IDC_LINK_SPEED);
-            context->NetAdapterPanelBytesLabel = GetDlgItem(hwndDlg, IDC_STAT_BYTESDELTA);
+            context->NetAdapterPanelSentLabel = GetDlgItem(WindowHandle, IDC_STAT_BSENT);
+            context->NetAdapterPanelReceivedLabel = GetDlgItem(WindowHandle, IDC_STAT_BRECEIVED);
+            context->NetAdapterPanelTotalLabel = GetDlgItem(WindowHandle, IDC_STAT_BTOTAL);
+            context->NetAdapterPanelStateLabel = GetDlgItem(WindowHandle, IDC_LINK_STATE);
+            context->NetAdapterPanelSpeedLabel = GetDlgItem(WindowHandle, IDC_LINK_SPEED);
+            context->NetAdapterPanelBytesLabel = GetDlgItem(WindowHandle, IDC_STAT_BYTESDELTA);
         }
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_COMMAND:
@@ -192,11 +201,11 @@ INT_PTR CALLBACK NetworkDevicePanelDialogProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
@@ -206,20 +215,26 @@ VOID NetworkDeviceInitializeDialogDpi(
     _In_ PDV_NETADAPTER_SYSINFO_CONTEXT Context
     )
 {
-    Context->GraphPadding = PhGetDpi(RAPL_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
+    Context->GraphPadding = PhScaleToDisplay(RAPL_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
 }
 
 VOID NetworkDeviceCreateGraphs(
     _Inout_ PDV_NETADAPTER_SYSINFO_CONTEXT Context
     )
 {
+    PH_GRAPH_CREATEPARAMS graphCreateParams;
+
     PhInitializeGraphState(&Context->GraphSendState);
     PhInitializeGraphState(&Context->GraphReceiveState);
 
-    Context->GraphSendHandle = CreateWindow(
+    memset(&graphCreateParams, 0, sizeof(PH_GRAPH_CREATEPARAMS));
+    graphCreateParams.Size = sizeof(PH_GRAPH_CREATEPARAMS);
+    graphCreateParams.Callback = NetworkDeviceGraphMessageCallback;
+    graphCreateParams.Context = Context;
+    Context->GraphSendHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
         0,
         0,
         0,
@@ -227,14 +242,14 @@ VOID NetworkDeviceCreateGraphs(
         Context->WindowHandle,
         NULL,
         NULL,
-        NULL
+        &graphCreateParams
         );
     Graph_SetTooltip(Context->GraphSendHandle, TRUE);
 
-    Context->GraphReceiveHandle = CreateWindow(
+    Context->GraphReceiveHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
         0,
         0,
         0,
@@ -242,7 +257,7 @@ VOID NetworkDeviceCreateGraphs(
         Context->WindowHandle,
         NULL,
         NULL,
-        NULL
+        &graphCreateParams
         );
     Graph_SetTooltip(Context->GraphReceiveHandle, TRUE);
 
@@ -280,8 +295,7 @@ VOID NetworkDeviceLayoutGraphs(
     Context->GraphReceiveState.Valid = FALSE;
     Context->GraphReceiveState.TooltipIndex = ULONG_MAX;
 
-    margin = Context->GraphMargin;
-    PhGetSizeDpiValue(&margin, Context->SysinfoSection->Parameters->WindowDpi, TRUE);
+    margin = Context->GraphMarginScaled;
 
     PhGetClientRect(Context->WindowHandle, &clientRect);
     PhGetClientRect(Context->LabelSendHandle, &labelRect);
@@ -514,6 +528,30 @@ VOID NetworkDeviceNotifyPackageGraph(
     }
 }
 
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN NetworkDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    )
+{
+    PDV_NETADAPTER_SYSINFO_CONTEXT context = (PDV_NETADAPTER_SYSINFO_CONTEXT)Context;
+    NMHDR *header = (NMHDR *)Parameter1;
+
+    if (WindowHandle == context->GraphSendHandle)
+    {
+        NetworkDeviceNotifyProcessorGraph(context, header);
+    }
+    else if (WindowHandle == context->GraphReceiveHandle)
+    {
+        NetworkDeviceNotifyPackageGraph(context, header);
+    }
+
+    return TRUE;
+}
+
 VOID NetworkDeviceTickDialog(
     _Inout_ PDV_NETADAPTER_SYSINFO_CONTEXT Context
     )
@@ -579,51 +617,53 @@ VOID NetworkDeviceQueueNameUpdate(
 }
 
 INT_PTR CALLBACK NetworkDeviceDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_NETADAPTER_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_NETADAPTER_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
             PPH_LAYOUT_ITEM graphItem;
             PPH_LAYOUT_ITEM panelItem;
 
-            context->WindowHandle = hwndDlg;
-            context->AdapterTextLabel = GetDlgItem(hwndDlg, IDC_TITLE);
-            context->AdapterNameLabel = GetDlgItem(hwndDlg, IDC_DEVICENAME);
+            context->WindowHandle = WindowHandle;
+            context->AdapterTextLabel = GetDlgItem(WindowHandle, IDC_TITLE);
+            context->AdapterNameLabel = GetDlgItem(WindowHandle, IDC_DEVICENAME);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->AdapterTextLabel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
             PhAddLayoutItem(&context->LayoutManager, context->AdapterNameLabel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
-            graphItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
-            panelItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+            graphItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
+            panelItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             context->GraphMargin = graphItem->Margin;
+            context->GraphMarginScaled = context->GraphMargin;
+            PhGetMarginDpiValue(&context->GraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
 
             SetWindowFont(context->AdapterTextLabel, context->SysinfoSection->Parameters->LargeFont, FALSE);
             SetWindowFont(context->AdapterNameLabel, context->SysinfoSection->Parameters->MediumFont, FALSE);
             PhSetWindowText(context->AdapterNameLabel, PhGetStringOrDefault(context->AdapterEntry->AdapterName, L"未知"));
 
-            context->PanelWindowHandle = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_NETADAPTER_PANEL), hwndDlg, NetworkDevicePanelDialogProc, context);
+            context->PanelWindowHandle = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_NETADAPTER_PANEL), WindowHandle, NetworkDevicePanelDialogProc, context);
             ShowWindow(context->PanelWindowHandle, SW_SHOW);
             PhAddLayoutItemEx(&context->LayoutManager, context->PanelWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
 
@@ -651,12 +691,15 @@ INT_PTR CALLBACK NetworkDeviceDialogProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
             NetworkDeviceInitializeDialogDpi(context);
+
+            context->GraphMarginScaled = context->GraphMargin;
+            PhGetMarginDpiValue(&context->GraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
 
             if (context->SysinfoSection->Parameters->LargeFont)
             {
@@ -679,26 +722,12 @@ INT_PTR CALLBACK NetworkDeviceDialogProc(
             NetworkDeviceLayoutGraphs(context);
         }
         break;
-    case WM_NOTIFY:
-        {
-            NMHDR* header = (NMHDR*)lParam;
-
-            if (header->hwndFrom == context->GraphSendHandle)
-            {
-                NetworkDeviceNotifyProcessorGraph(context, header);
-            }
-            else if (header->hwndFrom == context->GraphReceiveHandle)
-            {
-                NetworkDeviceNotifyPackageGraph(context, header);
-            }
-        }
-        break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
@@ -892,6 +921,7 @@ VOID NetworkDeviceSysInfoInitializing(
     PH_SYSINFO_SECTION section;
 
     context = PhAllocateZero(sizeof(DV_NETADAPTER_SYSINFO_CONTEXT));
+    PhInitializeEvent(&context->DetailsWindowInitializedEvent);
     context->AdapterEntry = PhReferenceObject(AdapterEntry);
     context->AdapterEntry->PendingQuery = TRUE;
 

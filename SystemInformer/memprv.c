@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -464,6 +464,8 @@ VOID PhpUpdateHeapRegions(
     PRTL_DEBUG_INFORMATION debugBuffer = NULL;
     PPH_PROCESS_DEBUG_HEAP_INFORMATION heapDebugInfo = NULL;
     HANDLE powerRequestHandle = NULL;
+    ULONG numberOfHeaps;
+    SIZE_T heapDebugInfoLength;
 
     status = PhOpenProcess(
         &processHandle,
@@ -537,15 +539,29 @@ VOID PhpUpdateHeapRegions(
 
     if (WindowsVersion > WINDOWS_11)
     {
-        heapDebugInfo = PhAllocateZero(sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY));
-        heapDebugInfo->NumberOfHeaps = ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps;
+        numberOfHeaps = ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps;
     }
     else
     {
-        heapDebugInfo = PhAllocateZero(sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY));
-        heapDebugInfo->NumberOfHeaps = ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps;
+        numberOfHeaps = ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps;
     }
 
+    if ((SIZE_T)numberOfHeaps > (((SIZE_T)-1) - sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION)) / sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY))
+    {
+        RtlDestroyQueryDebugBuffer(debugBuffer);
+        return;
+    }
+
+    heapDebugInfoLength = sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + (SIZE_T)numberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY);
+    heapDebugInfo = PhAllocateZero(heapDebugInfoLength);
+
+    if (!heapDebugInfo)
+    {
+        RtlDestroyQueryDebugBuffer(debugBuffer);
+        return;
+    }
+
+    heapDebugInfo->NumberOfHeaps = numberOfHeaps;
     for (ULONG i = 0; i < heapDebugInfo->NumberOfHeaps; i++)
     {
         RTL_HEAP_INFORMATION_V2 heapInfo = { 0 };
@@ -1096,7 +1112,7 @@ NTSTATUS PhpUpdateMemoryRegionTypes(
 #endif
     }
 
-    // TEB, stack
+    // TEB, stack, desktop heap
     for (i = 0; i < process->NumberOfThreads; i++)
     {
         PSYSTEM_EXTENDED_THREAD_INFORMATION thread = (PSYSTEM_EXTENDED_THREAD_INFORMATION)process->Threads + i;
@@ -1104,6 +1120,7 @@ NTSTATUS PhpUpdateMemoryRegionTypes(
         if (thread->TebBaseAddress)
         {
             NT_TIB ntTib;
+            PVOID desktopInfo;
             SIZE_T bytesRead;
 
             // HACK: Windows 10 RS2 and above 'added TEB/PEB sub-VAD segments' and we need to tag individual sections.
@@ -1139,6 +1156,23 @@ NTSTATUS PhpUpdateMemoryRegionTypes(
                     }
                 }
 #endif
+            }
+
+            // TEB->Win32ClientInfo.DesktopBase (which nowadays is a pointer to the start of the desktop heap)
+            // used to be called ClientDelta before RS2 and used to store the difference between the kernel and
+            // the user mappings of the desktop heap. TEB->Win32ClientInfo.DeskInfo, on the other hand, has
+            // always been a pointer to a structure on the desktop heap. (diversenok)
+
+            // Desktop heap
+            if (NT_SUCCESS(PhReadVirtualMemory(
+                ProcessHandle,
+                PTR_ADD_OFFSET(thread->TebBaseAddress, FIELD_OFFSET(TEB, Win32ClientInfo.DesktopBaseAddress)),
+                &desktopInfo,
+                sizeof(PVOID),
+                NULL
+                )) && desktopInfo)
+            {
+                PhpSetMemoryRegionType(List, desktopInfo, TRUE, DesktopHeapRegion);
             }
         }
     }

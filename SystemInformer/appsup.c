@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -25,6 +25,53 @@
 #include <phsvccl.h>
 #include <thirdparty.h>
 #include <phconsole.h>
+
+VOID PhApplyThemeModeWithColors(
+    _In_ ULONG Mode,
+    _In_opt_ HWND RootWindow
+    )
+{
+    if (Mode == PhThemeModeCustom)
+    {
+        PH_WINDOW_THEME_PALETTE palette;
+
+        // Seed the Custom palette from the dark base (via PhApplyThemeMode), then
+        // composite the user's per-color settings onto it so the applied palette
+        // - and the background brush derived from it - reflect the saved colors.
+        PhApplyThemeMode(PhThemeModeCustom, NULL);
+        palette = *PhGetWindowThemePalette();
+        palette.ForegroundColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_FOREGROUND_COLOR);
+        palette.BackgroundColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_BACKGROUND_COLOR);
+        palette.Background2Color = PhGetIntegerSetting(SETTING_THEME_WINDOW_BACKGROUND2_COLOR);
+        palette.HighlightColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_HIGHLIGHT_COLOR);
+        palette.Highlight2Color = PhGetIntegerSetting(SETTING_THEME_WINDOW_HIGHLIGHT2_COLOR);
+        palette.TextColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_TEXT_COLOR);
+        PhSetWindowThemePalette(PhWindowThemeCustom1, &palette);
+
+        if (RootWindow)
+            PhReInitializeWindowTheme(RootWindow);
+    }
+    else
+    {
+        PhApplyThemeMode(Mode, RootWindow);
+    }
+}
+
+BOOLEAN PhIsThemeModeDark(
+    _In_ ULONG Mode
+    )
+{
+    switch (Mode)
+    {
+    case PhThemeModeDark:
+    case PhThemeModeCustom:
+        return TRUE;
+    case PhThemeModeAutomatic:
+        return PhQueryWindowsUseDarkMode();
+    }
+
+    return FALSE;
+}
 
 /**
  * Determines whether a process is suspended.
@@ -401,9 +448,9 @@ NTSTATUS PhGetProcessSwitchContext(
     //    ) = NULL;
     //
     //if (!BaseReadAppCompatDataForProcess_I)
-    //    BaseReadAppCompatDataForProcess_I = PhGetDllProcedureAddress(L"kernelbase.dll", "BaseReadAppCompatDataForProcess", 0);
+    //    BaseReadAppCompatDataForProcess_I = PhGetDllProcedureAddressZ(L"kernelbase.dll", "BaseReadAppCompatDataForProcess", 0);
     //if (!BaseFreeAppCompatDataForProcess_I)
-    //    BaseFreeAppCompatDataForProcess_I = PhGetDllProcedureAddress(L"kernelbase.dll", "BaseFreeAppCompatDataForProcess", 0);
+    //    BaseFreeAppCompatDataForProcess_I = PhGetDllProcedureAddressZ(L"kernelbase.dll", "BaseFreeAppCompatDataForProcess", 0);
     //
     //if (BaseReadAppCompatDataForProcess_I && BaseFreeAppCompatDataForProcess_I)
     //{
@@ -621,6 +668,8 @@ PH_KNOWN_PROCESS_TYPE PhGetProcessKnownTypeEx(
                 knownProcessType = WindowsLogonProcessType;
             else if (PhEqualStringRef2(&name, L"\\svchost.exe", TRUE))
                 knownProcessType = ServiceHostProcessType;
+            else if (PhEqualStringRef2(&name, L"\\rdpinit.exe", TRUE))
+                knownProcessType = ExplorerProcessType; // alt
             else if (PhEqualStringRef2(&name, L"\\rundll32.exe", TRUE))
                 knownProcessType = RunDllAsAppProcessType;
             else if (PhEqualStringRef2(&name, L"\\dllhost.exe", TRUE))
@@ -980,17 +1029,43 @@ VOID PhShellExecuteUserString(
     PH_STRINGREF stringAfter;
     PPH_STRING ntMessage;
 
+    // Get the execute command. (dmex)
+    executeString = PhGetStringSetting(Setting);
+
+    if (PhEqualString2(executeString, L"%SystemRoot%\\explorer.exe /select,\"%s\"", TRUE))
+    {
+        // Special case: Use PhShowFileInExplorer for this specific setting. (dmex)
+
+        if (String[0] == OBJ_NAME_PATH_SEPARATOR)
+        {
+            PPH_STRING stringTemp;
+            PPH_STRING stringMiddle;
+
+            stringTemp = PhCreateString(String);
+            stringMiddle = PhGetFileName(stringTemp);
+
+            PhShellExploreFile(WindowHandle, PhGetString(stringMiddle));
+
+            PhDereferenceObject(stringMiddle);
+            PhDereferenceObject(stringTemp);
+        }
+        else
+        {
+            PhShellExploreFile(WindowHandle, String);
+        }
+
+        PhDereferenceObject(executeString);
+        return;
+    }
+
+    // Expand environment strings. (dmex)
+    PhMoveReference(&executeString, PhExpandEnvironmentStrings(&executeString->sr));
+
     if (!(applicationDirectory = PhGetApplicationDirectoryWin32()))
     {
         PhShowStatus(WindowHandle, L"Unable to locate the application directory.", STATUS_NOT_FOUND, 0);
         return;
     }
-
-    // Get the execute command. (dmex)
-    executeString = PhGetStringSetting(Setting);
-
-    // Expand environment strings. (dmex)
-    PhMoveReference(&executeString, PhExpandEnvironmentStrings(&executeString->sr));
 
     // Make sure the user executable string is absolute. We can't use PhDetermineDosPathNameType
     // here because the string may be a URL. (dmex)
@@ -1140,8 +1215,9 @@ VOID PhLoadSymbolProviderOptions(
     PPH_STRING searchPath = NULL;
 
     PhSetOptionsSymbolProvider(
-        PH_SYMOPT_UNDNAME,
-        PhGetIntegerSetting(SETTING_DBGHELP_UNDECORATE) ? PH_SYMOPT_UNDNAME : 0
+        PH_SYMOPT_UNDNAME | PH_SYMOPT_VERIFY_MICROSOFT_CHAIN,
+        (PhGetIntegerSetting(SETTING_DBGHELP_UNDECORATE) ? PH_SYMOPT_UNDNAME : 0) |
+        (PhGetIntegerSetting(SETTING_DBGHELP_VERIFY_MICROSOFT_CHAIN) ? PH_SYMOPT_VERIFY_MICROSOFT_CHAIN : 0)
         );
 
     PhQueryEnvironmentVariable(NULL, &symbolPath, &searchPath);
@@ -1203,18 +1279,6 @@ VOID PhCopyListView(
     PPH_STRING text;
 
     text = PhGetListViewText(ListViewHandle);
-    PhSetClipboardString(ListViewHandle, &text->sr);
-    PhDereferenceObject(text);
-}
-
-VOID PhCopyIListView(
-    _In_ HWND ListViewHandle,
-    _In_ IListView* ListView
-    )
-{
-    PPH_STRING text;
-
-    text = PhGetIListViewText(ListView);
     PhSetClipboardString(ListViewHandle, &text->sr);
     PhDereferenceObject(text);
 }
@@ -1304,49 +1368,6 @@ BOOLEAN PhGetListViewContextMenuPoint(
     return FALSE;
 }
 
-BOOLEAN PhGetIListViewContextMenuPoint(
-    _In_ IListView* ListView,
-    _Out_ PPOINT Point
-    )
-{
-    LONG selectedIndex;
-    RECT bounds = { 0 };
-    RECT clientRect = { 0 };
-
-    // The user pressed a key to display the context menu.
-    // Suggest where the context menu should display.
-
-    if ((selectedIndex = PhFindIListViewItemByFlags(ListView, INT_ERROR, LVNI_SELECTED)) != INT_ERROR)
-    {
-        if (PhGetIListViewItemRect(ListView, selectedIndex, LVIR_BOUNDS, &bounds))
-        {
-            //LONG dpiValue = PhGetWindowDpi(ListViewHandle);
-
-            //Point->x = bounds.left + PhGetSystemMetrics(SM_CXSMICON, dpiValue) / 2;
-            //Point->y = bounds.top + PhGetSystemMetrics(SM_CYSMICON, dpiValue) / 2;
-
-            PhGetIListViewClientRect(ListView, &clientRect);
-
-            if (Point->x < 0 || Point->y < 0 || Point->x >= clientRect.right || Point->y >= clientRect.bottom)
-            {
-                // The menu is going to be outside of the control. Just put it at the top-left.
-                Point->x = 0;
-                Point->y = 0;
-            }
-
-            //ClientToScreen(ListViewHandle, Point);
-
-            return TRUE;
-        }
-    }
-
-    Point->x = 0;
-    Point->y = 0;
-    //ClientToScreen(ListViewHandle, Point);
-
-    return FALSE;
-}
-
 VOID PhSetWindowOpacity(
     _In_ HWND WindowHandle,
     _In_ ULONG OpacityPercent
@@ -1369,12 +1390,17 @@ VOID PhSetWindowOpacity(
     SetLayeredWindowAttributes(
         WindowHandle,
         0,
-        (BYTE)(255 * (100 - OpacityPercent) / 100),
+        (BYTE)PhMultiplyDivide(255, 100 - OpacityPercent, 100),
         LWA_ALPHA
         );
 }
 
-PPH_STRING PhGetPhVersion(
+/**
+ * Gets the full application version string.
+ *
+ * \return A formatted version string in major.minor.build.revision form.
+ */
+PPH_STRING PhGetBuildVersion(
     VOID
     )
 {
@@ -1391,7 +1417,15 @@ PPH_STRING PhGetPhVersion(
     return PhFormat(format, RTL_NUMBER_OF(format), 0);
 }
 
-VOID PhGetPhVersionNumbers(
+/**
+ * Gets the individual application version number components.
+ *
+ * \param MajorVersion Receives the major version number.
+ * \param MinorVersion Receives the minor version number.
+ * \param BuildNumber Receives the build number.
+ * \param RevisionNumber Receives the revision number.
+ */
+VOID PhGetBuildVersionNumbers(
     _Out_opt_ PULONG MajorVersion,
     _Out_opt_ PULONG MinorVersion,
     _Out_opt_ PULONG BuildNumber,
@@ -1408,21 +1442,110 @@ VOID PhGetPhVersionNumbers(
         *RevisionNumber = PHAPP_VERSION_REVISION;
 }
 
-PPH_STRING PhGetPhVersionHash(
+/**
+ * Gets the commit hash for the current build.
+ *
+ * \return The commit hash as a UTF-16 string.
+ */
+PPH_STRING PhGetBuildCommit(
     VOID
     )
 {
     return PhConvertUtf8ToUtf16(PHAPP_VERSION_COMMIT);
 }
 
-PH_RELEASE_CHANNEL PhGetPhReleaseChannel(
+/**
+ * Gets the timestamp for the current build.
+ *
+ * \return A formatted local date/time string for the current version, or
+ * "Unknown" when the encoded values are invalid.
+ * \remarks The timestamp format is determined by the encoded version fields:
+ * PHAPP_VERSION_BUILD uses YDDD (Y = years since 2000, DDD = day of year),
+ * and PHAPP_VERSION_REVISION uses HHMM with an hour offset of +1.
+ */
+PPH_STRING PhGetBuildTime(
+    VOID
+    )
+{
+    static const USHORT DaysInMonth[2][12] =
+    {
+        { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },
+        { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+    };
+    ULONG build;
+    ULONG revision;
+    ULONG year;
+    ULONG dayOfYear;
+    USHORT month;
+    ULONG hour;
+    ULONG minute;
+    ULONG leapYear;
+    SYSTEMTIME utcSystemTime;
+    SYSTEMTIME localSystemTime;
+
+    build = PHAPP_VERSION_BUILD;
+    revision = PHAPP_VERSION_REVISION;
+
+    // Decode packed build/revision values into calendar and time components.
+
+    year = 2000 + (build / 1000);
+    dayOfYear = build % 1000;
+    minute = revision % 100;
+    hour = (revision / 100) - 1;
+
+    // Reject impossible day/time values before constructing a timestamp.
+    if (dayOfYear == 0 || dayOfYear > 366 || hour > 23 || minute > 59)
+        return PhCreateString(L"Unknown");
+
+    leapYear = (year % 4 == 0 && ((year % 100 != 0) || (year % 400 == 0))) ? 1 : 0;
+
+    if ((!leapYear && dayOfYear > 365) || year < 2000)
+        return PhCreateString(L"Unknown");
+
+    month = 1;
+
+    // Convert day-of-year to month/day using leap-year-aware month lengths.
+    while (dayOfYear > DaysInMonth[leapYear][month - 1] && month <= 12)
+    {
+        dayOfYear -= DaysInMonth[leapYear][month - 1];
+        month++;
+    }
+
+    if (month > 12)
+        return PhCreateString(L"Unknown");
+
+    // Build a UTC SYSTEMTIME first; convert to local time for display if possible.
+    memset(&utcSystemTime, 0, sizeof(utcSystemTime));
+    utcSystemTime.wYear = (USHORT)year;
+    utcSystemTime.wMonth = month;
+    utcSystemTime.wDay = (USHORT)dayOfYear;
+    utcSystemTime.wHour = (USHORT)hour;
+    utcSystemTime.wMinute = (USHORT)minute;
+
+    if (!PhSystemTimeToTzSpecificLocalTime(&utcSystemTime, &localSystemTime))
+        return PhFormatDateTime(&utcSystemTime);
+
+    return PhFormatDateTime(&localSystemTime);
+}
+
+/**
+ * Gets the configured release update channel.
+ *
+ * \return The configured release channel value.
+ */
+PH_RELEASE_CHANNEL PhGetBuildReleaseChannel(
     VOID
     )
 {
     return PhGetIntegerSetting(SETTING_RELEASE_CHANNEL);
 }
 
-PCWSTR PhGetPhReleaseChannelString(
+/**
+ * Gets the display name for the configured release channel.
+ *
+ * \return A static string describing the current release channel.
+ */
+PCWSTR PhGetBuildReleaseChannelString(
     VOID
     )
 {
@@ -1452,7 +1575,7 @@ VOID PhWritePhTextHeader(
 
     PhWriteStringAsUtf8FileStream2(FileStream, L"System Informer ");
 
-    if (version = PhGetPhVersion())
+    if (version = PhGetBuildVersion())
     {
         PhWriteStringAsUtf8FileStream(FileStream, &version->sr);
         PhDereferenceObject(version);
@@ -1480,7 +1603,7 @@ VOID PhWritePhTextHeader(
 NTSTATUS PhShellProcessHacker(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PCWSTR Parameters,
-    _In_ ULONG ShowWindowType,
+    _In_ LONG ShowWindowType,
     _In_ ULONG Flags,
     _In_ ULONG AppFlags,
     _In_opt_ ULONG Timeout,
@@ -1509,18 +1632,17 @@ VOID PhpAppendCommandLineArgument(
 
     PhAppendStringBuilder2(StringBuilder, L" -");
     PhAppendStringBuilder2(StringBuilder, Name);
-    PhAppendStringBuilder2(StringBuilder, L" \"");
-    temp = PhEscapeCommandLinePart(Value);
+    PhAppendCharStringBuilder(StringBuilder, L' ');
+    temp = PhQuoteCommandLine(Value, TRUE);
     PhAppendStringBuilder(StringBuilder, &temp->sr);
     PhDereferenceObject(temp);
-    PhAppendCharStringBuilder(StringBuilder, L'\"');
 }
 
 NTSTATUS PhShellProcessHackerEx(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PCWSTR FileName,
     _In_opt_ PCWSTR Parameters,
-    _In_ ULONG ShowWindowType,
+    _In_ LONG ShowWindowType,
     _In_ ULONG Flags,
     _In_ ULONG AppFlags,
     _In_opt_ ULONG Timeout,
@@ -2235,79 +2357,6 @@ BOOLEAN PhInsertCopyListViewEMenuItem(
 
     context = PhAllocate(sizeof(PH_COPY_ITEM_CONTEXT));
     context->ListViewHandle = ListViewHandle;
-    context->ListViewClass = NULL;
-    context->Id = lvHitInfo.iItem;
-    context->SubId = lvHitInfo.iSubItem;
-    context->MenuItemText = menuItemText;
-
-    copyMenuItem = PhCreateEMenuItem(0, ID_COPY_CELL, menuItemText->Buffer, NULL, context);
-    copyMenuItem->DeleteFunction = PhpCopyListViewEMenuItemDeleteFunction;
-
-    PhInsertEMenuItem(parentItem, copyMenuItem, indexInParent);
-
-    return TRUE;
-}
-
-BOOLEAN PhInsertCopyIListViewEMenuItem(
-    _In_ PPH_EMENU_ITEM Menu,
-    _In_ ULONG InsertAfterId,
-    _In_ HWND ListViewHandle,
-    _In_ IListView* ListView
-    )
-{
-    PPH_EMENU_ITEM parentItem = NULL;
-    ULONG indexInParent = 0;
-    PPH_COPY_ITEM_CONTEXT context;
-    PH_STRINGREF columnText;
-    PPH_STRING escapedText;
-    PPH_STRING menuItemText;
-    PPH_EMENU_ITEM copyMenuItem;
-    POINT location;
-    LVHITTESTINFO lvHitInfo;
-    HDITEM headerItem;
-    HWND headerHandle;
-    PH_FORMAT format[3];
-    WCHAR headerText[MAX_PATH] = L"";
-
-    if (!PhGetClientPos(ListViewHandle, &location))
-        return FALSE;
-
-    memset(&lvHitInfo, 0, sizeof(LVHITTESTINFO));
-    lvHitInfo.pt = location;
-
-    if (IListView_HitTestSubItem(ListView, &lvHitInfo) != S_OK)
-        return FALSE;
-    if (IListView_GetHeaderControl(ListView, &headerHandle) != S_OK)
-        return FALSE;
-
-    memset(&headerItem, 0, sizeof(HDITEM));
-    headerItem.mask = HDI_TEXT;
-    headerItem.cchTextMax = RTL_NUMBER_OF(headerText);
-    headerItem.pszText = headerText;
-
-    if (!Header_GetItem(headerHandle, lvHitInfo.iSubItem, &headerItem))
-        return FALSE;
-
-    PhInitializeStringRefLongHint(&columnText, headerText);
-
-    if (PhIsNullOrEmptyStringRef(&columnText))
-        return FALSE;
-
-    if (!PhFindEMenuItemEx(Menu, 0, NULL, InsertAfterId, &parentItem, &indexInParent))
-        return FALSE;
-
-    indexInParent++;
-
-    escapedText = PhEscapeStringForMenuPrefix(&columnText);
-    PhInitFormatS(&format[0], L"Copy \""); // Copy \"%s\"
-    PhInitFormatSR(&format[1], escapedText->sr);
-    PhInitFormatS(&format[2], L"\"");
-    menuItemText = PhFormat(format, RTL_NUMBER_OF(format), 0);
-    PhDereferenceObject(escapedText);
-
-    context = PhAllocate(sizeof(PH_COPY_ITEM_CONTEXT));
-    context->ListViewHandle = ListViewHandle;
-    context->ListViewClass = ListView;
     context->Id = lvHitInfo.iItem;
     context->SubId = lvHitInfo.iSubItem;
     context->MenuItemText = menuItemText;
@@ -2341,31 +2390,19 @@ BOOLEAN PhHandleCopyListViewEMenuItem(
 
     PhInitializeStringBuilder(&stringBuilder, 0x100);
 
-    if (context->ListViewClass)
-        IListView_GetItemCount(context->ListViewClass, &count);
-    else
-        count = ListView_GetItemCount(context->ListViewHandle);
-
+    count = ListView_GetItemCount(context->ListViewHandle);
     selectedCount = 0;
 
     for (i = 0; i < count; i++)
     {
-        if (context->ListViewClass)
-            IListView_GetItemState(context->ListViewClass, i, 0, LVIS_SELECTED, &state);
-        else
-            state = ListView_GetItemState(context->ListViewHandle, i, LVIS_SELECTED);
+        state = ListView_GetItemState(context->ListViewHandle, i, LVIS_SELECTED);
 
         if (!FlagOn(state, LVIS_SELECTED))
             continue;
 
-        if (context->ListViewClass)
-            getItemText = PhGetIListViewItemText(context->ListViewClass, i, context->SubId);
-        else
-            getItemText = PhaGetListViewItemText(context->ListViewHandle, i, context->SubId);
-
-        PhAppendStringBuilder(&stringBuilder, &getItemText->sr);
+        if (getItemText = PhaGetListViewItemText(context->ListViewHandle, i, context->SubId))
+            PhAppendStringBuilder(&stringBuilder, &getItemText->sr);
         PhAppendStringBuilder2(&stringBuilder, L"\r\n");
-
         selectedCount++;
     }
 
@@ -2794,48 +2831,18 @@ HBITMAP PhGetShieldBitmap(
 }
 
 HICON PhGetApplicationIcon(
-    _In_ BOOLEAN SmallIcon
-    )
-{
-    static HICON smallIcon = NULL;
-    static HICON largeIcon = NULL;
-    static LONG systemDpi = 0;
-
-    if (systemDpi != PhSystemDpi)
-    {
-        if (smallIcon)
-        {
-            DestroyIcon(smallIcon);
-            smallIcon = NULL;
-        }
-        if (largeIcon)
-        {
-            DestroyIcon(largeIcon);
-            largeIcon = NULL;
-        }
-
-        systemDpi = PhSystemDpi;
-    }
-
-    if (!smallIcon || !largeIcon)
-    {
-        if (!smallIcon)
-            smallIcon = PhLoadIcon(NtCurrentImageBase(), MAKEINTRESOURCE(IDI_PROCESSHACKER), PH_LOAD_ICON_SIZE_SMALL, 0, 0, systemDpi);
-        if (!largeIcon)
-            largeIcon = PhLoadIcon(NtCurrentImageBase(), MAKEINTRESOURCE(IDI_PROCESSHACKER), PH_LOAD_ICON_SIZE_LARGE, 0, 0, systemDpi);
-    }
-
-    return SmallIcon ? smallIcon : largeIcon;
-}
-
-HICON PhGetApplicationIconEx(
     _In_ BOOLEAN SmallIcon,
-    _In_opt_ LONG WindowDpi
+    _In_ LONG WindowDpi
     )
 {
+    ULONG iconFlags;
+
     if (SmallIcon)
-        return PhLoadIcon(NtCurrentImageBase(), MAKEINTRESOURCE(IDI_PROCESSHACKER), PH_LOAD_ICON_SIZE_SMALL, 0, 0, WindowDpi);
-    return PhLoadIcon(NtCurrentImageBase(), MAKEINTRESOURCE(IDI_PROCESSHACKER), PH_LOAD_ICON_SIZE_LARGE, 0, 0, WindowDpi);
+        iconFlags = PH_LOAD_ICON_SHARED | PH_LOAD_ICON_SIZE_SMALL;
+    else
+        iconFlags = PH_LOAD_ICON_SHARED | PH_LOAD_ICON_SIZE_LARGE;
+
+    return PhLoadIcon(NtCurrentImageBase(), MAKEINTRESOURCE(IDI_SYSTEMINFORMER), iconFlags, 0, 0, WindowDpi);
 }
 
 VOID PhSetWindowIcon(
@@ -2845,54 +2852,52 @@ VOID PhSetWindowIcon(
     _In_ BOOLEAN CleanupIcon
     )
 {
+    HICON iconSmallHandle = NULL;
+    HICON iconLargeHandle = NULL;
+
     if (SmallIcon)
     {
-        HICON iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_SMALL, (LPARAM)SmallIcon);
-
-        if (iconHandle && CleanupIcon)
-        {
-            DestroyIcon(iconHandle);
-        }
+        iconSmallHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_SMALL, (LPARAM)SmallIcon);
     }
 
     if (LargeIcon)
     {
-        HICON iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_BIG, (LPARAM)LargeIcon);
-
-        if (iconHandle && CleanupIcon)
-        {
-            DestroyIcon(iconHandle);
-        }
+        iconLargeHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_BIG, (LPARAM)LargeIcon);
     }
+
+    //if (iconSmallHandle && CleanupIcon)
+    //{
+    //    DestroyIcon(iconSmallHandle);
+    //}
+
+    //if (iconLargeHandle && CleanupIcon)
+    //{
+    //    DestroyIcon(iconLargeHandle);
+    //}
 }
 
 VOID PhDestroyWindowIcon(
     _In_ HWND WindowHandle
     )
 {
-    HICON iconHandle;
+    //HICON iconHandle;
 
-    if (iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_SMALL, 0))
-    {
-        DestroyIcon(iconHandle);
-    }
+    //if (iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_SMALL, 0))
+    //{
+    //    DestroyIcon(iconHandle);
+    //}
 
-    if (iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_BIG, 0))
-    {
-        DestroyIcon(iconHandle);
-    }
+    //if (iconHandle = (HICON)SendMessage(WindowHandle, WM_SETICON, ICON_BIG, 0))
+    //{
+    //    DestroyIcon(iconHandle);
+    //}
 }
 
 VOID PhSetApplicationWindowIcon(
     _In_ HWND WindowHandle
     )
 {
-    PhSetWindowIcon(
-        WindowHandle,
-        PhGetApplicationIcon(TRUE),
-        PhGetApplicationIcon(FALSE),
-        TRUE
-        );
+    PhSetApplicationWindowIconEx(WindowHandle, PhGetWindowDpi(WindowHandle));
 }
 
 VOID PhSetApplicationWindowIconEx(
@@ -2900,12 +2905,16 @@ VOID PhSetApplicationWindowIconEx(
     _In_opt_ LONG WindowDpi
     )
 {
-    PhSetWindowIcon(
-        WindowHandle,
-        PhGetApplicationIconEx(TRUE, WindowDpi),
-        PhGetApplicationIconEx(FALSE, WindowDpi),
-        TRUE
-        );
+    HICON smallIcon;
+    HICON largeIcon;
+
+    smallIcon = PhGetApplicationIcon(TRUE, WindowDpi);
+    largeIcon = PhGetApplicationIcon(FALSE, WindowDpi);
+
+    if (smallIcon && largeIcon)
+    {
+        PhSetWindowIcon(WindowHandle, smallIcon, largeIcon, TRUE);
+    }
 }
 
 VOID PhSetStaticWindowIcon(
@@ -2916,7 +2925,7 @@ VOID PhSetStaticWindowIcon(
     HICON largeIcon;
     HICON destroyIcon;
 
-    if (largeIcon = PhGetApplicationIconEx(FALSE, WindowDpi))
+    if (largeIcon = PhGetApplicationIcon(FALSE, WindowDpi))
     {
         if (destroyIcon = Static_SetIcon(WindowHandle, largeIcon))
         {

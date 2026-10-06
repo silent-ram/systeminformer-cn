@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2023
+ *     dmex    2023-2026
  *
  */
 
@@ -243,6 +243,7 @@ VOID PhpLimitedSymbolDereferenceContext(
     }
 }
 
+_Function_class_(USER_THREAD_START_ROUTINE)
 static NTSTATUS PhpLimitedSymbolProviderLookupFunction(
     _In_ PVOID Parameter
     )
@@ -651,8 +652,10 @@ INT_PTR CALLBACK PhPageModifiedDlgProc(
             switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
+                EndDialog(WindowHandle, IDCANCEL);
+                break;
             case IDOK:
-                DestroyWindow(WindowHandle);
+                EndDialog(WindowHandle, IDOK);
                 break;
             case IDC_REFRESH:
                 {
@@ -709,9 +712,7 @@ INT_PTR CALLBACK PhPageModifiedDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);

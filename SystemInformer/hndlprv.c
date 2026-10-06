@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -21,11 +21,24 @@
 
 #include <extmgri.h>
 
-typedef struct _PHP_CREATE_HANDLE_ITEM_CONTEXT
+typedef struct _PH_HANDLE_QUERY_DATA
 {
-    PPH_HANDLE_PROVIDER Provider;
-    PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handle;
-} PHP_CREATE_HANDLE_ITEM_CONTEXT, *PPHP_CREATE_HANDLE_ITEM_CONTEXT;
+    SLIST_ENTRY ListEntry;
+    PPH_HANDLE_PROVIDER HandleProvider;
+    PPH_HANDLE_ITEM HandleItem;
+} PH_HANDLE_QUERY_DATA, *PPH_HANDLE_QUERY_DATA;
+
+typedef struct _PH_HANDLE_QUERY_S1_DATA
+{
+    PH_HANDLE_QUERY_DATA Header;
+
+    OBJECT_BASIC_INFORMATION HandleBasicInformation;
+    NTSTATUS Status;
+    PPH_STRING TypeName;
+    PPH_STRING ObjectName;
+    PPH_STRING BestObjectName;
+    ULONG FileFlags;
+} PH_HANDLE_QUERY_S1_DATA, *PPH_HANDLE_QUERY_S1_DATA;
 
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpHandleProviderDeleteProcedure(
@@ -39,9 +52,42 @@ VOID NTAPI PhpHandleItemDeleteProcedure(
     _In_ ULONG Flags
     );
 
+PPH_HANDLE_ITEM PhpLookupHandleItem(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ HANDLE Handle
+    );
+
+VOID PhpAddHandleItem(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ _Assume_refs_(1) PPH_HANDLE_ITEM HandleItem
+    );
+
+BOOLEAN PhpClearHandleItemName(
+    _Inout_ PPH_HANDLE_ITEM HandleItem
+    );
+
+VOID PhpQueueHandleQueryStage1(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ PPH_HANDLE_ITEM HandleItem
+    );
+
+VOID PhpFlushHandleQueryData(
+    _Inout_ PPH_HANDLE_PROVIDER HandleProvider
+    );
+
+VOID PhpClearHandleQueryData(
+    _Inout_ PPH_HANDLE_PROVIDER HandleProvider
+    );
+
 PPH_OBJECT_TYPE PhHandleProviderType = NULL;
 PPH_OBJECT_TYPE PhHandleItemType = NULL;
 
+/**
+ * Creates a handle provider for a process.
+ *
+ * \param[in] ProcessId The process ID to monitor.
+ * \return A pointer to the created handle provider.
+ */
 PPH_HANDLE_PROVIDER PhCreateHandleProvider(
     _In_ HANDLE ProcessId
     )
@@ -73,6 +119,7 @@ PPH_HANDLE_PROVIDER PhCreateHandleProvider(
 
     handleProvider->ProcessId = ProcessId;
     handleProvider->ProcessHandle = NULL;
+    PhInitializeSListHead(&handleProvider->QueryListHead);
 
     handleProvider->RunStatus = PhOpenProcess(
         &handleProvider->ProcessHandle,
@@ -95,6 +142,12 @@ PPH_HANDLE_PROVIDER PhCreateHandleProvider(
     return handleProvider;
 }
 
+/**
+ * Deletes a handle provider.
+ *
+ * \param[in] Object A pointer to the handle provider object.
+ * \param[in] Flags Reserved.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID PhpHandleProviderDeleteProcedure(
     _In_ PVOID Object,
@@ -108,6 +161,7 @@ VOID PhpHandleProviderDeleteProcedure(
     // Dereference all handle items (we referenced them
     // when we added them to the hashtable).
     PhDereferenceAllHandleItems(handleProvider);
+    PhpClearHandleQueryData(handleProvider);
 
     PhFree(handleProvider->HandleHashSet);
     PhDeleteCallback(&handleProvider->HandleAddedEvent);
@@ -119,6 +173,12 @@ VOID PhpHandleProviderDeleteProcedure(
     PhDereferenceObject(handleProvider->TempListHashtable);
 }
 
+/**
+ * Creates a handle item.
+ *
+ * \param[in] Handle A pointer to the system handle information.
+ * \return A pointer to the created handle item.
+ */
 PPH_HANDLE_ITEM PhCreateHandleItem(
     _In_opt_ PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handle
     )
@@ -146,6 +206,7 @@ PPH_HANDLE_ITEM PhCreateHandleItem(
         handleItem->Attributes = Handle->HandleAttributes;
         handleItem->GrantedAccess = Handle->GrantedAccess;
         handleItem->TypeIndex = Handle->ObjectTypeIndex;
+        handleItem->TypeName = PhGetObjectTypeNameEx(Handle->ObjectTypeIndex);
 
         PhPrintPointer(handleItem->HandleString, (PVOID)handleItem->Handle);
         PhPrintPointer(handleItem->GrantedAccessString, UlongToPtr(handleItem->GrantedAccess));
@@ -159,6 +220,12 @@ PPH_HANDLE_ITEM PhCreateHandleItem(
     return handleItem;
 }
 
+/**
+ * Deletes a handle item.
+ *
+ * \param[in] Object A pointer to the handle item object.
+ * \param[in] Flags Reserved.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID PhpHandleItemDeleteProcedure(
     _In_ PVOID Object,
@@ -174,6 +241,13 @@ VOID PhpHandleItemDeleteProcedure(
     if (handleItem->BestObjectName) PhDereferenceObject(handleItem->BestObjectName);
 }
 
+/**
+ * Compares two handle items.
+ *
+ * \param[in] Value1 The first handle item.
+ * \param[in] Value2 The second handle item.
+ * \return TRUE if the handle items are equal, FALSE otherwise.
+ */
 FORCEINLINE BOOLEAN PhCompareHandleItem(
     _In_ PPH_HANDLE_ITEM Value1,
     _In_ PPH_HANDLE_ITEM Value2
@@ -182,6 +256,12 @@ FORCEINLINE BOOLEAN PhCompareHandleItem(
     return Value1->Handle == Value2->Handle;
 }
 
+/**
+ * Hashes a handle item.
+ *
+ * \param[in] Value The handle item.
+ * \return The hash of the handle item.
+ */
 FORCEINLINE ULONG PhHashHandleItem(
     _In_ PPH_HANDLE_ITEM Value
     )
@@ -189,6 +269,39 @@ FORCEINLINE ULONG PhHashHandleItem(
     return HandleToUlong(Value->Handle) / 4;
 }
 
+/**
+ * References a handle item.
+ *
+ * \param[in] HandleProvider The handle provider.
+ * \param[in] Handle The handle.
+ * \return A pointer to the handle item, or NULL if not found.
+ */
+PPH_HANDLE_ITEM PhReferenceHandleItem(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ HANDLE Handle
+    )
+{
+    PPH_HANDLE_ITEM handleItem;
+
+    PhAcquireQueuedLockShared(&HandleProvider->HandleHashSetLock);
+
+    handleItem = PhpLookupHandleItem(HandleProvider, Handle);
+
+    if (handleItem)
+        PhReferenceObject(handleItem);
+
+    PhReleaseQueuedLockShared(&HandleProvider->HandleHashSetLock);
+
+    return handleItem;
+}
+
+/**
+ * Looks up a handle item in a handle provider.
+ *
+ * \param[in] HandleProvider The handle provider.
+ * \param[in] Handle The handle.
+ * \return A pointer to the handle item, or NULL if not found.
+ */
 PPH_HANDLE_ITEM PhpLookupHandleItem(
     _In_ PPH_HANDLE_PROVIDER HandleProvider,
     _In_ HANDLE Handle
@@ -216,25 +329,56 @@ PPH_HANDLE_ITEM PhpLookupHandleItem(
     return NULL;
 }
 
-PPH_HANDLE_ITEM PhReferenceHandleItem(
+/**
+ * Removes a handle item from a handle provider.
+ *
+ * \param[in] HandleProvider The handle provider.
+ * \param[in] HandleItem The handle item to remove.
+ */
+VOID PhpRemoveHandleItem(
     _In_ PPH_HANDLE_PROVIDER HandleProvider,
-    _In_ HANDLE Handle
+    _In_ PPH_HANDLE_ITEM HandleItem
     )
 {
-    PPH_HANDLE_ITEM handleItem;
-
-    PhAcquireQueuedLockShared(&HandleProvider->HandleHashSetLock);
-
-    handleItem = PhpLookupHandleItem(HandleProvider, Handle);
-
-    if (handleItem)
-        PhReferenceObject(handleItem);
-
-    PhReleaseQueuedLockShared(&HandleProvider->HandleHashSetLock);
-
-    return handleItem;
+    PhRemoveEntryHashSet(HandleProvider->HandleHashSet, HandleProvider->HandleHashSetSize, &HandleItem->HashEntry);
+    HandleProvider->HandleHashSetCount--;
+    PhDereferenceObject(HandleItem);
 }
 
+/**
+ * Adds a handle item to a handle provider.
+ *
+ * \param[in] HandleProvider The handle provider.
+ * \param[in] HandleItem The handle item to add.
+ */
+VOID PhpAddHandleItem(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ _Assume_refs_(1) PPH_HANDLE_ITEM HandleItem
+    )
+{
+    if (HandleProvider->HandleHashSetSize < HandleProvider->HandleHashSetCount + 1)
+    {
+        PhResizeHashSet(
+            &HandleProvider->HandleHashSet,
+            &HandleProvider->HandleHashSetSize,
+            HandleProvider->HandleHashSetSize * 2
+            );
+    }
+
+    PhAddEntryHashSet(
+        HandleProvider->HandleHashSet,
+        HandleProvider->HandleHashSetSize,
+        &HandleItem->HashEntry,
+        PhHashHandleItem(HandleItem)
+        );
+    HandleProvider->HandleHashSetCount++;
+}
+
+/**
+ * Dereferences all handle items in a handle provider.
+ *
+ * \param[in] HandleProvider The handle provider.
+ */
 VOID PhDereferenceAllHandleItems(
     _In_ PPH_HANDLE_PROVIDER HandleProvider
     )
@@ -260,110 +404,329 @@ VOID PhDereferenceAllHandleItems(
     PhReleaseQueuedLockExclusive(&HandleProvider->HandleHashSetLock);
 }
 
-VOID PhpAddHandleItem(
-    _In_ PPH_HANDLE_PROVIDER HandleProvider,
-    _In_ _Assume_refs_(1) PPH_HANDLE_ITEM HandleItem
+/**
+ * Clears the name of a handle item.
+ *
+ * \param[in,out] HandleItem The handle item.
+ * \return TRUE if the handle item was modified, FALSE otherwise.
+ */
+BOOLEAN PhpClearHandleItemName(
+    _Inout_ PPH_HANDLE_ITEM HandleItem
     )
 {
-    if (HandleProvider->HandleHashSetSize < HandleProvider->HandleHashSetCount + 1)
+    BOOLEAN modified = FALSE;
+
+    if (!HandleItem->NameResolved)
     {
-        PhResizeHashSet(
-            &HandleProvider->HandleHashSet,
-            &HandleProvider->HandleHashSetSize,
-            HandleProvider->HandleHashSetSize * 2
-            );
+        HandleItem->NameResolved = TRUE;
+        modified = TRUE;
     }
 
-    PhAddEntryHashSet(
-        HandleProvider->HandleHashSet,
-        HandleProvider->HandleHashSetSize,
-        &HandleItem->HashEntry,
-        PhHashHandleItem(HandleItem)
-        );
-    HandleProvider->HandleHashSetCount++;
+    if (HandleItem->ObjectName)
+    {
+        PhClearReference(&HandleItem->ObjectName);
+        modified = TRUE;
+    }
+
+    if (HandleItem->BestObjectName)
+    {
+        PhClearReference(&HandleItem->BestObjectName);
+        modified = TRUE;
+    }
+
+    return modified;
 }
 
-VOID PhpRemoveHandleItem(
-    _In_ PPH_HANDLE_PROVIDER HandleProvider,
-    _In_ PPH_HANDLE_ITEM HandleItem
-    )
-{
-    PhRemoveEntryHashSet(HandleProvider->HandleHashSet, HandleProvider->HandleHashSetSize, &HandleItem->HashEntry);
-    HandleProvider->HandleHashSetCount--;
-    PhDereferenceObject(HandleItem);
-}
-
+/**
+ * Worker thread for handle query stage 1.
+ *
+ * \param[in] Parameter A pointer to the handle query data.
+ * \return STATUS_SUCCESS.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
-NTSTATUS PhpCreateHandleItemFunction(
+NTSTATUS PhpHandleQueryStage1Worker(
     _In_ PVOID Parameter
     )
 {
-    PPHP_CREATE_HANDLE_ITEM_CONTEXT context = Parameter;
-    PPH_HANDLE_ITEM handleItem;
-    OBJECT_BASIC_INFORMATION handleBasicInformation = { 0 };
+    PPH_HANDLE_QUERY_S1_DATA data = Parameter;
+    PPH_HANDLE_PROVIDER handleProvider = data->Header.HandleProvider;
+    PPH_HANDLE_ITEM handleItem = data->Header.HandleItem;
 
-    handleItem = PhCreateHandleItem(context->Handle);
-
-    PhGetHandleInformationEx(
-        context->Provider->ProcessHandle,
+    data->Status = PhGetHandleInformationEx(
+        handleProvider->ProcessHandle,
         handleItem->Handle,
-        context->Handle->ObjectTypeIndex,
+        handleItem->TypeIndex,
         0,
         NULL,
-        &handleBasicInformation,
-        &handleItem->TypeName,
-        &handleItem->ObjectName,
-        &handleItem->BestObjectName,
+        &data->HandleBasicInformation,
+        &data->TypeName,
+        &data->ObjectName,
+        &data->BestObjectName,
         NULL
         );
 
-    if (PhIsNullOrEmptyString(handleItem->TypeName))
+    if (PhIsNullOrEmptyString(data->TypeName))
     {
-        PhMoveReference(&handleItem->TypeName, PhGetObjectTypeIndexName(handleItem->TypeIndex));
+        PhMoveReference(&data->TypeName, PhGetObjectTypeIndexName(handleItem->TypeIndex));
     }
 
-    handleItem->HandleCount = handleBasicInformation.HandleCount;
-    handleItem->PointerCount = handleBasicInformation.PointerCount;
-    handleItem->PagedPoolCharge = handleBasicInformation.PagedPoolCharge;
-    handleItem->NonPagedPoolCharge = handleBasicInformation.NonPagedPoolCharge;
-
-    if (handleItem->TypeName)
+    if (
+        PhIsObjectTypeIndex(handleItem->TypeIndex, PhHandleObjectTypeFile) &&
+        KsiLevel() >= KphLevelMed
+        )
     {
-        // Add the handle item to the hashtable.
-        PhAcquireQueuedLockExclusive(&context->Provider->HandleHashSetLock);
-        PhpAddHandleItem(context->Provider, handleItem);
-        PhReleaseQueuedLockExclusive(&context->Provider->HandleHashSetLock);
+        KPH_FILE_OBJECT_INFORMATION objectInfo;
 
-        // Raise the handle added event.
-        PhInvokeCallback(&context->Provider->HandleAddedEvent, handleItem);
-    }
-    else
-    {
-        PhDereferenceObject(handleItem);
+        if (NT_SUCCESS(KphQueryInformationObject(
+            handleProvider->ProcessHandle,
+            handleItem->Handle,
+            KphObjectFileObjectInformation,
+            &objectInfo,
+            sizeof(KPH_FILE_OBJECT_INFORMATION),
+            NULL
+            )))
+        {
+            if (objectInfo.SharedRead)
+                data->FileFlags |= PH_HANDLE_FILE_SHARED_READ;
+            if (objectInfo.SharedWrite)
+                data->FileFlags |= PH_HANDLE_FILE_SHARED_WRITE;
+            if (objectInfo.SharedDelete)
+                data->FileFlags |= PH_HANDLE_FILE_SHARED_DELETE;
+        }
     }
 
-    PhFree(context);
+    RtlInterlockedPushEntrySList(&handleProvider->QueryListHead, &data->Header.ListEntry);
+    PhDereferenceObject(handleProvider);
 
     return STATUS_SUCCESS;
 }
 
+/**
+ * Queues a handle query stage 1.
+ *
+ * \param[in] HandleProvider The handle provider.
+ * \param[in] HandleItem The handle item.
+ */
+VOID PhpQueueHandleQueryStage1(
+    _In_ PPH_HANDLE_PROVIDER HandleProvider,
+    _In_ PPH_HANDLE_ITEM HandleItem
+    )
+{
+    PH_WORK_QUEUE_ENVIRONMENT environment;
+    PPH_HANDLE_QUERY_S1_DATA data;
+
+    data = PhAllocateZero(sizeof(PH_HANDLE_QUERY_S1_DATA));
+    data->Header.HandleProvider = HandleProvider;
+    data->Header.HandleItem = HandleItem;
+
+    // Provider ref: dereferenced by the worker after it queues the result.
+    // Handle item ref: dereferenced when the provider update function removes the item from the queue.
+    PhReferenceObject(HandleProvider);
+    PhReferenceObject(HandleItem);
+
+    PhInitializeWorkQueueEnvironment(&environment);
+    environment.BasePriority = THREAD_PRIORITY_BELOW_NORMAL;
+    environment.IoPriority = IoPriorityLow;
+    environment.PagePriority = MEMORY_PRIORITY_LOW;
+
+    PhQueueItemWorkQueueEx(PhGetGlobalWorkQueue(), PhpHandleQueryStage1Worker, data, NULL, &environment);
+}
+
+/**
+ * Fills a handle item with stage 1 data.
+ *
+ * \param[in] Data A pointer to the handle query stage 1 data.
+ *
+ * \return TRUE if the handle item was modified, FALSE otherwise.
+ */
+BOOLEAN PhpFillHandleItemStage1(
+    _In_ PPH_HANDLE_QUERY_S1_DATA Data
+    )
+{
+    PPH_HANDLE_ITEM handleItem = Data->Header.HandleItem;
+    BOOLEAN modified = FALSE;
+
+    if (!NT_SUCCESS(Data->Status))
+    {
+        modified = PhpClearHandleItemName(handleItem);
+    }
+
+    if (handleItem->HandleCount != Data->HandleBasicInformation.HandleCount)
+    {
+        handleItem->HandleCount = Data->HandleBasicInformation.HandleCount;
+        modified = TRUE;
+    }
+
+    if (handleItem->PointerCount != Data->HandleBasicInformation.PointerCount)
+    {
+        handleItem->PointerCount = Data->HandleBasicInformation.PointerCount;
+        modified = TRUE;
+    }
+
+    if (handleItem->PagedPoolCharge != Data->HandleBasicInformation.PagedPoolCharge)
+    {
+        handleItem->PagedPoolCharge = Data->HandleBasicInformation.PagedPoolCharge;
+        modified = TRUE;
+    }
+
+    if (handleItem->NonPagedPoolCharge != Data->HandleBasicInformation.NonPagedPoolCharge)
+    {
+        handleItem->NonPagedPoolCharge = Data->HandleBasicInformation.NonPagedPoolCharge;
+        modified = TRUE;
+    }
+
+    if (PhCompareStringWithNull(handleItem->TypeName, Data->TypeName, FALSE) != 0)
+    {
+        PhMoveReference(&handleItem->TypeName, Data->TypeName);
+        Data->TypeName = NULL;
+        modified = TRUE;
+    }
+
+    if (PhCompareStringWithNull(handleItem->ObjectName, Data->ObjectName, FALSE) != 0)
+    {
+        PhMoveReference(&handleItem->ObjectName, Data->ObjectName);
+        Data->ObjectName = NULL;
+        modified = TRUE;
+    }
+
+    if (PhCompareStringWithNull(handleItem->BestObjectName, Data->BestObjectName, FALSE) != 0)
+    {
+        PhMoveReference(&handleItem->BestObjectName, Data->BestObjectName);
+        Data->BestObjectName = NULL;
+        modified = TRUE;
+    }
+
+    if ((handleItem->FileFlags & PH_HANDLE_FILE_SHARED_MASK) != Data->FileFlags)
+    {
+        handleItem->FileFlags &= ~PH_HANDLE_FILE_SHARED_MASK;
+        handleItem->FileFlags |= Data->FileFlags;
+        modified = TRUE;
+    }
+
+    return modified;
+}
+
+/**
+ * Frees handle query data.
+ *
+ * \param[in] Data A pointer to the handle query data.
+ */
+VOID PhpFreeHandleQueryData(
+    _In_ PPH_HANDLE_QUERY_DATA Data
+    )
+{
+    PPH_HANDLE_QUERY_S1_DATA stage1Data = (PPH_HANDLE_QUERY_S1_DATA)Data;
+
+    if (stage1Data->TypeName) PhDereferenceObject(stage1Data->TypeName);
+    if (stage1Data->ObjectName) PhDereferenceObject(stage1Data->ObjectName);
+    if (stage1Data->BestObjectName) PhDereferenceObject(stage1Data->BestObjectName);
+
+    PhDereferenceObject(Data->HandleItem);
+    PhFree(Data);
+}
+
+/**
+ * Flushes handle query data.
+ *
+ * \param[in,out] HandleProvider The handle provider.
+ */
+VOID PhpFlushHandleQueryData(
+    _Inout_ PPH_HANDLE_PROVIDER HandleProvider
+    )
+{
+    PSLIST_ENTRY entry;
+
+    entry = RtlInterlockedFlushSList(&HandleProvider->QueryListHead);
+
+    while (entry)
+    {
+        PPH_HANDLE_QUERY_DATA data;
+        PPH_HANDLE_ITEM handleItem;
+
+        data = CONTAINING_RECORD(entry, PH_HANDLE_QUERY_DATA, ListEntry);
+        entry = entry->Next;
+        handleItem = data->HandleItem;
+
+        if (handleItem)
+        {
+            PhAcquireQueuedLockShared(&HandleProvider->HandleHashSetLock);
+
+            if (PhpLookupHandleItem(HandleProvider, handleItem->Handle) == handleItem)
+            {
+                BOOLEAN modified = FALSE;
+                BOOLEAN nameResolved;
+
+                modified = PhpFillHandleItemStage1((PPH_HANDLE_QUERY_S1_DATA)data);
+                nameResolved = TRUE;
+
+                if (handleItem->NameResolved != nameResolved)
+                {
+                    handleItem->NameResolved = nameResolved;
+                    modified = TRUE;
+                }
+
+                PhReleaseQueuedLockShared(&HandleProvider->HandleHashSetLock);
+
+                if (modified)
+                    InterlockedExchange(&handleItem->JustProcessed, TRUE);
+            }
+            else
+            {
+                PhReleaseQueuedLockShared(&HandleProvider->HandleHashSetLock);
+            }
+        }
+
+        PhpFreeHandleQueryData(data);
+    }
+}
+
+/**
+ * Clears handle query data.
+ *
+ * \param[in,out] HandleProvider The handle provider.
+ */
+VOID PhpClearHandleQueryData(
+    _Inout_ PPH_HANDLE_PROVIDER HandleProvider
+    )
+{
+    PSLIST_ENTRY entry;
+
+    entry = RtlInterlockedFlushSList(&HandleProvider->QueryListHead);
+
+    while (entry)
+    {
+        PPH_HANDLE_QUERY_DATA data;
+
+        data = CONTAINING_RECORD(entry, PH_HANDLE_QUERY_DATA, ListEntry);
+        entry = entry->Next;
+
+        PhpFreeHandleQueryData(data);
+    }
+}
+
+/**
+ * Updates a handle provider.
+ *
+ * \param[in] Object A pointer to the handle provider object.
+ */
 _Function_class_(PH_PROVIDER_FUNCTION)
 VOID PhHandleProviderUpdate(
     _In_ PVOID Object
     )
 {
-    static PH_INITONCE initOnce = PH_INITONCE_INIT;
-    static ULONG fileObjectTypeIndex = ULONG_MAX;
     PPH_HANDLE_PROVIDER handleProvider = (PPH_HANDLE_PROVIDER)Object;
-    PSYSTEM_HANDLE_INFORMATION_EX handleInfo;
-    PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX handles;
+    PSYSTEM_HANDLE_INFORMATION_EX handleInfo = NULL;
+    PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX handles = NULL;
     ULONG_PTR numberOfHandles;
     ULONG i;
     PH_HASHTABLE_ENUM_CONTEXT enumContext;
     PPH_KEY_VALUE_PAIR handlePair;
-    BOOLEAN useWorkQueue = FALSE;
-    PH_WORK_QUEUE workQueue;
     KPH_LEVEL level;
+
+    // Note about locking:
+    //
+    // Since this is the only function that is allowed to modify the handle hashtable, locking is
+    // not needed for shared accesses. However, exclusive accesses need locking.
 
     handleProvider->RunStatus = PhEnumHandlesGeneric(
         handleProvider->ProcessId,
@@ -373,17 +736,6 @@ VOID PhHandleProviderUpdate(
         );
 
     level = KsiLevel();
-    if (level < KphLevelMed)
-    {
-        useWorkQueue = TRUE;
-        PhInitializeWorkQueue(&workQueue, 1, 20, 1000);
-
-        if (PhBeginInitOnce(&initOnce))
-        {
-            fileObjectTypeIndex = PhGetObjectTypeNumberZ(L"File");
-            PhEndInitOnce(&initOnce);
-        }
-    }
 
     if (NT_SUCCESS(handleProvider->RunStatus))
     {
@@ -428,11 +780,7 @@ VOID PhHandleProviderUpdate(
                 {
                     // Also compare the object pointers to make sure a different object wasn't
                     // re-opened with the same handle value.
-                    if (
-                        // TODO(jxy-s): remove following line after next driver release, see commit 3a54b8329
-                        handleProvider->ProcessId != SYSTEM_PROCESS_ID &&
-                        level >= KphLevelMed && handleProvider->ProcessHandle
-                        )
+                    if (level >= KphLevelMed && handleProvider->ProcessHandle)
                     {
                         found = NT_SUCCESS(KphCompareObjects(
                             handleProvider->ProcessHandle,
@@ -451,7 +799,6 @@ VOID PhHandleProviderUpdate(
                             handleItem->Handle == (*tempHashtableValue)->HandleValue &&
                             handleItem->GrantedAccess == (*tempHashtableValue)->GrantedAccess &&
                             handleItem->TypeIndex == (*tempHashtableValue)->ObjectTypeIndex &&
-                            handleItem->Attributes == (*tempHashtableValue)->HandleAttributes &&
                             handleItem->ProcessId == (*tempHashtableValue)->UniqueProcessId
                             )
                         {
@@ -487,6 +834,8 @@ VOID PhHandleProviderUpdate(
         }
     }
 
+    PhpFlushHandleQueryData(handleProvider);
+
     // Look for new handles and update existing ones.
 
     PhBeginEnumHashtable(handleProvider->TempListHashtable, &enumContext);
@@ -500,81 +849,7 @@ VOID PhHandleProviderUpdate(
 
         if (!handleItem)
         {
-            OBJECT_BASIC_INFORMATION handleBasicInformation = { 0 };
-
-            // When we don't have KPH, query handle information in parallel to take full advantage of the
-            // PhCallWithTimeout functionality.
-            if (useWorkQueue && handle->ObjectTypeIndex == fileObjectTypeIndex)
-            {
-                PPHP_CREATE_HANDLE_ITEM_CONTEXT context;
-
-                context = PhAllocate(sizeof(PHP_CREATE_HANDLE_ITEM_CONTEXT));
-                context->Provider = handleProvider;
-                context->Handle = handle;
-                PhQueueItemWorkQueue(&workQueue, PhpCreateHandleItemFunction, context);
-                continue;
-            }
-
             handleItem = PhCreateHandleItem(handle);
-
-            PhGetHandleInformationEx(
-                handleProvider->ProcessHandle,
-                handleItem->Handle,
-                handle->ObjectTypeIndex,
-                0,
-                NULL,
-                &handleBasicInformation,
-                &handleItem->TypeName,
-                &handleItem->ObjectName,
-                &handleItem->BestObjectName,
-                NULL
-                );
-
-            handleItem->HandleCount = handleBasicInformation.HandleCount;
-            handleItem->PointerCount = handleBasicInformation.PointerCount;
-            handleItem->PagedPoolCharge = handleBasicInformation.PagedPoolCharge;
-            handleItem->NonPagedPoolCharge = handleBasicInformation.NonPagedPoolCharge;
-
-            if (PhIsNullOrEmptyString(handleItem->TypeName))
-            {
-                PPH_STRING typeName;
-
-                if (typeName = PhGetObjectTypeIndexName(handleItem->TypeIndex))
-                {
-                    PhMoveReference(&handleItem->TypeName, typeName);
-                }
-            }
-
-            if (handle->ObjectTypeIndex == fileObjectTypeIndex)
-            {
-                if (level >= KphLevelMed)
-                {
-                    KPH_FILE_OBJECT_INFORMATION objectInfo;
-
-                    if (NT_SUCCESS(KphQueryInformationObject(
-                        handleProvider->ProcessHandle,
-                        handleItem->Handle,
-                        KphObjectFileObjectInformation,
-                        &objectInfo,
-                        sizeof(KPH_FILE_OBJECT_INFORMATION),
-                        NULL
-                        )))
-                    {
-                        if (objectInfo.SharedRead)
-                            handleItem->FileFlags |= PH_HANDLE_FILE_SHARED_READ;
-                        if (objectInfo.SharedWrite)
-                            handleItem->FileFlags |= PH_HANDLE_FILE_SHARED_WRITE;
-                        if (objectInfo.SharedDelete)
-                            handleItem->FileFlags |= PH_HANDLE_FILE_SHARED_DELETE;
-
-                        // TODO add extra info from file objects here (jxy-s)
-                        // objectInfo.HasActiveTransaction;
-                        // objectInfo.UserWritableReferences;
-                        // objectInfo.IsIgnoringSharing;
-                        // ... more
-                    }
-                }
-            }
 
             // Add the handle item to the hashtable.
             PhAcquireQueuedLockExclusive(&handleProvider->HandleHashSetLock);
@@ -583,6 +858,8 @@ VOID PhHandleProviderUpdate(
 
             // Raise the handle added event.
             PhInvokeCallback(&handleProvider->HandleAddedEvent, handleItem);
+
+            PhpQueueHandleQueryStage1(handleProvider, handleItem);
         }
         else
         {
@@ -626,6 +903,10 @@ VOID PhHandleProviderUpdate(
                     modified = TRUE;
                 }
             }
+            else
+            {
+                modified = PhpClearHandleItemName(handleItem);
+            }
 
             if (handleItem->Attributes != handle->HandleAttributes)
             {
@@ -633,18 +914,15 @@ VOID PhHandleProviderUpdate(
                 modified = TRUE;
             }
 
+            if (InterlockedExchange(&handleItem->JustProcessed, 0) != 0)
+                modified = TRUE;
+
             if (modified)
             {
                 // Raise the handle modified event.
                 PhInvokeCallback(&handleProvider->HandleModifiedEvent, handleItem);
             }
         }
-    }
-
-    if (useWorkQueue)
-    {
-        PhWaitForWorkQueue(&workQueue);
-        PhDeleteWorkQueue(&workQueue);
     }
 
     if (NT_SUCCESS(handleProvider->RunStatus))

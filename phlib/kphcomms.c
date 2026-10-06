@@ -6,13 +6,14 @@
  * Authors:
  *
  *     jxy-s   2022-2025
- *     dmex    2022-2025
+ *     dmex    2022-2026
  *
  */
 
 #include <ph.h>
 #include <kphcomms.h>
 #include <kphuser.h>
+#include <kphringbuff.h>
 #include <mapldr.h>
 #include <apiimport.h>
 
@@ -39,11 +40,30 @@ PKPH_UMESSAGE KphpCommsMessages = NULL;
 ULONG KphpCommsMessageCount = 0;
 PH_RUNDOWN_PROTECT KphpCommsRundown;
 PH_FREE_LIST KphpCommsReplyFreeList;
+HANDLE KphpCommsRingBufferThread = NULL;
+KPH_RING_BUFFER_CONNECT KphpCommsRingBuffer = { 0 };
+ULONG KphpCommsTlsSlot = TLS_OUT_OF_INDEXES;
 
-#define KPH_COMMS_MIN_THREADS   2
-#define KPH_COMMS_MESSAGE_SCALE 2
-#define KPH_COMMS_THREAD_SCALE  2
-#define KPH_COMMS_MAX_MESSAGES  1024
+#define KPH_COMMS_MIN_THREADS           2
+#define KPH_COMMS_MESSAGE_SCALE         2
+#define KPH_COMMS_THREAD_SCALE          2
+#define KPH_COMMS_MAX_MESSAGES          1024
+#define KPH_COMMS_THREAD_PROPERTIES_SET UlongToPtr(1)
+
+VOID KphpCommsSetThreadProperties(
+    _In_z_ PCWSTR ThreadName,
+    _In_ KPRIORITY Priority
+    )
+{
+    if (PhTlsGetValue(KphpCommsTlsSlot) != KPH_COMMS_THREAD_PROPERTIES_SET)
+    {
+        PhSetThreadName(NtCurrentThread(), ThreadName);
+        if (Priority >= THREAD_PRIORITY_TIME_CRITICAL)
+            Priority = LOW_REALTIME_PRIORITY;
+        PhSetThreadBasePriority(NtCurrentThread(), Priority);
+        PhTlsSetValue(KphpCommsTlsSlot, KPH_COMMS_THREAD_PROPERTIES_SET);
+    }
+}
 
 /**
  * \brief Unhandled communications callback.
@@ -61,19 +81,17 @@ VOID KphpCommsCallbackUnhandled(
     _In_ PCKPH_MESSAGE Message
     )
 {
-    PPH_FREE_LIST freelist;
     PKPH_MESSAGE msg;
 
     if (!ReplyToken)
         return;
 
-    freelist = KphGetMessageFreeList();
-
-    msg = PhAllocateFromFreeList(freelist);
+    msg = KphCreateMessage(KPH_MESSAGE_MIN_SIZE);
     KphMsgInit(msg, KphMsgUnhandled);
+
     KphCommsReplyMessage(ReplyToken, msg);
 
-    PhFreeToFreeList(freelist, msg);
+    PhDereferenceObject(msg);
 }
 
 /**
@@ -96,20 +114,37 @@ VOID WINAPI KphpCommsIoCallback(
 {
     NTSTATUS status;
     PKPH_UMESSAGE msg;
-    BOOLEAN handled;
-    ULONG_PTR replyToken;
+    SIZE_T length;
 
     if (!PhAcquireRundownProtection(&KphpCommsRundown))
         return;
 
+    KphpCommsSetThreadProperties(L"Message Processor", THREAD_PRIORITY_TIME_CRITICAL);
+
     msg = CONTAINING_RECORD(ApcContext, KPH_UMESSAGE, Overlapped);
 
     if (IoSB->Status != STATUS_SUCCESS)
+    {
+        if (IoSB->Status == STATUS_PORT_DISCONNECTED)
+        {
+            KphpCommsPortDisconnected = TRUE;
+            PhReleaseRundownProtection(&KphpCommsRundown);
+            return;
+        }
+
+        goto QueueIoOperation;
+    }
+
+    assert(IoSB->Information >= UFIELD_OFFSET(KPH_UMESSAGE, Message));
+
+    if (IoSB->Information < UFIELD_OFFSET(KPH_UMESSAGE, Message))
         goto QueueIoOperation;
 
-    assert(IoSB->Information >= KPH_MESSAGE_MIN_SIZE);
+    length = IoSB->Information - UFIELD_OFFSET(KPH_UMESSAGE, Message);
 
-    if (IoSB->Information < KPH_MESSAGE_MIN_SIZE)
+    assert(length >= KPH_MESSAGE_MIN_SIZE);
+
+    if (length < KPH_MESSAGE_MIN_SIZE)
         goto QueueIoOperation;
 
     if (!NT_SUCCESS(status = KphMsgValidate(&msg->Message)))
@@ -119,17 +154,37 @@ VOID WINAPI KphpCommsIoCallback(
     }
 
     if (msg->MessageHeader.ReplyLength)
+    {
+        BOOLEAN handled;
+        ULONG_PTR replyToken;
+
         replyToken = (ULONG_PTR)&msg->MessageHeader;
-    else
-        replyToken = 0;
 
-    if (KphpCommsRegisteredCallback)
-        handled = KphpCommsRegisteredCallback(replyToken, &msg->Message);
-    else
-        handled = FALSE;
+        assert(length == msg->Message.Header.Size);
 
-    if (!handled)
-        KphpCommsCallbackUnhandled(replyToken, &msg->Message);
+        if (KphpCommsRegisteredCallback)
+            handled = KphpCommsRegisteredCallback(replyToken, &msg->Message);
+        else
+            handled = FALSE;
+
+        if (!handled)
+            KphpCommsCallbackUnhandled(replyToken, &msg->Message);
+    }
+    else if (KphpCommsRegisteredCallback)
+    {
+        for (ULONG offset = 0; offset < length; NOTHING)
+        {
+            PKPH_MESSAGE message;
+
+            assert(offset < sizeof(KPH_MESSAGE));
+
+            message = PTR_ADD_OFFSET(&msg->Message, offset);
+
+            KphpCommsRegisteredCallback(0, message);
+
+            offset += message->Header.Size;
+        }
+    }
 
 QueueIoOperation:
 
@@ -151,18 +206,58 @@ QueueIoOperation:
         assert(status == STATUS_PORT_DISCONNECTED);
 
         if (status == STATUS_PORT_DISCONNECTED)
-        {
-            //
-            // Mark the port disconnected so KphCommsIsConnected returns false.
-            // This can happen if the driver goes away before the client.
-            //
             KphpCommsPortDisconnected = TRUE;
-        }
 
         TpCancelAsyncIoOperation(KphpCommsThreadPoolIo);
     }
 
     PhReleaseRundownProtection(&KphpCommsRundown);
+}
+
+_Function_class_(KPH_RING_CALLBACK)
+BOOLEAN NTAPI KphpRingBufferCallback(
+    _In_opt_ PVOID Context,
+    _In_bytecount_(Length) PVOID Buffer,
+    _In_ ULONG Length
+    )
+{
+    if (!PhAcquireRundownProtection(&KphpCommsRundown))
+        return TRUE;
+
+    if (KphpCommsRegisteredCallback && NT_VERIFY(Length >= KPH_MESSAGE_MIN_SIZE))
+    {
+        if (NT_VERIFY(NT_SUCCESS(KphMsgValidate(Buffer))))
+        {
+            KphpCommsRegisteredCallback(0, Buffer);
+        }
+    }
+
+    PhReleaseRundownProtection(&KphpCommsRundown);
+
+    return FALSE;
+}
+
+_Function_class_(USER_THREAD_START_ROUTINE)
+NTSTATUS NTAPI KphpRingBufferProcessor(
+    _In_ PVOID Context
+    )
+{
+    KphpCommsSetThreadProperties(L"Message Ring Processor", THREAD_PRIORITY_HIGHEST);
+
+    while (PhAcquireRundownProtection(&KphpCommsRundown))
+    {
+        PhReleaseRundownProtection(&KphpCommsRundown);
+
+        if (!KphProcessRingBuffer(&KphpCommsRingBuffer.Ring, KphpRingBufferCallback, NULL))
+        {
+            if (KphpCommsRingBuffer.EventHandle)
+                PhWaitForSingleObject(KphpCommsRingBuffer.EventHandle, INFINITE);
+            else
+                PhDelayExecution(300);
+        }
+    }
+
+    return STATUS_SUCCESS;
 }
 
 /**
@@ -171,17 +266,22 @@ QueueIoOperation:
  * \param[in] PortName Communication port name.
  * \param[in] Callback Communication callback for receiving (and replying to)
  * messages from the driver.
+ * \param[in] RingBufferLength Size of the ring buffer to use for messages.
  *
  * \return Successful or errant status.
  */
 _Must_inspect_result_
 NTSTATUS KphCommsStart(
     _In_ PCPH_STRINGREF PortName,
-    _In_opt_ PKPH_COMMS_CALLBACK Callback
+    _In_opt_ PKPH_COMMS_CALLBACK Callback,
+    _In_ ULONG RingBufferLength
     )
 {
     NTSTATUS status;
     ULONG numberOfThreads;
+    PVOID connectionContext;
+    PVOID connectionContextPointer;
+    USHORT connectionContextSize;
 
     if (KphpCommsFltPortHandle)
     {
@@ -189,11 +289,27 @@ NTSTATUS KphCommsStart(
         goto CleanupExit;
     }
 
+    if (RingBufferLength)
+    {
+        OBJECT_ATTRIBUTES objectAttributes;
+        InitializeObjectAttributes(&objectAttributes, NULL, OBJ_EXCLUSIVE, NULL, NULL);
+        NtCreateEvent(&KphpCommsRingBuffer.EventHandle, EVENT_ALL_ACCESS, &objectAttributes, SynchronizationEvent, FALSE);
+        KphpCommsRingBuffer.Length = RingBufferLength;
+        connectionContext = &KphpCommsRingBuffer;
+        connectionContextPointer = &connectionContext;
+        connectionContextSize = sizeof(PVOID);
+    }
+    else
+    {
+        connectionContextPointer = NULL;
+        connectionContextSize = 0;
+    }
+
     if (!NT_SUCCESS(status = PhFilterConnectCommunicationPort(
         PortName,
         0,
-        NULL,
-        0,
+        connectionContextPointer,
+        connectionContextSize,
         NULL,
         &KphpCommsFltPortHandle
         )))
@@ -204,6 +320,19 @@ NTSTATUS KphCommsStart(
 
     PhInitializeRundownProtection(&KphpCommsRundown);
     PhInitializeFreeList(&KphpCommsReplyFreeList, sizeof(KPH_UREPLY), 16);
+
+    KphpCommsTlsSlot = PhTlsAlloc();
+    if (KphpCommsTlsSlot == TLS_OUT_OF_INDEXES)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto CleanupExit;
+    }
+
+    if (RingBufferLength)
+    {
+        if (!NT_SUCCESS(status = PhCreateThreadEx(&KphpCommsRingBufferThread, KphpRingBufferProcessor, NULL)))
+            goto CleanupExit;
+    }
 
     if (PhSystemProcessorInformation.NumberOfProcessors >= KPH_COMMS_MIN_THREADS)
         numberOfThreads = PhSystemProcessorInformation.NumberOfProcessors * KPH_COMMS_THREAD_SCALE;
@@ -307,6 +436,34 @@ VOID KphCommsStop(
         KphpCommsThreadPool = NULL;
     }
 
+    if (KphpCommsRingBufferThread)
+    {
+        if (KphpCommsRingBuffer.EventHandle)
+            NtSetEvent(KphpCommsRingBuffer.EventHandle, NULL);
+
+        NtWaitForSingleObject(KphpCommsRingBufferThread, FALSE, NULL);
+        NtClose(KphpCommsRingBufferThread);
+        KphpCommsRingBufferThread = NULL;
+
+        if (KphpCommsRingBuffer.Ring.Producer)
+        {
+            NtUnmapViewOfSection(NtCurrentProcess(), KphpCommsRingBuffer.Ring.Producer);
+            KphpCommsRingBuffer.Ring.Producer = NULL;
+        }
+
+        if (KphpCommsRingBuffer.Ring.Consumer)
+        {
+            NtUnmapViewOfSection(NtCurrentProcess(), KphpCommsRingBuffer.Ring.Consumer);
+            KphpCommsRingBuffer.Ring.Consumer = NULL;
+        }
+
+        if (KphpCommsRingBuffer.EventHandle)
+        {
+            NtClose(KphpCommsRingBuffer.EventHandle);
+            KphpCommsRingBuffer.EventHandle = NULL;
+        }
+    }
+
     KphpCommsRegisteredCallback = NULL;
     KphpCommsPortDisconnected = TRUE;
 
@@ -319,6 +476,12 @@ VOID KphCommsStop(
 
         PhFree(KphpCommsMessages);
         KphpCommsMessages = NULL;
+    }
+
+    if (KphpCommsTlsSlot != TLS_OUT_OF_INDEXES)
+    {
+        PhTlsFree(KphpCommsTlsSlot);
+        KphpCommsTlsSlot = TLS_OUT_OF_INDEXES;
     }
 
     PhDeleteFreeList(&KphpCommsReplyFreeList);
@@ -344,7 +507,6 @@ BOOLEAN KphCommsIsConnected(
  *
  * \return Successful or errant status.
  */
-_Use_decl_annotations_
 NTSTATUS KphCommsReplyMessage(
     _In_ ULONG_PTR ReplyToken,
     _In_ PKPH_MESSAGE Message
@@ -392,13 +554,7 @@ NTSTATUS KphCommsReplyMessage(
         );
 
     if (status == STATUS_PORT_DISCONNECTED)
-    {
-        //
-        // Mark the port disconnected so KphCommsIsConnected returns false.
-        // This can happen if the driver goes away before the client.
-        //
         KphpCommsPortDisconnected = TRUE;
-    }
 
 CleanupExit:
 
@@ -416,7 +572,7 @@ CleanupExit:
  *
  * \return Successful or errant status.
  */
-_Use_decl_annotations_
+_Must_inspect_result_
 NTSTATUS KphCommsSendMessage(
     _Inout_ PKPH_MESSAGE Message
     )
@@ -433,20 +589,14 @@ NTSTATUS KphCommsSendMessage(
     status = PhFilterSendMessage(
         KphpCommsFltPortHandle,
         Message,
-        sizeof(KPH_MESSAGE),
+        Message->Header.Size,
         NULL,
         0,
         &bytesReturned
         );
 
     if (status == STATUS_PORT_DISCONNECTED)
-    {
-        //
-        // Mark the port disconnected so KphCommsIsConnected returns false.
-        // This can happen if the driver goes away before the client.
-        //
         KphpCommsPortDisconnected = TRUE;
-    }
 
     return status;
 }

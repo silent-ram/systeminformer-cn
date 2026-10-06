@@ -16,10 +16,17 @@ namespace CustomBuildTool
     /// </summary>
     public static class BuildVirusTotal
     {
+        private static readonly HttpClient VirusTotalHttpClient;
+
         /// <summary>
         /// Stores the VirusTotal API token used for authentication.
         /// </summary>
-        private static string VirusTotalApiToken = null;
+        private static string _VirusTotalApiToken;
+
+        static BuildVirusTotal()
+        {
+            VirusTotalHttpClient = BuildHttpClient.CreateHttpClient();
+        }
 
         /// <summary>
         /// Uploads a file to VirusTotal for scanning and retrieves the analysis result.
@@ -32,21 +39,23 @@ namespace CustomBuildTool
         /// The API token is loaded from the path specified by the "VIRUSTOTAL_BASE_API" environment variable.
         /// If the file size exceeds 32MB, a large file upload URL is requested.
         /// </remarks>
-        public static string UploadScanFile(string FileName)
+        public static async Task<string> UploadScanFile(string FileName)
         {
-            if (string.IsNullOrWhiteSpace(VirusTotalApiToken))
+            string analysisResult = null;
+
+            if (string.IsNullOrWhiteSpace(_VirusTotalApiToken))
             {
                 var fileName = Win32.GetEnvironmentVariable("VIRUSTOTAL_BASE_API");
 
                 if (File.Exists(fileName))
                 {
-                    VirusTotalApiToken = File.ReadAllText(fileName).Trim();
+                    _VirusTotalApiToken = (await File.ReadAllTextAsync(fileName)).Trim();
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(VirusTotalApiToken))
+            if (string.IsNullOrWhiteSpace(_VirusTotalApiToken))
             {
-                Program.PrintColorMessage($"[BuildVirusTotal] UploadScanFile - No API Token", ConsoleColor.Red);
+                Program.PrintColorMessage("[BuildVirusTotal] UploadScanFile - No API Token", ConsoleColor.Red);
                 return null;
             }
 
@@ -57,7 +66,7 @@ namespace CustomBuildTool
 
                 if (!fileInfo.Exists)
                 {
-                    Program.PrintColorMessage($"[BuildVirusTotal] UploadScanFile", ConsoleColor.Red);
+                    Program.PrintColorMessage("[BuildVirusTotal] UploadScanFile", ConsoleColor.Red);
                     return null;
                 }
 
@@ -66,9 +75,9 @@ namespace CustomBuildTool
                     using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, "https://www.virustotal.com/api/v3/files/upload_url"))
                     {
                         requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                        requestMessage.Headers.Add("x-apikey", VirusTotalApiToken);
+                        requestMessage.Headers.Add("x-apikey", _VirusTotalApiToken);
 
-                        var response = BuildHttpClient.SendMessage(requestMessage, VirusTotalResponseContext.Default.VirusTotalLargeUploadResponse);
+                        var response = await BuildHttpClient.SendMessage(VirusTotalHttpClient, requestMessage, VirusTotalResponseContext.Default.VirusTotalLargeUploadResponse);
 
                         uploadInfo = response.data;
                     }
@@ -76,18 +85,18 @@ namespace CustomBuildTool
 
                 if (string.IsNullOrWhiteSpace(uploadInfo))
                 {
-                    Program.PrintColorMessage($"[BuildVirusTotal] UploadScanFile", ConsoleColor.Red);
+                    Program.PrintColorMessage("[BuildVirusTotal] UploadScanFile", ConsoleColor.Red);
                     return null;
                 }
 
                 VirusTotalAnalysisResponse virusTotalAnalysisResponseContext;
 
-                using (FileStream fileStream = File.OpenRead(FileName))
-                using (BufferedStream bufferedStream = new BufferedStream(fileStream))
-                using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Post, uploadInfo))
+                await using FileStream fileStream = File.OpenRead(FileName);
+                await using BufferedStream bufferedStream = new BufferedStream(fileStream);
                 {
+                    using HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Post, uploadInfo);
                     requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                    requestMessage.Headers.Add("x-apikey", VirusTotalApiToken);
+                    requestMessage.Headers.Add("x-apikey", _VirusTotalApiToken);
 
                     var streamContent = new StreamContent(bufferedStream);
                     var requestMethod = new MultipartFormDataContent
@@ -98,25 +107,28 @@ namespace CustomBuildTool
                     requestMessage.Content = requestMethod;
 
                     {
-                        virusTotalAnalysisResponseContext = BuildHttpClient.SendMessage(requestMessage, VirusTotalResponseContext.Default.VirusTotalAnalysisResponse);
+                        virusTotalAnalysisResponseContext = await BuildHttpClient.SendMessage(VirusTotalHttpClient, requestMessage, VirusTotalResponseContext.Default.VirusTotalAnalysisResponse);
 
                         using (HttpRequestMessage requestAnalysisMessage = new HttpRequestMessage(HttpMethod.Get, virusTotalAnalysisResponseContext.data.links.self))
                         {
                             requestAnalysisMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                            requestAnalysisMessage.Headers.Add("x-apikey", VirusTotalApiToken);
+                            requestAnalysisMessage.Headers.Add("x-apikey", _VirusTotalApiToken);
 
-                            return BuildHttpClient.SendMessage(requestAnalysisMessage);
+                            using var upload = await BuildHttpClient.SendMessageResponse(VirusTotalHttpClient, requestAnalysisMessage);
+
+                            upload.EnsureSuccessStatusCode();
                         }
+
+                        analysisResult = virusTotalAnalysisResponseContext.data.id;
                     }
                 }
-
             }
             catch (Exception ex)
             {
                 Program.PrintColorMessage("[BuildVirusTotal] " + ex, ConsoleColor.Red);
             }
 
-            return null;
+            return analysisResult;
         }
     }
 }

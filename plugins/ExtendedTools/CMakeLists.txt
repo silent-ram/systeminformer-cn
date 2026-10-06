@@ -13,6 +13,7 @@ set(HEADERS
     "extension/plugin.h"
     "exttools.h"
     "framemon.h"
+    "fwmon.h"
     "gpumini.h"
     "gpumon.h"
     "gpusys.h"
@@ -39,6 +40,8 @@ set(HEADERS_PRESENTMON
 source_group("Header Files\\PresentMon" FILES ${HEADERS_PRESENTMON})
 
 set(SOURCES
+    "acpitable.c"
+    "cacheprp.c"
     "counters.c"
     "disktab.c"
     "etwdisk.c"
@@ -57,14 +60,14 @@ set(SOURCES
     "main.c"
     "modsrv.c"
     "namedpipes.c"
-    "objmgr.c"
-    "objprp.c"
     "options.c"
     "pooldb.c"
     "pooldialog.c"
     "pooldialogbig.c"
     "pooltree.c"
+    "pwrgrid.c"
     "reparse.c"
+    "acpitable.c"
     "smbios.c"
     "svcext.c"
     "thrdact.c"
@@ -74,6 +77,7 @@ set(SOURCES
     "unldll.c"
     "utils.c"
     "waitchain.c"
+    "wbcl.c"
     "wswatch.c"
 )
 source_group("Source Files" FILES ${SOURCES})
@@ -124,6 +128,12 @@ set(ALL_FILES
 
 si_add_plugin(ExtendedTools ${ALL_FILES})
 
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|x64|x86|i386|i686")
+    target_compile_definitions(ExtendedTools PRIVATE ET_HAS_CPUID=1)
+else()
+    target_compile_definitions(ExtendedTools PRIVATE ET_HAS_CPUID=0)
+endif()
+
 target_link_libraries(ExtendedTools PRIVATE
     delayimp
     user32
@@ -140,6 +150,7 @@ target_link_options(ExtendedTools PRIVATE
     /DELAYLOAD:cfgmgr32.dll
     /DELAYLOAD:oleaut32.dll
     /DELAYLOAD:tdh.dll
+    /DELAYLOAD:runtimeobject.dll
     /DELAYLOAD:tbs.dll
     /DELAYLOAD:winsta.dll
 )

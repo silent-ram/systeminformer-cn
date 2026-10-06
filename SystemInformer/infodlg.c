@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -57,8 +57,9 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_SAVE), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
             if (PhValidWindowPlacementFromSetting(SETTING_INFORMATION_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(NULL, SETTING_INFORMATION_WINDOW_SIZE, hwndDlg);
-            PhCenterWindow(hwndDlg, GetParent(hwndDlg));
+                PhLoadWindowPlacementFromSetting(SETTING_INFORMATION_WINDOW_POSITION, SETTING_INFORMATION_WINDOW_SIZE, hwndDlg);
+            else
+                PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
             context->MinimumSize = (RECT){ -1, -1, -1, -1 };
 
@@ -178,6 +179,18 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
         {
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
+
+            {
+                RECT rect;
+
+                rect.left = 0;
+                rect.top = 0;
+                rect.right = 200;
+                rect.bottom = 140;
+                MapDialogRect(hwndDlg, &rect);
+                context->MinimumSize = rect;
+                context->MinimumSize.left = 0;
+            }
         }
         break;
     case WM_SIZE:

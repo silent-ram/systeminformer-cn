@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -580,6 +580,13 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
 
             // Initialize the list.
             PhInitializeMemoryList(hwndDlg, memoryContext->TreeNewHandle, &memoryContext->ListContext);
+
+            if (PhTreeWindowFont)
+            {
+                memoryContext->TreeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+                SetWindowFont(memoryContext->TreeNewHandle, memoryContext->TreeNewFont, FALSE);
+            }
+
             TreeNew_SetEmptyText(memoryContext->TreeNewHandle, &PhProcessPropPageLoadingText, 0);
 
             memoryContext->AllocationFilterEntry = PhAddTreeNewFilter(&memoryContext->ListContext.AllocationTreeFilterSupport, PhpMemoryTreeFilterCallback, memoryContext);
@@ -610,6 +617,8 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
             PhpRefreshProcessMemoryList(propPageContext);
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, memoryContext->TreeNewHandle);
         }
         break;
     case WM_DESTROY:
@@ -630,6 +639,9 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
 
             PhSaveSettingsMemoryList(&memoryContext->ListContext);
 
+            if (memoryContext->TreeNewFont)
+                DeleteFont(memoryContext->TreeNewFont);
+
             PhDereferenceObject(memoryContext);
         }
         break;
@@ -642,6 +654,17 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                 PhAddPropPageLayoutItem(hwndDlg, memoryContext->SearchboxHandle, dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, memoryContext->ListContext.TreeNewHandle, dialogItem, PH_ANCHOR_ALL);
                 PhEndPropPageLayout(hwndDlg, propPageContext);
+            }
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            if (PhTreeWindowFont)
+            {
+                HFONT treeNewFont;
+
+                if (treeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg)))
+                    PhSwapReferenceFont(&memoryContext->TreeNewFont, memoryContext->TreeNewHandle, treeNewFont, TRUE);
             }
         }
         break;
@@ -862,7 +885,8 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                     PPH_EMENU_ITEM zeroPadItem;
                     PPH_EMENU_ITEM selectedItem;
 
-                    GetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect);
+                    if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect))
+                        break;
 
                     typedef enum _PH_MEMORY_FILTER_MENU_ITEM
                     {
@@ -1060,18 +1084,6 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
             }
         }
         break;
-    case WM_NOTIFY:
-        {
-            LPNMHDR header = (LPNMHDR)lParam;
-
-            switch (header->code)
-            {
-            case PSN_QUERYINITIALFOCUS:
-                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)memoryContext->TreeNewHandle);
-                return TRUE;
-            }
-        }
-        break;
     case WM_KEYDOWN:
         {
             if (LOWORD(wParam) == 'K')
@@ -1111,6 +1123,12 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

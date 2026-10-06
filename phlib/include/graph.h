@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -84,6 +84,12 @@ typedef struct _PH_GRAPH_DRAW_INFO
     PH_STRINGREF Text2;
     RECT TextRect2;
     RECT TextBoxRect2;
+
+    // Cached by graph controls; keep these fields last
+    // because graph.c copies only the public prefix. (dmex)
+    LONG CachedFontDpi;
+    HFONT CachedTextFont;
+    HFONT CachedLabelYFont;
 } PH_GRAPH_DRAW_INFO, *PPH_GRAPH_DRAW_INFO;
 
 // Graph control
@@ -102,8 +108,8 @@ VOID
 NTAPI
 PhDrawGraphDirect(
     _In_ HDC hdc,
-    _In_ PVOID Bits,
-    _In_ PPH_GRAPH_DRAW_INFO DrawInfo
+    _In_ PVOID PH_RESTRICT Bits,
+    _In_ PPH_GRAPH_DRAW_INFO PH_RESTRICT DrawInfo
     );
 
 PHLIBAPI
@@ -169,9 +175,9 @@ typedef struct _PH_GRAPH_OPTIONS
 #define Graph_GetBufferedContext(hWnd) \
     ((HDC)SendMessage((hWnd), GCM_GETBUFFEREDCONTEXT, 0, 0))
 #define Graph_SetTooltip(hWnd, Enable) \
-    ((HDC)SendMessage((hWnd), GCM_SETTOOLTIP, (WPARAM)(Enable), 0))
+    SendMessage((hWnd), GCM_SETTOOLTIP, (WPARAM)(Enable), 0)
 #define Graph_UpdateTooltip(hWnd) \
-    ((HDC)SendMessage((hWnd), GCM_UPDATETOOLTIP, 0, 0))
+    SendMessage((hWnd), GCM_UPDATETOOLTIP, 0, 0)
 #define Graph_GetOptions(hWnd, Options) \
     SendMessage((hWnd), GCM_GETOPTIONS, 0, (LPARAM)(Options))
 #define Graph_SetOptions(hWnd, Options) \

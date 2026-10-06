@@ -45,6 +45,7 @@ struct ProcessInfo
 {
     std::unordered_map<uint64_t, SwapChainData> mSwapChain;
     PPH_PROCESS_ITEM ProcessItem{};
+    ULONG64 LastPresentTickCount{}; // NtGetTickCount64 of the last present observed for this PID
 };
 
 // ConsumerThread.cpp:
@@ -52,11 +53,22 @@ VOID StartConsumerThread(_In_ TRACEHANDLE TraceHandle);
 VOID WaitForConsumerThreadToExit(VOID);
 
 // OutputThread.cpp:
-VOID StartOutputThread(VOID);
-VOID StopOutputThread(VOID);
+VOID StartOutputThread(VOID) noexcept;
+VOID WaitForOutputThreadToExit(VOID) noexcept;
+
+// Thread lifecycle helpers (PresentMon.cpp):
+VOID SignalStopFpsThreads(VOID) noexcept;   // request shutdown and wake the output thread
+BOOLEAN IsFpsTraceStopping(VOID);           // TRUE once shutdown has been requested (used by BufferCallback)
+// EtFramesSignalUpdate is declared in framemon.h (EXTERN_C) since it is also
+// called from framemon.cpp; defined in PresentMon.cpp.
 
 // TraceSession.cpp:
+BOOLEAN EtEstablishFpsTraceSession(VOID);   // (re)start session, enable providers, open trace; no threads
+TRACEHANDLE RestartFpsTraceSession(VOID);   // called from the consumer thread to rebuild a dropped session
+VOID EtFramesQueryEtwStatus(VOID);          // DEBUG: report EventsLost/RealTimeBuffersLost deltas
+VOID TraceSession_Stop(VOID);
+ULONG TraceSession_StopNamedSession(VOID);
 VOID DequeueAnalyzedInfo(std::vector<std::shared_ptr<PresentEvent>>* presentEvents); // std::vector<std::shared_ptr<PresentEvent>>* lostPresentEvents
-FLOAT QpcDeltaToSeconds(_In_ ULONGLONG qpcDelta);
-ULONGLONG SecondsDeltaToQpc(_In_ FLOAT secondsDelta);
-FLOAT QpcToSeconds(_In_ ULONGLONG qpc);
+DOUBLE QpcDeltaToSeconds(_In_ ULONGLONG qpcDelta);
+ULONGLONG SecondsDeltaToQpc(_In_ DOUBLE secondsDelta);
+DOUBLE QpcToSeconds(_In_ ULONGLONG qpc);

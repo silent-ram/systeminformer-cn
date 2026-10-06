@@ -6,12 +6,30 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2018-2023
+ *     dmex    2018-2026
  *
  */
 
 #ifndef _PH_SVCSUP_H
 #define _PH_SVCSUP_H
+
+typedef struct _PH_SVC_HOST_POLICY_INFO
+{
+    ULONG AuthenticationCapabilities;
+    ULONG AuthenticationLevel;
+    ULONG BinarySignaturePolicy;
+    ULONG CoInitializeSecurityAllowComCapability;
+    ULONG CoInitializeSecurityAllowCrossContainer;
+    ULONG CoInitializeSecurityAllowInteractiveUsers;
+    ULONG CoInitializeSecurityAllowLowBox;
+    ULONG CoInitializeSecurityParam;
+    ULONG COM_UnmarshalingPolicy;
+    ULONG DefaultRpcStackSize;
+    ULONG DynamicCodePolicy;
+    ULONG ImpersonationLevel;
+    ULONG RedirectionTrustPolicy;
+    ULONG RpcExceptionFilterMode;
+} PH_SVC_HOST_POLICY_INFO, *PPH_SVC_HOST_POLICY_INFO;
 
 EXTERN_C_START
 
@@ -354,7 +372,7 @@ PPH_STRING
 NTAPI
 PhGetServiceConfigFileName(
     _In_ ULONG ServiceType,
-    _In_ PCWSTR ServicePathName,
+    _In_opt_ PCWSTR ServicePathName,
     _In_ PPH_STRINGREF ServiceName
     );
 
@@ -399,9 +417,23 @@ PhGetServiceBootFlags(
     );
 
 PHLIBAPI
+ULONG
+NTAPI
+PhGetServiceUserFlags(
+    _In_ PPH_STRINGREF ServiceName
+    );
+
+PHLIBAPI
 PPH_STRING
 NTAPI
 PhGetServicePackageFullName(
+    _In_ PPH_STRINGREF ServiceName
+    );
+
+PHLIBAPI
+PPH_SVC_HOST_POLICY_INFO
+NTAPI
+PhGetSvchostGroupPolicy(
     _In_ PPH_STRINGREF ServiceName
     );
 

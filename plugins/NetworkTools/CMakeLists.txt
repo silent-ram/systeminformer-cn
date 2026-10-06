@@ -17,11 +17,6 @@ set(RESOURCES
 )
 source_group("Resource Files" FILES ${RESOURCES})
 
-set(RESOURCES_IMAGES
-    "resources/licence.txt"
-)
-source_group("Resource Files\\Images" FILES ${RESOURCES_IMAGES})
-
 set(SOURCES
     "country.c"
     "main.c"
@@ -39,7 +34,6 @@ source_group("Source Files" FILES ${SOURCES})
 set(ALL_FILES
     ${HEADERS}
     ${RESOURCES}
-    ${RESOURCES_IMAGES}
     ${SOURCES}
 )
 
@@ -55,6 +49,6 @@ target_link_libraries(NetworkTools PRIVATE
 )
 
 target_link_options(NetworkTools PRIVATE
-    /delayload:iphlpapi.dll
+    /DELAYLOAD:iphlpapi.dll
     /DELAYLOAD:ws2_32.dll
 )

@@ -5,15 +5,15 @@
  *
  * Authors:
  *
- *     dmex    2016
+ *     dmex    2016-2026
  *
  */
 
 #include "onlnchk.h"
 
 HRESULT CALLBACK TaskDialogErrorProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -21,7 +21,7 @@ HRESULT CALLBACK TaskDialogErrorProc(
 {
     PUPLOAD_CONTEXT context = (PUPLOAD_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_NAVIGATED:
         {
@@ -47,8 +47,7 @@ VOID VirusTotalShowErrorDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
-
+    config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(Context->DialogHandle));
     config.pszWindowTitle = PhaFormatString(L"上传 %s中...", PhGetStringOrEmpty(Context->BaseFileName))->Buffer;
     config.pszMainInstruction = PhaFormatString(L"Error uploading %s...", PhGetStringOrEmpty(Context->BaseFileName))->Buffer;
     config.pszContent = PhGetStringOrEmpty(Context->ErrorString);

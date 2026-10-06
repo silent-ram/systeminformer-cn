@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2013
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -228,9 +228,9 @@ PPH_HANDLE_NODE PhAddHandleNode(
             );
     }
 
-    handleNode->Handle = HandleItem->Handle;
-    handleNode->HandleItem = HandleItem;
     PhReferenceObject(HandleItem);
+    handleNode->HandleItem = HandleItem;
+    handleNode->Handle = HandleItem->Handle;
 
     memset(handleNode->TextCache, 0, sizeof(PH_STRINGREF) * PHHNTLC_MAXIMUM);
     handleNode->Node.TextCache = handleNode->TextCache;
@@ -338,8 +338,15 @@ VOID PhUpdateHandleNode(
 {
     memset(HandleNode->TextCache, 0, sizeof(PH_STRINGREF) * PHHNTLC_MAXIMUM);
 
+    PhClearReference(&HandleNode->GrantedAccessSymbolicText);
+    PhClearReference(&HandleNode->HandleValue);
+    PhClearReference(&HandleNode->HandleCountText);
+    PhClearReference(&HandleNode->PointerCountText);
+    PhClearReference(&HandleNode->PageSizeText);
+    PhClearReference(&HandleNode->NonPageSizeText);
+
     PhInvalidateTreeNewNode(&HandleNode->Node, TN_CACHE_COLOR);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    TreeNew_InvalidateNode(Context->TreeNewHandle, &HandleNode->Node);
 }
 
 VOID PhExpandAllHandleNodes(
@@ -369,7 +376,16 @@ VOID PhTickHandleNodes(
     _In_ PPH_HANDLE_LIST_CONTEXT Context
     )
 {
-    PH_TICK_SH_STATE_TN(PH_HANDLE_NODE, ShState, Context->NodeStateList, PhpRemoveHandleNode, PhCsHighlightingDuration, Context->TreeNewHandle, TRUE, NULL, Context);
+    BOOLEAN fullyInvalidated = FALSE;
+
+    if (Context->TreeNewSortOrder != NoSortOrder)
+    {
+        // Force a rebuild to sort the items.
+        TreeNew_NodesStructured(Context->TreeNewHandle);
+        fullyInvalidated = TRUE;
+    }
+
+    PH_TICK_SH_STATE_TN(PH_HANDLE_NODE, ShState, Context->NodeStateList, PhpRemoveHandleNode, PhCsHighlightingDuration, Context->TreeNewHandle, TRUE, &fullyInvalidated, Context);
 }
 
 #define SORT_FUNCTION(Column) PhpHandleTreeNewCompare##Column
@@ -409,7 +425,7 @@ LONG PhpHandleTreeNewPostSortFunction(
 
 BEGIN_SORT_FUNCTION(Type)
 {
-    sortResult = PhCompareStringWithNullSortOrder(handleItem1->TypeName, handleItem2->TypeName, context->TreeNewSortOrder, TRUE);
+    sortResult = uintptrcmp((ULONG_PTR)node1->HandleItem->TypeIndex, (ULONG_PTR)node2->HandleItem->TypeIndex);
 }
 END_SORT_FUNCTION
 
@@ -505,7 +521,7 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Type),
                     SORT_FUNCTION(Name),
@@ -522,7 +538,7 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                     SORT_FUNCTION(PagedPoolCharge),
                     SORT_FUNCTION(NonPagedPoolCharge),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHHNTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -575,7 +591,19 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                 getCellText->Text = PhGetStringRef(handleItem->TypeName);
                 break;
             case PHHNTLC_NAME:
-                getCellText->Text = PhGetStringRef(handleItem->BestObjectName);
+                {
+                    if (handleItem->NameResolved)
+                    {
+                        if (handleItem->BestObjectName)
+                        {
+                            getCellText->Text = PhGetStringRef(handleItem->BestObjectName);
+                        }
+                    }
+                    else
+                    {
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
+                    }
+                }
                 break;
             case PHHNTLC_HANDLE:
                 {
@@ -585,7 +613,9 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
             case PHHNTLC_OBJECTADDRESS:
                 {
                     if (handleItem->Object)
+                    {
                         PhInitializeStringRefLongHint(&getCellText->Text, handleItem->ObjectString);
+                    }
                 }
                 break;
             case PHHNTLC_ATTRIBUTES:
@@ -631,7 +661,17 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                 break;
             case PHHNTLC_ORIGINALNAME:
                 {
-                    getCellText->Text = PhGetStringRef(handleItem->ObjectName);
+                    if (handleItem->NameResolved)
+                    {
+                        if (handleItem->ObjectName)
+                        {
+                            getCellText->Text = PhGetStringRef(handleItem->ObjectName);
+                        }
+                    }
+                    else
+                    {
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
+                    }
                 }
                 break;
             case PHHNTLC_FILESHAREACCESS:

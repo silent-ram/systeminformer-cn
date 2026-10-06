@@ -7,7 +7,7 @@
  *
  *     wj32    2010
  *     evilpie 2010
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -21,7 +21,6 @@
 #include <svcsup.h>
 #include <workqueue.h>
 #include <hvsocketcontrol.h>
-
 #include <trace.h>
 
 typedef struct _PH_NETWORK_CONNECTION
@@ -60,17 +59,6 @@ VOID NTAPI PhpNetworkItemDeleteProcedure(
     );
 
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
-BOOLEAN PhpNetworkHashtableEqualFunction(
-    _In_ PVOID Entry1,
-    _In_ PVOID Entry2
-    );
-
-_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
-ULONG NTAPI PhpNetworkHashtableHashFunction(
-    _In_ PVOID Entry
-    );
-
-_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN PhpResolveCacheHashtableEqualFunction(
     _In_ PVOID Entry1,
     _In_ PVOID Entry2
@@ -81,14 +69,16 @@ ULONG NTAPI PhpResolveCacheHashtableHashFunction(
     _In_ PVOID Entry
     );
 
+_Success_(return)
 BOOLEAN PhGetNetworkConnections(
     _Out_ PPH_NETWORK_CONNECTION *Connections,
     _Out_ PULONG NumberOfConnections
     );
 
 PPH_OBJECT_TYPE PhNetworkItemType = NULL;
-PPH_HASHTABLE PhNetworkHashtable = NULL;
-PH_QUEUED_LOCK PhNetworkHashtableLock = PH_QUEUED_LOCK_INIT;
+PH_QUEUED_LOCK PhNetworkHashSetLock = PH_QUEUED_LOCK_INIT;
+PPH_HASH_ENTRY PhNetworkHashSet[256] = PH_HASH_SET_INIT;
+ULONG PhNetworkHashSetCount = 0;
 
 PH_INITONCE PhNetworkProviderWorkQueueInitOnce = PH_INITONCE_INIT;
 PH_WORK_QUEUE PhNetworkProviderWorkQueue;
@@ -106,17 +96,16 @@ static _GetExtendedUdpTable GetExtendedUdpTable_I = NULL;
 static _InternalGetBoundTcpEndpointTable GetBoundTcpEndpointTable_I = NULL;
 static _InternalGetBoundTcp6EndpointTable GetBoundTcp6EndpointTable_I = NULL;
 
+/**
+ * Initializes the network provider.
+ *
+ * \return TRUE if successful, FALSE otherwise.
+ */
 BOOLEAN PhNetworkProviderInitialization(
     VOID
     )
 {
     PhNetworkItemType = PhCreateObjectType(L"NetworkItem", 0, PhpNetworkItemDeleteProcedure);
-    PhNetworkHashtable = PhCreateHashtable(
-        sizeof(PPH_NETWORK_ITEM),
-        PhpNetworkHashtableEqualFunction,
-        PhpNetworkHashtableHashFunction,
-        40
-        );
 
     PhInitializeSListHead(&PhNetworkItemQueryListHead);
 
@@ -130,6 +119,11 @@ BOOLEAN PhNetworkProviderInitialization(
     return TRUE;
 }
 
+/**
+ * Creates a network item.
+ *
+ * \return A pointer to the created network item.
+ */
 PPH_NETWORK_ITEM PhCreateNetworkItem(
     VOID
     )
@@ -146,6 +140,12 @@ PPH_NETWORK_ITEM PhCreateNetworkItem(
     return networkItem;
 }
 
+/**
+ * Deletes a network item.
+ *
+ * \param[in] Object A pointer to the network item object.
+ * \param[in] Flags Reserved.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpNetworkItemDeleteProcedure(
     _In_ PVOID Object,
@@ -176,37 +176,52 @@ VOID NTAPI PhpNetworkItemDeleteProcedure(
         PhDereferenceObject(networkItem->ProcessItem);
 }
 
-_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
-BOOLEAN PhpNetworkHashtableEqualFunction(
-    _In_ PVOID Entry1,
-    _In_ PVOID Entry2
+/**
+ * Compares two network items.
+ *
+ * \param[in] Value1 The first network item.
+ * \param[in] Value2 The second network item.
+ * \return TRUE if the network items are equal, FALSE otherwise.
+ */
+FORCEINLINE BOOLEAN PhCompareNetworkItem(
+    _In_ PPH_NETWORK_ITEM Value1,
+    _In_ PPH_NETWORK_ITEM Value2
     )
 {
-    PPH_NETWORK_ITEM networkItem1 = *(PPH_NETWORK_ITEM *)Entry1;
-    PPH_NETWORK_ITEM networkItem2 = *(PPH_NETWORK_ITEM *)Entry2;
-
     return
-        networkItem1->ProtocolType == networkItem2->ProtocolType &&
-        PhEqualIpEndpoint(&networkItem1->LocalEndpoint, &networkItem2->LocalEndpoint) &&
-        PhEqualIpEndpoint(&networkItem1->RemoteEndpoint, &networkItem2->RemoteEndpoint) &&
-        networkItem1->ProcessId == networkItem2->ProcessId;
+        Value1->ProtocolType == Value2->ProtocolType &&
+        PhEqualIpEndpoint(&Value1->LocalEndpoint, &Value2->LocalEndpoint) &&
+        PhEqualIpEndpoint(&Value1->RemoteEndpoint, &Value2->RemoteEndpoint) &&
+        Value1->ProcessId == Value2->ProcessId;
 }
 
-_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
-ULONG NTAPI PhpNetworkHashtableHashFunction(
-    _In_ PVOID Entry
+/**
+ * Hashes a network item.
+ *
+ * \param[in] Value The network item.
+ * \return The hash of the network item.
+ */
+FORCEINLINE ULONG PhHashNetworkItem(
+    _In_ PPH_NETWORK_ITEM Value
     )
 {
-    PPH_NETWORK_ITEM networkItem = *(PPH_NETWORK_ITEM *)Entry;
-
     return
-        networkItem->ProtocolType ^
-        PhHashIpEndpoint(&networkItem->LocalEndpoint) ^
-        PhHashIpEndpoint(&networkItem->RemoteEndpoint) ^
-        (HandleToUlong(networkItem->ProcessId) / 4);
+        Value->ProtocolType ^
+        PhHashIpEndpoint(&Value->LocalEndpoint) ^
+        PhHashIpEndpoint(&Value->RemoteEndpoint) ^
+        (HandleToUlong(Value->ProcessId) / 4);
 }
 
-PPH_NETWORK_ITEM PhReferenceNetworkItem(
+/**
+ * Looks up a network item.
+ *
+ * \param[in] ProtocolType The protocol type.
+ * \param[in] LocalEndpoint The local endpoint.
+ * \param[in] RemoteEndpoint The remote endpoint.
+ * \param[in] ProcessId The process ID.
+ * \return A pointer to the network item, or NULL if not found.
+ */
+PPH_NETWORK_ITEM PhpLookupNetworkItem(
     _In_ ULONG ProtocolType,
     _In_ PPH_IP_ENDPOINT LocalEndpoint,
     _In_ PPH_IP_ENDPOINT RemoteEndpoint,
@@ -214,8 +229,7 @@ PPH_NETWORK_ITEM PhReferenceNetworkItem(
     )
 {
     PH_NETWORK_ITEM lookupNetworkItem;
-    PPH_NETWORK_ITEM lookupNetworkItemPtr = &lookupNetworkItem;
-    PPH_NETWORK_ITEM *networkItemPtr;
+    PPH_HASH_ENTRY entry;
     PPH_NETWORK_ITEM networkItem;
 
     lookupNetworkItem.ProtocolType = ProtocolType;
@@ -223,24 +237,54 @@ PPH_NETWORK_ITEM PhReferenceNetworkItem(
     lookupNetworkItem.RemoteEndpoint = *RemoteEndpoint;
     lookupNetworkItem.ProcessId = ProcessId;
 
-    PhAcquireQueuedLockShared(&PhNetworkHashtableLock);
-
-    networkItemPtr = (PPH_NETWORK_ITEM *)PhFindEntryHashtable(
-        PhNetworkHashtable,
-        &lookupNetworkItemPtr
+    entry = PhFindEntryHashSet(
+        PhNetworkHashSet,
+        PH_HASH_SET_SIZE(PhNetworkHashSet),
+        PhHashNetworkItem(&lookupNetworkItem)
         );
 
-    if (networkItemPtr)
+    for (; entry; entry = entry->Next)
     {
-        networkItem = *networkItemPtr;
-        PhReferenceObject(networkItem);
-    }
-    else
-    {
-        networkItem = NULL;
+        networkItem = CONTAINING_RECORD(entry, PH_NETWORK_ITEM, HashEntry);
+
+        if (PhCompareNetworkItem(&lookupNetworkItem, networkItem))
+            return networkItem;
     }
 
-    PhReleaseQueuedLockShared(&PhNetworkHashtableLock);
+    return NULL;
+}
+
+/**
+ * References a network item.
+ *
+ * \param[in] ProtocolType The protocol type.
+ * \param[in] LocalEndpoint The local endpoint.
+ * \param[in] RemoteEndpoint The remote endpoint.
+ * \param[in] ProcessId The process ID.
+ * \return A pointer to the network item, or NULL if not found.
+ */
+PPH_NETWORK_ITEM PhReferenceNetworkItem(
+    _In_ ULONG ProtocolType,
+    _In_ PPH_IP_ENDPOINT LocalEndpoint,
+    _In_ PPH_IP_ENDPOINT RemoteEndpoint,
+    _In_ HANDLE ProcessId
+    )
+{
+    PPH_NETWORK_ITEM networkItem;
+
+    PhAcquireQueuedLockShared(&PhNetworkHashSetLock);
+
+    networkItem = PhpLookupNetworkItem(
+        ProtocolType,
+        LocalEndpoint,
+        RemoteEndpoint,
+        ProcessId
+        );
+
+    if (networkItem)
+        PhReferenceObject(networkItem);
+
+    PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
 
     return networkItem;
 }
@@ -248,10 +292,9 @@ PPH_NETWORK_ITEM PhReferenceNetworkItem(
 /**
  * Enumerates the network items.
  *
- * \param NetworkItems A variable which receives an array of pointers to network items. You must
+ * \param[out] NetworkItems A variable which receives an array of pointers to network items. You must
  * free the buffer with PhFree() when you no longer need it.
- * \param NumberOfNetworkItems A variable which receives the number of network items returned in
- * \a ProcessItems.
+ * \param[out] NumberOfNetworkItems A variable which receives the number of network items.
  */
 VOID PhEnumNetworkItems(
     _Out_opt_ PPH_NETWORK_ITEM **NetworkItems,
@@ -259,23 +302,19 @@ VOID PhEnumNetworkItems(
     )
 {
     PPH_NETWORK_ITEM* networkItems;
-    PH_HASHTABLE_ENUM_CONTEXT enumContext;
-    PPH_NETWORK_ITEM* networkItem;
     ULONG numberOfNetworkItems;
     ULONG count = 0;
+    ULONG i;
+    PPH_HASH_ENTRY entry;
+    PPH_NETWORK_ITEM networkItem;
 
-    PhAcquireQueuedLockShared(&PhNetworkHashtableLock);
+    PhAcquireQueuedLockShared(&PhNetworkHashSetLock);
 
-    PhBeginEnumHashtable(PhNetworkHashtable, &enumContext);
-
-    while (networkItem = PhNextEnumHashtable(&enumContext))
-    {
-        count++;
-    }
+    count = PhNetworkHashSetCount;
 
     if (count == 0)
     {
-        PhReleaseQueuedLockShared(&PhNetworkHashtableLock);
+        PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
 
         if (NetworkItems) *NetworkItems = NULL;
         *NumberOfNetworkItems = count;
@@ -286,20 +325,30 @@ VOID PhEnumNetworkItems(
     networkItems = PhAllocate(sizeof(PPH_NETWORK_ITEM) * numberOfNetworkItems);
     count = 0;
 
-    PhBeginEnumHashtable(PhNetworkHashtable, &enumContext);
-
-    while (networkItem = PhNextEnumHashtable(&enumContext))
+    for (i = 0; i < PH_HASH_SET_SIZE(PhNetworkHashSet); i++)
     {
-        PhReferenceObject((*networkItem));
-        networkItems[count++] = (*networkItem);
+        for (entry = PhNetworkHashSet[i]; entry; entry = entry->Next)
+        {
+            networkItem = CONTAINING_RECORD(entry, PH_NETWORK_ITEM, HashEntry);
+            PhReferenceObject(networkItem);
+            networkItems[count++] = networkItem;
+        }
     }
 
-    PhReleaseQueuedLockShared(&PhNetworkHashtableLock);
+    PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
 
     *NetworkItems = networkItems;
     *NumberOfNetworkItems = numberOfNetworkItems;
 }
 
+/**
+ * Enumerates network items by process ID.
+ *
+ * \param[in] ProcessId The process ID to filter by.
+ * \param[out] NetworkItems A variable which receives an array of pointers to network items. You must
+ * free the buffer with PhFree() when you no longer need it.
+ * \param[out] NumberOfNetworkItems A variable which receives the number of network items.
+ */
 VOID PhEnumNetworkItemsByProcessId(
     _In_opt_ HANDLE ProcessId,
     _Out_opt_ PPH_NETWORK_ITEM** NetworkItems,
@@ -307,26 +356,30 @@ VOID PhEnumNetworkItemsByProcessId(
     )
 {
     PPH_NETWORK_ITEM* networkItems;
-    PH_HASHTABLE_ENUM_CONTEXT enumContext;
-    PPH_NETWORK_ITEM* networkItem;
     ULONG numberOfNetworkItems;
     ULONG count = 0;
+    ULONG i;
+    PPH_HASH_ENTRY entry;
+    PPH_NETWORK_ITEM networkItem;
 
-    PhAcquireQueuedLockShared(&PhNetworkHashtableLock);
+    PhAcquireQueuedLockShared(&PhNetworkHashSetLock);
 
-    PhBeginEnumHashtable(PhNetworkHashtable, &enumContext);
-
-    while (networkItem = PhNextEnumHashtable(&enumContext))
+    for (i = 0; i < PH_HASH_SET_SIZE(PhNetworkHashSet); i++)
     {
-        if ((*networkItem)->ProcessId == ProcessId)
+        for (entry = PhNetworkHashSet[i]; entry; entry = entry->Next)
         {
-            count++;
+            networkItem = CONTAINING_RECORD(entry, PH_NETWORK_ITEM, HashEntry);
+
+            if (networkItem->ProcessId == ProcessId)
+            {
+                count++;
+            }
         }
     }
 
     if (count == 0)
     {
-        PhReleaseQueuedLockShared(&PhNetworkHashtableLock);
+        PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
 
         if (NetworkItems) *NetworkItems = NULL;
         *NumberOfNetworkItems = count;
@@ -337,31 +390,47 @@ VOID PhEnumNetworkItemsByProcessId(
     networkItems = PhAllocate(sizeof(PPH_NETWORK_ITEM) * numberOfNetworkItems);
     count = 0;
 
-    PhBeginEnumHashtable(PhNetworkHashtable, &enumContext);
-
-    while (networkItem = PhNextEnumHashtable(&enumContext))
+    for (i = 0; i < PH_HASH_SET_SIZE(PhNetworkHashSet); i++)
     {
-        if ((*networkItem)->ProcessId == ProcessId)
+        for (entry = PhNetworkHashSet[i]; entry; entry = entry->Next)
         {
-            PhReferenceObject((*networkItem));
-            networkItems[count++] = (*networkItem);
+            networkItem = CONTAINING_RECORD(entry, PH_NETWORK_ITEM, HashEntry);
+
+            if (networkItem->ProcessId == ProcessId)
+            {
+                PhReferenceObject(networkItem);
+                networkItems[count++] = networkItem;
+            }
         }
     }
 
-    PhReleaseQueuedLockShared(&PhNetworkHashtableLock);
+    PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
 
     *NetworkItems = networkItems;
     *NumberOfNetworkItems = numberOfNetworkItems;
 }
 
+/**
+ * Removes a network item from the hash set.
+ *
+ * \param[in] NetworkItem The network item to remove.
+ */
 VOID PhpRemoveNetworkItem(
     _In_ PPH_NETWORK_ITEM NetworkItem
     )
 {
-    PhRemoveEntryHashtable(PhNetworkHashtable, &NetworkItem);
+    PhRemoveEntryHashSet(PhNetworkHashSet, PH_HASH_SET_SIZE(PhNetworkHashSet), &NetworkItem->HashEntry);
+    PhNetworkHashSetCount--;
     PhDereferenceObject(NetworkItem);
 }
 
+/**
+ * Equality function for the resolve cache hashtable.
+ *
+ * \param[in] Entry1 The first entry.
+ * \param[in] Entry2 The second entry.
+ * \return TRUE if the entries are equal, FALSE otherwise.
+ */
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN NTAPI PhpResolveCacheHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -374,6 +443,12 @@ BOOLEAN NTAPI PhpResolveCacheHashtableEqualFunction(
     return PhEqualIpAddress(&cacheItem1->Address, &cacheItem2->Address);
 }
 
+/**
+ * Hash function for the resolve cache hashtable.
+ *
+ * \param[in] Entry The entry to hash.
+ * \return The hash value of the entry.
+ */
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
 ULONG NTAPI PhpResolveCacheHashtableHashFunction(
     _In_ PVOID Entry
@@ -384,6 +459,12 @@ ULONG NTAPI PhpResolveCacheHashtableHashFunction(
     return PhHashIpAddress(&cacheItem->Address);
 }
 
+/**
+ * Looks up an item in the resolve cache.
+ *
+ * \param[in] Address The IP address to look up.
+ * \return A pointer to the cache item, or NULL if not found.
+ */
 PPHP_RESOLVE_CACHE_ITEM PhpLookupResolveCacheItem(
     _In_ PPH_IP_ADDRESS Address
     )
@@ -476,6 +557,12 @@ PPHP_RESOLVE_CACHE_ITEM PhpLookupResolveCacheItem(
 //    return hostName;
 //}
 
+/**
+ * Gets the DNS reverse name from an IP address.
+ *
+ * \param[in] Address The IP address.
+ * \return A pointer to the DNS reverse name string, or NULL if unsuccessful.
+ */
 PPH_STRING PhpGetDnsReverseNameFromAddress(
     _In_ PPH_IP_ADDRESS Address
     )
@@ -578,6 +665,12 @@ PPH_STRING PhpGetDnsReverseNameFromAddress(
     return NULL;
 }
 
+/**
+ * Gets the host name from an IP address.
+ *
+ * \param[in] Address The IP address.
+ * \return A pointer to the host name string, or NULL if unsuccessful.
+ */
 PPH_STRING PhGetHostNameFromAddressEx(
     _In_ PPH_IP_ADDRESS Address
     )
@@ -667,6 +760,9 @@ PPH_STRING PhGetHostNameFromAddressEx(
     return dnsHostNameString;
 }
 
+/**
+ * Flushes the network item resolve cache.
+ */
 VOID PhFlushNetworkItemResolveCache(
     VOID
     )
@@ -702,6 +798,12 @@ VOID PhFlushNetworkItemResolveCache(
     PhReleaseQueuedLockExclusive(&PhpResolveCacheHashtableLock);
 }
 
+/**
+ * Worker routine for resolving network item host names.
+ *
+ * \param[in] Parameter A pointer to the network item query data.
+ * \return STATUS_SUCCESS.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhpNetworkItemQueryWorker(
     _In_ PVOID Parameter
@@ -715,6 +817,8 @@ NTSTATUS PhpNetworkItemQueryWorker(
 
     PhAcquireQueuedLockShared(&PhpResolveCacheHashtableLock);
     cacheItem = PhpLookupResolveCacheItem(&data->Address);
+    if (cacheItem)
+        data->HostString = PhReferenceObject(cacheItem->HostString);
     PhReleaseQueuedLockShared(&PhpResolveCacheHashtableLock);
 
     if (!cacheItem)
@@ -744,17 +848,17 @@ NTSTATUS PhpNetworkItemQueryWorker(
             PhReleaseQueuedLockExclusive(&PhpResolveCacheHashtableLock);
         }
     }
-    else
-    {
-        PhReferenceObject(cacheItem->HostString);
-        data->HostString = cacheItem->HostString;
-    }
-
     RtlInterlockedPushEntrySList(&PhNetworkItemQueryListHead, &data->ListEntry);
 
     return STATUS_SUCCESS;
 }
 
+/**
+ * Queues a network item for host name resolution.
+ *
+ * \param[in] NetworkItem The network item.
+ * \param[in] Remote TRUE to resolve the remote address, FALSE to resolve the local address.
+ */
 VOID PhpQueueNetworkItemQuery(
     _In_ PPH_NETWORK_ITEM NetworkItem,
     _In_ BOOLEAN Remote
@@ -791,6 +895,11 @@ VOID PhpQueueNetworkItemQuery(
     PhQueueItemWorkQueue(&PhNetworkProviderWorkQueue, PhpNetworkItemQueryWorker, data);
 }
 
+/**
+ * Resolves the host names for a network item.
+ *
+ * \param[in] NetworkItem The network item.
+ */
 VOID PhNetworkItemResolveHostname(
     _In_ PPH_NETWORK_ITEM NetworkItem
     )
@@ -806,12 +915,15 @@ VOID PhNetworkItemResolveHostname(
     {
         PhAcquireQueuedLockShared(&PhpResolveCacheHashtableLock);
         cacheItem = PhpLookupResolveCacheItem(&NetworkItem->LocalEndpoint.Address);
+        if (cacheItem)
+        {
+            PhReferenceObject(cacheItem->HostString);
+            PhMoveReference(&NetworkItem->LocalHostString, cacheItem->HostString);
+        }
         PhReleaseQueuedLockShared(&PhpResolveCacheHashtableLock);
 
         if (cacheItem)
         {
-            PhReferenceObject(cacheItem->HostString);
-            NetworkItem->LocalHostString = cacheItem->HostString;
             NetworkItem->LocalHostnameResolved = TRUE;
         }
         else
@@ -830,12 +942,15 @@ VOID PhNetworkItemResolveHostname(
     {
         PhAcquireQueuedLockShared(&PhpResolveCacheHashtableLock);
         cacheItem = PhpLookupResolveCacheItem(&NetworkItem->RemoteEndpoint.Address);
+        if (cacheItem)
+        {
+            PhReferenceObject(cacheItem->HostString);
+            PhMoveReference(&NetworkItem->RemoteHostString, cacheItem->HostString);
+        }
         PhReleaseQueuedLockShared(&PhpResolveCacheHashtableLock);
 
         if (cacheItem)
         {
-            PhReferenceObject(cacheItem->HostString);
-            NetworkItem->RemoteHostString = cacheItem->HostString;
             NetworkItem->RemoteHostnameResolved = TRUE;
         }
         else
@@ -849,6 +964,11 @@ VOID PhNetworkItemResolveHostname(
     }
 }
 
+/**
+ * Invalidates the host names for a network item and re-resolves them.
+ *
+ * \param[in] NetworkItem The network item.
+ */
 VOID PhNetworkItemInvalidateHostname(
     _In_ PPH_NETWORK_ITEM NetworkItem
     )
@@ -871,6 +991,12 @@ VOID PhNetworkItemInvalidateHostname(
     PhNetworkItemResolveHostname(NetworkItem);
 }
 
+/**
+ * Updates the owner of a network item.
+ *
+ * \param[in] NetworkItem The network item.
+ * \param[in] ServiceTag The service tag.
+ */
 VOID PhpUpdateNetworkItemOwner(
     _In_ PPH_NETWORK_ITEM NetworkItem,
     _In_ ULONGLONG ServiceTag
@@ -887,17 +1013,15 @@ VOID PhpUpdateNetworkItemOwner(
     }
 }
 
+/**
+ * Flushes the network query data and updates network items.
+ */
 VOID PhFlushNetworkQueryData(
     VOID
     )
 {
     PSLIST_ENTRY entry;
     PPH_NETWORK_ITEM_QUERY_DATA data;
-
-    if (!FlagOn(PhNetworkProviderFlagsMask, PH_NETWORK_PROVIDER_FLAG_HOSTNAME))
-        return;
-    //if (!RtlFirstEntrySList(&PhNetworkItemQueryListHead))
-    //    return;
 
     entry = RtlInterlockedFlushSList(&PhNetworkItemQueryListHead);
 
@@ -906,30 +1030,43 @@ VOID PhFlushNetworkQueryData(
         data = CONTAINING_RECORD(entry, PH_NETWORK_ITEM_QUERY_DATA, ListEntry);
         entry = entry->Next;
 
-        if (data->Remote)
+        if (FlagOn(PhNetworkProviderFlagsMask, PH_NETWORK_PROVIDER_FLAG_HOSTNAME))
         {
-            PhMoveReference(&data->NetworkItem->RemoteHostString, data->HostString);
-            data->NetworkItem->RemoteHostnameResolved = TRUE;
+            if (data->Remote)
+            {
+                PhMoveReference(&data->NetworkItem->RemoteHostString, data->HostString);
+                data->NetworkItem->RemoteHostnameResolved = TRUE;
+            }
+            else
+            {
+                PhMoveReference(&data->NetworkItem->LocalHostString, data->HostString);
+                data->NetworkItem->LocalHostnameResolved = TRUE;
+            }
+
+            InterlockedExchange(&data->NetworkItem->JustResolved, TRUE);
         }
         else
         {
-            PhMoveReference(&data->NetworkItem->LocalHostString, data->HostString);
-            data->NetworkItem->LocalHostnameResolved = TRUE;
+            PhClearReference(&data->HostString);
         }
-
-        InterlockedExchange(&data->NetworkItem->JustResolved, TRUE);
 
         PhDereferenceObject(data->NetworkItem);
         PhFree(data);
     }
 }
 
+/**
+ * Updates the network provider.
+ *
+ * \param[in] Object Reserved.
+ */
 _Function_class_(PH_PROVIDER_FUNCTION)
 VOID PhNetworkProviderUpdate(
     _In_ PVOID Object
     )
 {
     static ULONG runCount = 0;
+    PH_PROVIDER_UPDATED_EVENT updatedEvent;
     PPH_NETWORK_CONNECTION connections;
     ULONG numberOfConnections;
     ULONG i;
@@ -960,51 +1097,62 @@ VOID PhNetworkProviderUpdate(
     // Look for closed connections.
     {
         PPH_LIST connectionsToRemove = NULL;
-        PH_HASHTABLE_ENUM_CONTEXT enumContext;
-        PPH_NETWORK_ITEM *networkItem;
+        ULONG j;
+        PPH_HASH_ENTRY entry;
+        PPH_NETWORK_ITEM networkItem;
 
-        PhBeginEnumHashtable(PhNetworkHashtable, &enumContext);
+        PhAcquireQueuedLockShared(&PhNetworkHashSetLock);
 
-        while (networkItem = PhNextEnumHashtable(&enumContext))
+        for (i = 0; i < PH_HASH_SET_SIZE(PhNetworkHashSet); i++)
         {
-            BOOLEAN found = FALSE;
-
-            for (i = 0; i < numberOfConnections; i++)
+            for (entry = PhNetworkHashSet[i]; entry; entry = entry->Next)
             {
-                if (
-                    (*networkItem)->ProtocolType == connections[i].ProtocolType &&
-                    PhEqualIpEndpoint(&(*networkItem)->LocalEndpoint, &connections[i].LocalEndpoint) &&
-                    PhEqualIpEndpoint(&(*networkItem)->RemoteEndpoint, &connections[i].RemoteEndpoint) &&
-                    (*networkItem)->ProcessId == connections[i].ProcessId &&
-                    (*networkItem)->CreateTime.QuadPart == connections[i].CreateTime.QuadPart
-                    )
+                BOOLEAN found = FALSE;
+
+                networkItem = CONTAINING_RECORD(entry, PH_NETWORK_ITEM, HashEntry);
+
+                for (j = 0; j < numberOfConnections; j++)
                 {
-                    found = TRUE;
-                    break;
+                    if (
+                        networkItem->ProtocolType == connections[j].ProtocolType &&
+                        PhEqualIpEndpoint(&networkItem->LocalEndpoint, &connections[j].LocalEndpoint) &&
+                        PhEqualIpEndpoint(&networkItem->RemoteEndpoint, &connections[j].RemoteEndpoint) &&
+                        networkItem->ProcessId == connections[j].ProcessId &&
+                        networkItem->CreateTime.QuadPart == connections[j].CreateTime.QuadPart
+                        )
+                    {
+                        found = TRUE;
+                        break;
+                    }
                 }
-            }
 
-            if (!found)
-            {
-                PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackNetworkProviderRemovedEvent), *networkItem);
+                if (!found)
+                {
+                    if (!connectionsToRemove)
+                        connectionsToRemove = PhCreateList(2);
 
-                if (!connectionsToRemove)
-                    connectionsToRemove = PhCreateList(2);
-
-                PhAddItemList(connectionsToRemove, *networkItem);
+                    PhAddItemList(connectionsToRemove, networkItem);
+                }
             }
         }
 
+        PhReleaseQueuedLockShared(&PhNetworkHashSetLock);
+
         if (connectionsToRemove)
         {
-            PhAcquireQueuedLockExclusive(&PhNetworkHashtableLock);
+            for (i = 0; i < connectionsToRemove->Count; i++)
+            {
+                PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackNetworkProviderRemovedEvent), connectionsToRemove->Items[i]);
+            }
+
+            PhAcquireQueuedLockExclusive(&PhNetworkHashSetLock);
 
             for (i = 0; i < connectionsToRemove->Count; i++)
             {
                 PhpRemoveNetworkItem(connectionsToRemove->Items[i]);
             }
 
-            PhReleaseQueuedLockExclusive(&PhNetworkHashtableLock);
+            PhReleaseQueuedLockExclusive(&PhNetworkHashSetLock);
             PhDereferenceObject(connectionsToRemove);
         }
     }
@@ -1015,14 +1163,15 @@ VOID PhNetworkProviderUpdate(
     // Look for new network connections and update existing ones.
     for (i = 0; i < numberOfConnections; i++)
     {
+        PPH_NETWORK_CONNECTION connection = &connections[i];
         PPH_NETWORK_ITEM networkItem;
 
-        // Try to find the connection in our hashtable.
+        // Try to find the connection in our hash set.
         networkItem = PhReferenceNetworkItem(
-            connections[i].ProtocolType,
-            &connections[i].LocalEndpoint,
-            &connections[i].RemoteEndpoint,
-            connections[i].ProcessId
+            connection->ProtocolType,
+            &connection->LocalEndpoint,
+            &connection->RemoteEndpoint,
+            connection->ProcessId
             );
 
         if (!networkItem)
@@ -1034,15 +1183,15 @@ VOID PhNetworkProviderUpdate(
             networkItem = PhCreateNetworkItem();
 
             // Fill in basic information.
-            networkItem->ProtocolType = connections[i].ProtocolType;
-            networkItem->LocalEndpoint = connections[i].LocalEndpoint;
-            networkItem->RemoteEndpoint = connections[i].RemoteEndpoint;
-            networkItem->State = connections[i].State;
-            networkItem->ProcessId = connections[i].ProcessId;
-            networkItem->CreateTime = connections[i].CreateTime;
-            networkItem->LocalScopeId = connections[i].LocalScopeId;
-            networkItem->RemoteScopeId = connections[i].RemoteScopeId;
-            PhpUpdateNetworkItemOwner(networkItem, connections[i].OwnerInfo[0]);
+            networkItem->ProtocolType = connection->ProtocolType;
+            networkItem->LocalEndpoint = connection->LocalEndpoint;
+            networkItem->RemoteEndpoint = connection->RemoteEndpoint;
+            networkItem->State = connection->State;
+            networkItem->ProcessId = connection->ProcessId;
+            networkItem->CreateTime = connection->CreateTime;
+            networkItem->LocalScopeId = connection->LocalScopeId;
+            networkItem->RemoteScopeId = connection->RemoteScopeId;
+            PhpUpdateNetworkItemOwner(networkItem, connection->OwnerInfo[0]);
 
             // Format various strings.
 
@@ -1207,10 +1356,16 @@ VOID PhNetworkProviderUpdate(
                 networkItem->UnknownProcess = TRUE;
             }
 
-            // Add the network item to the hashtable.
-            PhAcquireQueuedLockExclusive(&PhNetworkHashtableLock);
-            PhAddEntryHashtable(PhNetworkHashtable, &networkItem);
-            PhReleaseQueuedLockExclusive(&PhNetworkHashtableLock);
+            // Add the network item to the hash set.
+            PhAcquireQueuedLockExclusive(&PhNetworkHashSetLock);
+            PhAddEntryHashSet(
+                PhNetworkHashSet,
+                PH_HASH_SET_SIZE(PhNetworkHashSet),
+                &networkItem->HashEntry,
+                PhHashNetworkItem(networkItem)
+                );
+            PhNetworkHashSetCount++;
+            PhReleaseQueuedLockExclusive(&PhNetworkHashSetLock);
 
             // Raise the network item added event.
             PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackNetworkProviderAddedEvent), networkItem);
@@ -1222,9 +1377,9 @@ VOID PhNetworkProviderUpdate(
             if (InterlockedExchange(&networkItem->JustResolved, 0) != 0)
                 modified = TRUE;
 
-            if (networkItem->State != connections[i].State)
+            if (networkItem->State != connection->State)
             {
-                networkItem->State = connections[i].State;
+                networkItem->State = connection->State;
                 modified = TRUE;
             }
 
@@ -1238,7 +1393,7 @@ VOID PhNetworkProviderUpdate(
             {
                 if (PhIsNullOrEmptyString(networkItem->ProcessName))
                 {
-                    PhSetReference(&networkItem->ProcessName, &networkItem->ProcessItem->ProcessName);
+                    PhSetReference(&networkItem->ProcessName, networkItem->ProcessItem->ProcessName);
                     modified = TRUE;
                 }
 
@@ -1271,14 +1426,24 @@ VOID PhNetworkProviderUpdate(
 
     PhFree(connections);
 
-    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackNetworkProviderUpdatedEvent), UlongToPtr(runCount));
+    updatedEvent.RunCount = runCount;
+    updatedEvent.UpdateInterval = PhCsUpdateInterval;
 
-    PhTraceFuncExit("Network provider run count: %lu", runCount);
+    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackNetworkProviderUpdatedEvent), &updatedEvent);
+
+    dprintf("Network provider run count: %lu\n", runCount);
 
     runCount++;
 }
 
 #ifdef _WIN64
+/**
+ * Gets Hyper-V socket listeners for a specific VM.
+ *
+ * \param[in] SystemHandle The system handle.
+ * \param[in] VmId The VM ID.
+ * \return A pointer to the listeners, or NULL if unsuccessful.
+ */
 PHVSOCKET_LISTENERS PhpGetHvSocketListeners(
     _In_ HANDLE SystemHandle,
     _In_ const GUID* VmId
@@ -1299,6 +1464,12 @@ PHVSOCKET_LISTENERS PhpGetHvSocketListeners(
             break;
         }
 
+        if (length > PH_LARGE_BUFFER_SIZE / 2)
+        {
+            status = STATUS_INTEGER_OVERFLOW;
+            break;
+        }
+
         length *= 2;
         listeners = PhReAllocate(listeners, length);
     }
@@ -1312,6 +1483,13 @@ PHVSOCKET_LISTENERS PhpGetHvSocketListeners(
     return listeners;
 }
 
+/**
+ * Gets Hyper-V socket connections for a specific VM.
+ *
+ * \param[in] SystemHandle The system handle.
+ * \param[in] VmId The VM ID.
+ * \return A pointer to the connections, or NULL if unsuccessful.
+ */
 PHVSOCKET_CONNECTIONS PhpGetHvSocketConnections(
     _In_ HANDLE SystemHandle,
     _In_ const GUID* VmId
@@ -1332,6 +1510,12 @@ PHVSOCKET_CONNECTIONS PhpGetHvSocketConnections(
             break;
         }
 
+        if (length > PH_LARGE_BUFFER_SIZE / 2)
+        {
+            status = STATUS_INTEGER_OVERFLOW;
+            break;
+        }
+
         length *= 2;
         connections = PhReAllocate(connections, length);
     }
@@ -1345,6 +1529,14 @@ PHVSOCKET_CONNECTIONS PhpGetHvSocketConnections(
     return connections;
 }
 
+/**
+ * Collects Hyper-V socket listeners and connections for a set of VMs.
+ *
+ * \param[in] VmIds An array of VM IDs.
+ * \param[in] Count The number of VM IDs.
+ * \param[out] Listeners A variable which receives the collected listeners.
+ * \param[out] Connections A variable which receives the collected connections.
+ */
 VOID PhpCollectHvSocket(
     _In_ PGUID VmIds,
     _In_ SIZE_T Count,
@@ -1457,20 +1649,30 @@ VOID PhpCollectHvSocket(
     NtClose(systemHandle);
 }
 
+/**
+ * Callback function for enumerating Hyper-V compute systems.
+ *
+ * \param[in] RootDirectory The root directory.
+ * \param[in] Information Information about the key.
+ * \param[in] Context A pointer to a GUID array.
+ * \return TRUE to continue enumeration, FALSE otherwise.
+ */
+_Function_class_(PH_ENUM_KEY_CALLBACK)
 static BOOLEAN NTAPI PhpHvEnumComputeSystemCallback(
     _In_ HANDLE RootDirectory,
-    _In_ PKEY_BASIC_INFORMATION Information,
+    _In_ PVOID Information,
     _In_ PVOID Context
     )
 {
+    PKEY_BASIC_INFORMATION basicInfo = (PKEY_BASIC_INFORMATION)Information;
     PPH_ARRAY guidArray = Context;
     PH_STRINGREF name;
     PH_FORMAT format[3];
     PPH_STRING string;
     GUID guid;
 
-    name.Buffer = Information->Name;
-    name.Length = Information->NameLength;
+    name.Buffer = basicInfo->Name;
+    name.Length = basicInfo->NameLength;
 
     PhInitFormatC(&format[0], L'{');
     PhInitFormatSR(&format[1], name);
@@ -1486,6 +1688,12 @@ static BOOLEAN NTAPI PhpHvEnumComputeSystemCallback(
     return TRUE;
 }
 
+/**
+ * Gets Hyper-V socket listeners and connections.
+ *
+ * \param[out] Listeners A variable which receives the listeners.
+ * \param[out] Connections A variable which receives the connections.
+ */
 VOID PhpGetHvSocket(
     _Out_ PHVSOCKET_LISTENERS* Listeners,
     _Out_ PHVSOCKET_CONNECTIONS* Connections
@@ -1526,6 +1734,15 @@ VOID PhpGetHvSocket(
 }
 #endif // _WIN64
 
+/**
+ * Gets the current network connections.
+ *
+ * \param[out] Connections A variable which receives an array of network connections. You must
+ * free the buffer with PhFree() when you no longer need it.
+ * \param[out] NumberOfConnections A variable which receives the number of network connections.
+ * \return TRUE if successful, FALSE otherwise.
+ */
+_Success_(return)
 BOOLEAN PhGetNetworkConnections(
     _Out_ PPH_NETWORK_CONNECTION *Connections,
     _Out_ PULONG NumberOfConnections
@@ -1926,6 +2143,12 @@ static CONST PH_KEY_VALUE_PAIR PhTcpStateStrings[] =
     SIP(SREF(L"绑定"), MIB_TCP_STATE_RESERVED),
 };
 
+/**
+ * Gets the name of a protocol type.
+ *
+ * \param[in] ProtocolType The protocol type.
+ * \return A pointer to the protocol type name string.
+ */
 PCPH_STRINGREF PhGetProtocolTypeName(
     _In_ ULONG ProtocolType
     )
@@ -1945,6 +2168,12 @@ PCPH_STRINGREF PhGetProtocolTypeName(
     return PhProtocolTypeStrings[0].Key;
 }
 
+/**
+ * Gets the name of a TCP state.
+ *
+ * \param[in] State The TCP state.
+ * \return A pointer to the TCP state name string.
+ */
 PCPH_STRINGREF PhGetTcpStateName(
     _In_ ULONG State
     )
@@ -1980,4 +2209,145 @@ PCPH_STRINGREF PhGetTcpStateName(
     //}
 
     return PhTcpStateStrings[0].Key;
+}
+
+VOID PhQueryUdpExemptPortRange(
+    _Inout_ PRTL_BITMAP PortBitmap
+    )
+{
+    static const PH_STRINGREF TcpipParametersKey = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Services\\Tcpip\\Parameters");
+    static const PH_STRINGREF UdpExemptPortRangeValue = PH_STRINGREF_INIT(L"UdpExemptPortRange");
+    HANDLE keyHandle;
+
+    if (NT_SUCCESS(PhOpenKey(
+        &keyHandle,
+        KEY_QUERY_VALUE,
+        PH_KEY_LOCAL_MACHINE,
+        &TcpipParametersKey,
+        0
+        )))
+    {
+        PKEY_VALUE_PARTIAL_INFORMATION valueInfo;
+        LARGE_INTEGER lastWriteTime;
+        LARGE_INTEGER bootTime;
+
+        // UdpExemptPortRange is only applied by the TCP/IP stack at boot. If the key was
+        // modified after the last boot, the current value isn't active yet, so ignore it
+        // until the next restart.
+
+        if (
+            NT_SUCCESS(PhQueryKeyLastWriteTime(keyHandle, &lastWriteTime)) &&
+            NT_SUCCESS(PhGetSystemBootTime(&bootTime)) &&
+            lastWriteTime.QuadPart > bootTime.QuadPart
+            )
+        {
+            NtClose(keyHandle);
+            return;
+        }
+
+        if (NT_SUCCESS(PhQueryValueKey(
+            keyHandle,
+            &UdpExemptPortRangeValue,
+            KeyValuePartialInformation,
+            &valueInfo
+            )))
+        {
+            if (valueInfo->Type == REG_MULTI_SZ && !(valueInfo->DataLength % sizeof(WCHAR)))
+            {
+                static const PH_STRINGREF whitespace = PH_STRINGREF_INIT(L" \t");
+                PWCHAR cursor = (PWCHAR)valueInfo->Data;
+                PWCHAR end = (PWCHAR)PTR_ADD_OFFSET(valueInfo->Data, valueInfo->DataLength);
+
+                while (cursor < end)
+                {
+                    PH_STRINGREF remaining;
+
+                    // Walk one null-terminated MULTI_SZ string at a time. Each string is a
+                    // list of comma-separated port ranges (e.g. "5000-5100,7000").
+
+                    remaining.Buffer = cursor;
+                    remaining.Length = 0;
+
+                    while (cursor < end && *cursor != UNICODE_NULL)
+                    {
+                        remaining.Length += sizeof(WCHAR);
+                        cursor++;
+                    }
+
+                    if (cursor < end)
+                        cursor++; // skip the string's null terminator
+
+                    while (remaining.Length != 0)
+                    {
+                        PH_STRINGREF token;
+                        PH_STRINGREF firstPart;
+                        PH_STRINGREF lastPart;
+                        ULONG64 firstPort;
+                        ULONG64 lastPort;
+
+                        PhSplitStringRefAtChar(&remaining, L',', &token, &remaining);
+
+                        // Split "first-last"; a token without '-' is a single port.
+                        if (!PhSplitStringRefAtChar(&token, L'-', &firstPart, &lastPart))
+                        {
+                            lastPart = firstPart;
+                        }
+
+                        PhTrimStringRef(&firstPart, &whitespace, 0);
+                        PhTrimStringRef(&lastPart, &whitespace, 0);
+
+                        if (
+                            PhStringToUInt64(&firstPart, 10, &firstPort) &&
+                            PhStringToUInt64(&lastPart, 10, &lastPort) &&
+                            firstPort <= USHRT_MAX &&
+                            lastPort <= USHRT_MAX &&
+                            firstPort <= lastPort
+                            )
+                        {
+#ifndef PH_UDP_EXEMPT_RTL_BITMAP
+                            RtlSetBits(PortBitmap, (ULONG)firstPort, (ULONG)(lastPort - firstPort + 1));
+#else
+                            PULONG buffer = PortBitmap->Buffer;
+                            ULONG currentPort;
+
+                            for (currentPort = (ULONG)firstPort; currentPort <= (ULONG)lastPort; currentPort++)
+                            {
+                                buffer[currentPort / 32] |= 1UL << (currentPort % 32);
+                            }
+#endif
+                        }
+                    }
+                }
+            }
+
+            PhFree(valueInfo);
+        }
+
+        NtClose(keyHandle);
+    }
+}
+
+BOOLEAN PhIsUdpExemptPort(
+    _In_ ULONG Port
+    )
+{
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static ULONG portBitmapBuffer[USHRT_MAX / 32 + 1];
+    static RTL_BITMAP portBitmap;
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        RtlInitializeBitMap(&portBitmap, portBitmapBuffer, USHRT_MAX + 1);
+        PhQueryUdpExemptPortRange(&portBitmap);
+        PhEndInitOnce(&initOnce);
+    }
+
+    if (Port > USHRT_MAX)
+        return FALSE;
+
+#ifndef PH_UDP_EXEMPT_RTL_BITMAP
+    return !!RtlTestBit(&portBitmap, Port);
+#else
+    return BooleanFlagOn(portBitmapBuffer[Port / 32], 1UL << (Port % 32));
+#endif
 }

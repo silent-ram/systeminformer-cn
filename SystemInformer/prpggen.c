@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -14,7 +14,9 @@
 #include <procprp.h>
 #include <procprpp.h>
 #include <phconsole.h>
+#include <guisup.h>
 
+#include <appresolver.h>
 #include <emenu.h>
 #include <mapimg.h>
 #include <secedit.h>
@@ -290,6 +292,78 @@ VOID PphProcessGeneralDlgUpdateIcons(
     SET_BUTTON_ICON(IDC_VIEWPARENTPROCESS, magnifier);
 }
 
+VOID PphProcessGeneralDlgUpdateProcessIcon(
+    _In_ HWND hwndDlg,
+    _In_ PPH_PROCGENERAL_CONTEXT Context,
+    _In_ PPH_PROCESS_ITEM ProcessItem,
+    _In_ LONG DpiValue
+    )
+{
+    HWND iconHandle;
+    HICON oldIcon;
+    HICON newIcon;
+    HICON smallIcon;
+
+    iconHandle = GetDlgItem(hwndDlg, IDC_FILEICON);
+    newIcon = NULL;
+    smallIcon = NULL;
+
+    SetWindowPos(
+        iconHandle,
+        NULL,
+        0,
+        0,
+        PhGetSystemMetrics(SM_CXICON, DpiValue),
+        PhGetSystemMetrics(SM_CYICON, DpiValue),
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+        );
+
+    if (PhEnablePackageIconSupport && ProcessItem->FileName && ProcessItem->PackageFullName)
+    {
+        PhAppResolverGetPackageIcon(
+            ProcessItem->ProcessId,
+            ProcessItem->PackageFullName,
+            &newIcon,
+            &smallIcon,
+            DpiValue
+            );
+    }
+
+    if (!newIcon && ProcessItem->FileName)
+    {
+        PhExtractIconEx(
+            &ProcessItem->FileName->sr,
+            TRUE,
+            0,
+            PhGetSystemMetrics(SM_CXICON, DpiValue),
+            PhGetSystemMetrics(SM_CYICON, DpiValue),
+            PhGetSystemMetrics(SM_CXSMICON, DpiValue),
+            PhGetSystemMetrics(SM_CYSMICON, DpiValue),
+            &newIcon,
+            &smallIcon
+            );
+    }
+
+    if (!newIcon)
+        newIcon = PhGetImageListIcon(ProcessItem->LargeIconIndex, TRUE);
+
+    if (smallIcon)
+        DestroyIcon(smallIcon);
+
+    if (newIcon)
+    {
+        oldIcon = Static_SetIcon(iconHandle, newIcon);
+
+        if (oldIcon)
+            DestroyIcon(oldIcon);
+
+        if (Context->ProgramIcon && Context->ProgramIcon != oldIcon)
+            DestroyIcon(Context->ProgramIcon);
+
+        Context->ProgramIcon = newIcon;
+    }
+}
+
 INT_PTR CALLBACK PhpProcessGeneralDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -328,10 +402,35 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             PphProcessGeneralDlgUpdateIcons(hwndDlg);
 
+            PhSetWindowStyle(hwndDlg, WS_CLIPCHILDREN, WS_CLIPCHILDREN);
+
+            HWND fileGroupHandle = GetDlgItem(hwndDlg, IDC_FILE);
+            PhSetWindowExStyle(fileGroupHandle, WS_EX_TRANSPARENT, 0);
+            PhSetWindowStyle(fileGroupHandle, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            SetWindowPos(fileGroupHandle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            PhInitializeThemeWindowGroupBoxEx(fileGroupHandle);
+
+            HWND processGroupHandle = GetDlgItem(hwndDlg, IDC_PROCESS);
+            PhSetWindowExStyle(processGroupHandle, WS_EX_TRANSPARENT, 0);
+            PhSetWindowStyle(processGroupHandle, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            SetWindowPos(processGroupHandle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            PhInitializeThemeWindowGroupBoxEx(processGroupHandle);
+
+            if (!PhEnableThemeSupport)
+            {
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_FILENAME));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_FILENAMEWIN32));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_CMDLINE));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_CURDIR));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_STARTED));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_PARENTCONSOLE));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_PARENTPROCESS));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_MITIGATION));
+            }
+
             // File
 
-            context->ProgramIcon = PhGetImageListIcon(processItem->LargeIconIndex, TRUE);
-            Static_SetIcon(GetDlgItem(hwndDlg, IDC_FILEICON), context->ProgramIcon);
+            PphProcessGeneralDlgUpdateProcessIcon(hwndDlg, context, processItem, PhGetWindowDpi(hwndDlg));
 
             if (PH_IS_REAL_PROCESS_ID(processItem->ProcessId))
             {
@@ -584,6 +683,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
     case WM_DPICHANGED_AFTERPARENT:
         {
             PphProcessGeneralDlgUpdateIcons(hwndDlg);
+            PphProcessGeneralDlgUpdateProcessIcon(hwndDlg, context, processItem, LOWORD(wParam));
         }
         break;
     case WM_SHOWWINDOW:
@@ -760,7 +860,8 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                     PPH_EMENU menu;
                     RECT rect;
 
-                    GetWindowRect(GetDlgItem(hwndDlg, IDC_INTEGRITY), &rect);
+                    if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_INTEGRITY), &rect))
+                        break;
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"No-Write-Up", NULL, NULL), ULONG_MAX);
@@ -992,6 +1093,12 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

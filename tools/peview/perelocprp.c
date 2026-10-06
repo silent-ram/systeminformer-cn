@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2021-2022
+ *     dmex    2021-2026
  *
  */
 
@@ -44,7 +44,7 @@ VOID PvEnumerateRelocationEntries(
             //PhSetListViewSubItem(ListViewHandle, lvItemIndex, 1, value);
             //PhPrintPointer(value, UlongToPtr(entry->Offset));
             //PhSetListViewSubItem(ListViewHandle, lvItemIndex, 2, value);
-            PhPrintPointer(value, PTR_ADD_OFFSET(entry->BlockRva, entry->Record.Offset));
+            PhPrintPointer(value, (PVOID)(ULONG_PTR)UInt32Add32To64(entry->BlockRva, entry->Record.Offset));
             PhSetListViewSubItem(ListViewHandle, lvItemIndex, 1, value);
 
             switch (entry->Record.Type)
@@ -76,10 +76,14 @@ VOID PvEnumerateRelocationEntries(
             {
                 PIMAGE_SECTION_HEADER directorySection;
 
-                directorySection = PhMappedImageRvaToSection(
+                if (!NT_SUCCESS(PhMappedImageRvaToSection(
                     &PvMappedImage,
-                    PtrToUlong(PTR_ADD_OFFSET(entry->BlockRva, entry->Record.Offset))
-                    );
+                    (entry->BlockRva - entry->Record.Offset),
+                    &directorySection
+                    )))
+                {
+                    directorySection = NULL;
+                }
 
                 if (directorySection)
                 {
@@ -189,6 +193,7 @@ INT_PTR CALLBACK PvpPeRelocationDlgProc(
 
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            PvConfigListViewFont(hwndDlg, context->ListViewHandle);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 50, L"#");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 100, L"RVA");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 100, L"Type");
@@ -196,7 +201,7 @@ INT_PTR CALLBACK PvpPeRelocationDlgProc(
             PhAddListViewColumn(context->ListViewHandle, 4, 4, 4, LVCFMT_LEFT, 140, L"Symbol");
             PhAddListViewColumn(context->ListViewHandle, 5, 5, 5, LVCFMT_LEFT, 140, L"RelocationSymbol");
             PhSetExtendedListView(context->ListViewHandle);
-            //PhLoadListViewColumnsFromSetting(L"ImageRelocationsListViewColumns", context->ListViewHandle);
+            PhLoadListViewColumnsFromSetting(L"ImageRelocationsListViewColumns", context->ListViewHandle);
             PvConfigTreeBorders(context->ListViewHandle);
 
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);

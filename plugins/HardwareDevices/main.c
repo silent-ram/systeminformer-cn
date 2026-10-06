@@ -12,6 +12,7 @@
 
 #include "devices.h"
 #include <hndlinfo.h>
+#include <secedit.h>
 
 #include <trace.h>
 
@@ -140,7 +141,8 @@ VOID NTAPI ProcessesUpdatedCallback(
     _In_opt_ PVOID Context
     )
 {
-    ULONG runCount = PtrToUlong(Parameter);
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
+    ULONG runCount = updateEvent->RunCount;
 
     GraphicsDevicesUpdate(runCount);
     DiskDevicesUpdate(runCount);
@@ -162,7 +164,7 @@ VOID NTAPI SystemInformationInitializingCallback(
 
     for (ULONG i = 0; i < GraphicsDevicesList->Count; i++)
     {
-        PDV_GPU_ENTRY entry = PhReferenceObjectSafe(GraphicsDevicesList->Items[i]);
+        PDV_GPU_ENTRY entry = PhReferenceObjectUnsafe(GraphicsDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -183,7 +185,7 @@ VOID NTAPI SystemInformationInitializingCallback(
 
     for (ULONG i = 0; i < DiskDevicesList->Count; i++)
     {
-        PDV_DISK_ENTRY entry = PhReferenceObjectSafe(DiskDevicesList->Items[i]);
+        PDV_DISK_ENTRY entry = PhReferenceObjectUnsafe(DiskDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -204,7 +206,7 @@ VOID NTAPI SystemInformationInitializingCallback(
 
     for (ULONG i = 0; i < NetworkDevicesList->Count; i++)
     {
-        PDV_NETADAPTER_ENTRY entry = PhReferenceObjectSafe(NetworkDevicesList->Items[i]);
+        PDV_NETADAPTER_ENTRY entry = PhReferenceObjectUnsafe(NetworkDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -225,7 +227,7 @@ VOID NTAPI SystemInformationInitializingCallback(
 
     for (ULONG i = 0; i < RaplDevicesList->Count; i++)
     {
-        PDV_RAPL_ENTRY entry = PhReferenceObjectSafe(RaplDevicesList->Items[i]);
+        PDV_RAPL_ENTRY entry = PhReferenceObjectUnsafe(RaplDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -364,54 +366,163 @@ BOOLEAN HardwareDeviceUninstall(
     return TRUE;
 }
 
+static NTSTATUS HardwareDeviceGetSecurityDescriptor(
+    _In_ PPH_STRING DeviceInstance,
+    _Out_ PSECURITY_DESCRIPTOR *SecurityDescriptor
+    )
+{
+    DEVPROPCOMPKEY requestedProperties[] =
+    {
+        { DEVPKEY_Device_Security, DEVPROP_STORE_SYSTEM, NULL },
+    };
+    ULONG propertyCount = 0;
+    const DEVPROPERTY* properties = NULL;
+    const DEVPROPERTY* prop;
+    PSECURITY_DESCRIPTOR buffer;
+
+    if (HR_FAILED(PhDevGetObjectProperties(
+        DevObjectTypeDevice,
+        PhGetString(DeviceInstance),
+        DevQueryFlagNone,
+        RTL_NUMBER_OF(requestedProperties),
+        requestedProperties,
+        &propertyCount,
+        &properties
+        )))
+    {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    prop = PhDevFindProperty(&DEVPKEY_Device_Security, DEVPROP_STORE_SYSTEM, propertyCount, properties);
+
+    if (!prop || prop->Type != DEVPROP_TYPE_SECURITY_DESCRIPTOR || !prop->Buffer || prop->BufferSize == 0)
+    {
+        PhDevFreeObjectProperties(propertyCount, properties);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    // Copy out so the caller owns a PhAllocate-d buffer (matches the prior contract
+    // where the SD lived on the process heap and was later freed via PhFree /
+    // RtlSetSecurityObject's free-and-replace).
+    buffer = PhAllocateCopy(prop->Buffer, prop->BufferSize);
+
+    PhDevFreeObjectProperties(propertyCount, properties);
+
+    *SecurityDescriptor = buffer;
+    return STATUS_SUCCESS;
+}
+
+_Function_class_(PH_GET_OBJECT_SECURITY)
+static NTSTATUS HardwareDeviceGetObjectSecurity(
+    _Out_ PSECURITY_DESCRIPTOR *SecurityDescriptor,
+    _In_ SECURITY_INFORMATION SecurityInformation,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_STD_OBJECT_SECURITY objectSecurity = Context;
+    PPH_STRING deviceInstance = objectSecurity->Context;
+
+    return HardwareDeviceGetSecurityDescriptor(deviceInstance, SecurityDescriptor);
+}
+
+_Function_class_(PH_SET_OBJECT_SECURITY)
+static NTSTATUS HardwareDeviceSetObjectSecurity(
+    _In_ PSECURITY_DESCRIPTOR SecurityDescriptor,
+    _In_ SECURITY_INFORMATION SecurityInformation,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_STD_OBJECT_SECURITY objectSecurity = Context;
+    PPH_STRING deviceInstance = objectSecurity->Context;
+    DEVINST deviceInstanceHandle;
+    PSECURITY_DESCRIPTOR existingSd;
+    NTSTATUS status;
+    GENERIC_MAPPING genericMapping = { 0 };
+
+    if (CM_Locate_DevNode(
+        &deviceInstanceHandle,
+        deviceInstance->Buffer,
+        CM_LOCATE_DEVNODE_NORMAL
+        ) != CR_SUCCESS)
+    {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = HardwareDeviceGetSecurityDescriptor(deviceInstance, &existingSd);
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    // Merge the modified parts into the existing SD. RtlSetSecurityObject frees
+    // the old buffer (allocated via PhAllocate = RtlAllocateHeap on ProcessHeap)
+    // and replaces *existingSd with a new heap-allocated self-relative SD.
+    status = RtlSetSecurityObject(
+        SecurityInformation,
+        SecurityDescriptor,
+        &existingSd,
+        &genericMapping,
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        CONFIGRET result;
+
+        result = CM_Set_DevNode_Property(
+            deviceInstanceHandle,
+            &DEVPKEY_Device_Security,
+            DEVPROP_TYPE_BINARY,
+            (PBYTE)existingSd,
+            RtlLengthSecurityDescriptor(existingSd),
+            0
+            );
+
+        RtlFreeHeap(RtlProcessHeap(), 0, existingSd);
+
+        if (result != CR_SUCCESS)
+            status = STATUS_UNSUCCESSFUL;
+    }
+    else
+    {
+        PhFree(existingSd);
+    }
+
+    return status;
+}
+
+_Function_class_(PH_CLOSE_OBJECT)
+static NTSTATUS HardwareDeviceCloseObjectSecurity(
+    _In_opt_ HANDLE Handle,
+    _In_ BOOLEAN Release,
+    _In_opt_ PVOID Context
+    )
+{
+    if (Release && Context)
+        PhDereferenceObject(Context);
+
+    return STATUS_SUCCESS;
+}
+
 _Success_(return)
 BOOLEAN HardwareDeviceShowSecurity(
     _In_ HWND ParentWindow,
     _In_ PPH_STRING DeviceInstance
     )
 {
-    DEVINST deviceInstanceHandle;
-    CONFIGRET result;
-    PBYTE buffer;
-    ULONG bufferSize;
-    DEVPROPTYPE propertyType;
+    PhReferenceObject(DeviceInstance);
 
-    if (CM_Locate_DevNode(
-        &deviceInstanceHandle,
-        DeviceInstance->Buffer,
-        CM_LOCATE_DEVNODE_NORMAL
-        ) != CR_SUCCESS)
-    {
-        return FALSE;
-    }
+    PhEditSecurityEx(
+        ParentWindow,
+        PhGetString(DeviceInstance),
+        L"Device",
+        NULL,
+        HardwareDeviceCloseObjectSecurity,
+        HardwareDeviceGetObjectSecurity,
+        HardwareDeviceSetObjectSecurity,
+        DeviceInstance
+        );
 
-    bufferSize = 0x80;
-    buffer = PhAllocate(bufferSize);
-    propertyType = DEVPROP_TYPE_EMPTY;
-
-    if ((result = CM_Get_DevNode_Property(
-        deviceInstanceHandle,
-        &DEVPKEY_Device_Security,
-        &propertyType,
-        buffer,
-        &bufferSize,
-        0
-        )) == CR_BUFFER_SMALL)
-    {
-        PhFree(buffer);
-        buffer = PhAllocate(bufferSize);
-
-        result = CM_Get_DevNode_Property(
-            deviceInstanceHandle,
-            &DEVPKEY_Device_Security,
-            &propertyType,
-            buffer,
-            &bufferSize,
-            0
-            );
-    }
-
-    return FALSE;
+    return TRUE;
 }
 
 BOOLEAN HardwareDeviceShowProperties(
@@ -497,48 +608,32 @@ BOOLEAN HardwareDeviceOpenKey(
     _In_ ULONG KeyIndex
     )
 {
-    CONFIGRET result;
-    DEVINST deviceInstanceHandle;
-    ULONG keyIndex;
-    HKEY keyHandle;
-
-    result = CM_Locate_DevNode(
-        &deviceInstanceHandle,
-        DeviceInstance->Buffer,
-        CM_LOCATE_DEVNODE_PHANTOM
-        );
-
-    if (result != CR_SUCCESS)
-    {
-        PhShowStatus(ParentWindow, L"Failed to locate the device.", 0, CM_MapCrToWin32Err(result, ERROR_UNKNOWN_PROPERTY));
-        return FALSE;
-    }
+    ULONG keyFlags;
+    HANDLE keyHandle;
 
     switch (KeyIndex)
     {
     case 4:
     default:
-        keyIndex = CM_REGISTRY_HARDWARE;
+        keyFlags = PH_DEVKEY_HARDWARE;
         break;
     case 5:
-        keyIndex = CM_REGISTRY_SOFTWARE;
+        keyFlags = PH_DEVKEY_SOFTWARE;
         break;
     case 6:
-        keyIndex = CM_REGISTRY_USER;
+        keyFlags = PH_DEVKEY_USER;
         break;
     case 7:
-        keyIndex = CM_REGISTRY_CONFIG;
+        keyFlags = PH_DEVKEY_CONFIG;
         break;
     }
 
-    if (CM_Open_DevInst_Key(
-        deviceInstanceHandle,
+    if (NT_SUCCESS(PhDevOpenObjectKey(
+        DeviceInstance,
         KEY_READ,
-        0,
-        RegDisposition_OpenExisting,
-        &keyHandle,
-        keyIndex
-        ) == CR_SUCCESS)
+        keyFlags,
+        &keyHandle
+        )))
     {
         PPH_STRING bestObjectName = NULL;
 
@@ -554,7 +649,7 @@ BOOLEAN HardwareDeviceOpenKey(
 
         if (bestObjectName)
         {
-            // HKLM\SYSTEM\ControlSet\Control\Class\ += DEVPKEY_Device_Driver
+            PhMoveReference(&bestObjectName, PhFormatNativeKeyName(bestObjectName));
             PhShellOpenKey2(ParentWindow, bestObjectName);
             PhDereferenceObject(bestObjectName);
         }
@@ -575,7 +670,8 @@ VOID ShowDeviceMenu(
     PPH_EMENU subMenu;
     PPH_EMENU_ITEM selectedItem;
 
-    GetCursorPos(&cursorPos);
+    if (!PhGetMessagePos(&cursorPos))
+        return;
 
     menu = PhCreateEMenu();
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 0, L"启用", NULL, NULL), ULONG_MAX);
@@ -583,12 +679,17 @@ VOID ShowDeviceMenu(
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"重启", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 3, L"卸载", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_ONLINE, L"在线搜索(&o)\bCtrl+M", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"Search driver update", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     subMenu = PhCreateEMenuItem(0, 0, L"打开注册表", NULL, NULL);
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_HARDWARE, L"硬件", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_SOFTWARE, L"软件", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_USER, L"用户", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, HW_KEY_INDEX_CONFIG, L"配置", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, subMenu, ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SECURITY, L"Secu&rity", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 10, L"属性", NULL, NULL), ULONG_MAX);
 
@@ -620,11 +721,52 @@ VOID ShowDeviceMenu(
                 }
             }
             break;
+        case ID_DEVICE_SEARCH_ONLINE:
+        case ID_DEVICE_SEARCH_DRIVER_UPDATE:
+            {
+                PPH_DEVICE_TREE deviceTree;
+                PPH_DEVICE_ITEM deviceItem;
+
+                if (deviceTree = PhReferenceDeviceTree())
+                {
+                    if (deviceItem = PhLookupDeviceItem(deviceTree, &DeviceInstance->sr))
+                    {
+                        PPH_DEVICE_PROPERTY hardwareIds = PhGetDeviceProperty(deviceItem, PhDevicePropertyHardwareIds);
+                        PPH_STRING searchId = NULL;
+
+                        if (hardwareIds->Valid && hardwareIds->StringList && hardwareIds->StringList->Count > 0)
+                            searchId = hardwareIds->StringList->Items[0];
+                        else
+                            searchId = deviceItem->InstanceId;
+
+                        if (searchId)
+                        {
+                            if (selectedItem->Id == ID_DEVICE_SEARCH_ONLINE)
+                            {
+                                PhSearchOnlineString(ParentWindow, searchId->Buffer);
+                            }
+                            else
+                            {
+                                PPH_STRING encodedId = PhpEncodeDeviceQuery(searchId);
+                                PPH_STRING url = PhFormatString(L"https://www.catalog.update.microsoft.com/search.aspx?q=%s", encodedId->Buffer);
+                                PhShellExecute(ParentWindow, url->Buffer, NULL);
+                                PhDereferenceObject(url);
+                                PhDereferenceObject(encodedId);
+                            }
+                        }
+                    }
+                    PhDereferenceObject(deviceTree);
+                }
+            }
+            break;
         case HW_KEY_INDEX_HARDWARE:
         case HW_KEY_INDEX_SOFTWARE:
         case HW_KEY_INDEX_USER:
         case HW_KEY_INDEX_CONFIG:
             HardwareDeviceOpenKey(ParentWindow, DeviceInstance, selectedItem->Id);
+            break;
+        case ID_DEVICE_SECURITY:
+            HardwareDeviceShowSecurity(ParentWindow, DeviceInstance);
             break;
         case 10:
             HardwareDeviceShowProperties(ParentWindow, DeviceInstance);
@@ -633,6 +775,29 @@ VOID ShowDeviceMenu(
     }
 
     PhDestroyEMenu(menu);
+}
+
+PPH_STRING PhpEncodeDeviceQuery(
+    _In_ PPH_STRING String
+    )
+{
+    PH_STRING_BUILDER sb;
+
+    PhInitializeStringBuilder(&sb, String->Length / sizeof(WCHAR) + 16);
+
+    for (SIZE_T i = 0; i < String->Length / sizeof(WCHAR); i++)
+    {
+        WCHAR c = String->Buffer[i];
+
+        if (c == L'&')
+            PhAppendStringBuilder2(&sb, L"%26");
+        else if (c == L'\\')
+            PhAppendStringBuilder2(&sb, L"%5C");
+        else
+            PhAppendCharStringBuilder(&sb, c);
+    }
+
+    return PhFinalStringBuilderString(&sb);
 }
 
 LOGICAL DllMain(

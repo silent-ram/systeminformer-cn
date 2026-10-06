@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -43,7 +43,8 @@ typedef struct _PH_MODULE_ITEM
             BOOLEAN IsFirst : 1;
             BOOLEAN ImageNotAtBase : 1;
             BOOLEAN ImageKnownDll : 1;
-            BOOLEAN Spare : 4;
+            BOOLEAN QueryPending : 1;
+            BOOLEAN Spare : 3;
         };
     };
 

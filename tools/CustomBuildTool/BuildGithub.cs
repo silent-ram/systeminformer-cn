@@ -9,7 +9,6 @@
  *
  */
 
-
 namespace CustomBuildTool
 {
     /// <summary>
@@ -17,6 +16,14 @@ namespace CustomBuildTool
     /// </summary>
     public static class BuildGithub
     {
+        /// <summary>
+        /// Provides a static HTTP client instance for making requests to GitHub APIs.
+        /// </summary>
+        /// <remarks>Using a static instance of HttpClient helps prevent socket exhaustion and improves
+        /// performance when making multiple requests. This client is intended for internal use when interacting with
+        /// GitHub services.</remarks>
+        private static readonly HttpClient GithubHttpClient;
+
         /// <summary>
         /// The GitHub API token used for authentication.
         /// </summary>
@@ -32,8 +39,127 @@ namespace CustomBuildTool
         /// </summary>
         static BuildGithub()
         {
+            GithubHttpClient = BuildHttpClient.CreateHttpClient();
             BaseToken = Win32.GetEnvironmentVariable("GITHUB_MIRROR_KEY");
             BaseUrl = Win32.GetEnvironmentVariable("GITHUB_MIRROR_API");
+        }
+
+        /// <summary>
+        /// Queries the GitHub Action Run API for the current build's queue time.
+        /// </summary>
+        /// <returns>
+        /// A tuple containing a boolean indicating success and the <see cref="DateTime"/> representing the queue time of the build, or <see cref="DateTime.MinValue"/> if an error occurs.
+        /// </returns>
+        public static async Task<(bool Success, DateTime QueueTime)> BuildQueryQueueTime()
+        {
+            string repo = Win32.GetEnvironmentVariable("GITHUB_REPOSITORY");
+            string runId = Win32.GetEnvironmentVariable("GITHUB_RUN_ID");
+            string token = Win32.GetEnvironmentVariable("GITHUB_TOKEN");
+
+            DateTime queueTime;
+
+            if (string.IsNullOrWhiteSpace(repo) ||
+                string.IsNullOrWhiteSpace(runId) ||
+                string.IsNullOrWhiteSpace(token))
+            {
+                queueTime = DateTime.UtcNow.Subtract(TimeSpan.FromMilliseconds(Environment.TickCount64));
+
+                Console.WriteLine($"Build StartTime: {VT.YELLOW}{queueTime}{VT.RESET} (TickCount)");
+                Console.WriteLine($"Build Elapsed: {VT.YELLOW}{(DateTimeOffset.UtcNow - queueTime)}{VT.RESET} (TickCount)");
+                return (true, queueTime);
+            }
+
+            try
+            {
+                using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repo}/actions/runs/{runId}"))
+                {
+                    requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+                    requestMessage.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+
+                    var content = await BuildHttpClient.SendMessage(GithubHttpClient, requestMessage, GithubResponseContext.Default.GithubActionRun);
+                    if (content == null)
+                    {
+                        Console.WriteLine($"{VT.RED}[ERROR] Failed to deserialize the response.{VT.RESET}");
+                        ArgumentNullException.ThrowIfNull((GithubActionRun)null);
+                    }
+
+                    var offset = new DateTimeOffset(DateTime.SpecifyKind(content.CreatedAt, DateTimeKind.Utc));
+
+                    Console.WriteLine($"Build Created: {VT.GREEN}{content.CreatedAt}{VT.RESET}");
+                    Console.WriteLine($"Build Started: {VT.GREEN}{content.RunStartedAt}{VT.RESET}");
+                    Console.WriteLine($"Build Elapsed: {VT.GREEN}{(DateTimeOffset.UtcNow - offset)}{VT.RESET}");
+
+                    queueTime = offset.DateTime;
+                    return (true, queueTime);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"{VT.RED}[ERROR] {ex}{VT.RESET}");
+                queueTime = DateTime.UtcNow.Subtract(TimeSpan.FromMilliseconds(Environment.TickCount64));
+                return (false, queueTime);
+            }
+        }
+
+        /// <summary>
+        /// Downloads the GitHub meta-IP ranges and returns them as a list of strings.
+        /// </summary>
+        /// <returns>A list of IP address ranges from the GitHub meta-endpoint, or <c>null</c> on error.</returns>
+        public static async IAsyncEnumerable<string> DownloadGithubIpRanges([EnumeratorCancellation] CancellationToken CancellationToken = default)
+        {
+            using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/meta"))
+            {
+                requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+                requestMessage.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+
+                using var response = await BuildHttpClient.SendMessageResponse(GithubHttpClient, requestMessage, CancellationToken);
+                if (response == null || !response.IsSuccessStatusCode)
+                {
+                    Program.PrintColorMessage("[DownloadGithubIpRanges] response failed", ConsoleColor.Red);
+                    yield break;
+                }
+
+                await using Stream stream = await response.Content.ReadAsStreamAsync(CancellationToken);
+                var meta = await JsonSerializer.DeserializeAsync(stream, GithubResponseContext.Default.DictionaryStringJsonElement, CancellationToken);
+                if (meta == null)
+                {
+                    Program.PrintColorMessage("[DownloadGithubIpRanges] invalid response", ConsoleColor.Red);
+                    yield break;
+                }
+
+                var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var property in meta)
+                {
+                    if (property.Value.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    foreach (var entry in property.Value.EnumerateArray())
+                    {
+                        if (entry.ValueKind != JsonValueKind.String)
+                            continue;
+
+                        var value = entry.GetString();
+                        if (IsIpRange(value) && results.Add(value))
+                        {
+                            yield return value;
+                        }
+                    }
+                }
+            }
+
+            static bool IsIpRange(string Value)
+            {
+                if (string.IsNullOrWhiteSpace(Value))
+                    return false;
+
+                ReadOnlySpan<char> span = Value.AsSpan();
+                var slashIndex = span.IndexOf('/');
+                var address = slashIndex >= 0 ? span[..slashIndex] : span;
+
+                return IPAddress.TryParse(address, out _);
+            }
         }
 
         /// <summary>
@@ -43,7 +169,7 @@ namespace CustomBuildTool
         /// <returns>
         /// A <see cref="GithubReleaseQueryResponse"/> object containing release details, or <c>null</c> if not found or on error.
         /// </returns>
-        public static GithubReleaseQueryResponse GetRelease(ulong ReleaseId)
+        public static async Task<GithubReleaseQueryResponse> GetRelease(ulong ReleaseId)
         {
             if (string.IsNullOrWhiteSpace(BaseUrl))
                 return null;
@@ -58,7 +184,7 @@ namespace CustomBuildTool
                     requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Token", BaseToken);
                     requestMessage.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-                    var httpResult = BuildHttpClient.SendMessage(requestMessage, GithubResponseContext.Default.GithubReleaseQueryResponse);
+                    var httpResult = await BuildHttpClient.SendMessage(GithubHttpClient, requestMessage, GithubResponseContext.Default.GithubReleaseQueryResponse);
 
                     if (httpResult == null)
                     {
@@ -87,7 +213,7 @@ namespace CustomBuildTool
         /// <returns>
         /// A <see cref="GithubReleasesResponse"/> object containing release details, or <c>null</c> on error.
         /// </returns>
-        public static GithubReleasesResponse CreateRelease(string Version, bool Draft = true, bool Prerelease = false, bool GenerateReleaseNotes = true)
+        public static async Task<GithubReleasesResponse> CreateRelease(string Version, bool Draft = true, bool Prerelease = false, bool GenerateReleaseNotes = true)
         {
             if (string.IsNullOrWhiteSpace(BaseUrl))
                 return null;
@@ -113,7 +239,7 @@ namespace CustomBuildTool
 
                     requestMessage.Content = new ByteArrayContent(buildUpdateRequest.SerializeToBytes());
 
-                    var httpResult = BuildHttpClient.SendMessage(requestMessage, GithubResponseContext.Default.GithubReleasesResponse);
+                    var httpResult = await BuildHttpClient.SendMessage(GithubHttpClient, requestMessage, GithubResponseContext.Default.GithubReleasesResponse);
 
                     if (httpResult == null)
                     {
@@ -145,7 +271,7 @@ namespace CustomBuildTool
         /// <returns>
         /// <c>true</c> if the release and tag were deleted or did not exist; <c>false</c> on error.
         /// </returns>
-        public static bool DeleteRelease(string Version)
+        public static async Task<bool> DeleteRelease(string Version)
         {
             if (string.IsNullOrWhiteSpace(BaseUrl))
                 return false;
@@ -163,7 +289,7 @@ namespace CustomBuildTool
                     requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Token", BaseToken);
                     requestMessage.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-                    responseMessage = BuildHttpClient.SendMessageResponse(requestMessage);
+                    responseMessage = await BuildHttpClient.SendMessageResponse(GithubHttpClient, requestMessage);
 
                     if (!responseMessage.IsSuccessStatusCode)
                     {
@@ -180,16 +306,8 @@ namespace CustomBuildTool
                 }
 
                 {
-                    var result = responseMessage.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
-                    if (string.IsNullOrWhiteSpace(result))
-                    {
-                        Program.PrintColorMessage("[DeleteRelease-ReadAsStringAsync]", ConsoleColor.Red);
-                        return false;
-                    }
-
-                    githubResponseMessage = JsonSerializer.Deserialize(result, GithubResponseContext.Default.GithubReleasesResponse);
-
+                    var result = await responseMessage.Content.ReadAsStreamAsync();
+                    githubResponseMessage = await JsonSerializer.DeserializeAsync(result, GithubResponseContext.Default.GithubReleasesResponse);
                     if (githubResponseMessage == null)
                     {
                         Program.PrintColorMessage("[DeleteRelease-GithubReleasesResponse]", ConsoleColor.Red);
@@ -210,9 +328,9 @@ namespace CustomBuildTool
                     requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Token", BaseToken);
                     requestMessage.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-                    var response = BuildHttpClient.SendMessage(requestMessage);
+                    using var response = await BuildHttpClient.SendMessageResponse(GithubHttpClient, requestMessage);
 
-                    if (string.IsNullOrWhiteSpace(response))
+                    if (!response.IsSuccessStatusCode)
                     {
                         Program.PrintColorMessage("[DeleteRelease-DeleteAsync]", ConsoleColor.Red);
                         return false;
@@ -226,9 +344,9 @@ namespace CustomBuildTool
                     requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Token", BaseToken);
                     requestMessage.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-                    var response = BuildHttpClient.SendMessage(requestMessage);
+                    using var response = await BuildHttpClient.SendMessageResponse(GithubHttpClient, requestMessage);
 
-                    if (string.IsNullOrWhiteSpace(response))
+                    if (!response.IsSuccessStatusCode)
                     {
                         Program.PrintColorMessage("[DeleteRelease-DeleteAsync]", ConsoleColor.Red);
                         return false;
@@ -253,7 +371,7 @@ namespace CustomBuildTool
         /// <returns>
         /// A <see cref="GithubReleasesResponse"/> object containing updated release details, or <c>null</c> on error.
         /// </returns>
-        public static GithubReleasesResponse UpdateRelease(ulong ReleaseId, bool Draft = false, bool Prerelease = false)
+        public static async Task<GithubReleasesResponse> UpdateRelease(ulong ReleaseId, bool Draft = false, bool Prerelease = false)
         {
             if (string.IsNullOrWhiteSpace(BaseUrl))
                 return null;
@@ -276,7 +394,7 @@ namespace CustomBuildTool
 
                     requestMessage.Content = new ByteArrayContent(buildUpdateRequest.SerializeToBytes());
 
-                    var response = BuildHttpClient.SendMessage(requestMessage, GithubResponseContext.Default.GithubReleasesResponse);
+                    var response = await BuildHttpClient.SendMessage(GithubHttpClient, requestMessage, GithubResponseContext.Default.GithubReleasesResponse);
 
                     if (response == null)
                     {
@@ -311,14 +429,14 @@ namespace CustomBuildTool
         /// <returns>
         /// A <see cref="GithubAssetsResponse"/> object containing asset upload details, or <c>null</c> on error.
         /// </returns>
-        public static GithubAssetsResponse UploadAsset(string ReleaseAssetUrl, string FileName, string Name, string Label)
+        public static async Task<GithubAssetsResponse> UploadAsset(string ReleaseAssetUrl, string FileName, string Name, string Label)
         {
             if (string.IsNullOrWhiteSpace(BaseToken))
                 return null;
             if (!ReleaseAssetUrl.Contains("{?name,label}", StringComparison.OrdinalIgnoreCase))
                 return null;
 
-            string upload_url = ReleaseAssetUrl.Replace(
+            string uploadUrl = ReleaseAssetUrl.Replace(
                 "{?name,label}",
                 $"?name={Uri.EscapeDataString(Name)}&label={Uri.EscapeDataString(Label)}",
                 StringComparison.OrdinalIgnoreCase
@@ -326,9 +444,9 @@ namespace CustomBuildTool
 
             try
             {
-                using var fileStream = File.OpenRead(FileName);
-                using var bufferedStream = new BufferedStream(fileStream);
-                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, upload_url);
+                await using var fileStream = File.OpenRead(FileName);
+                await using var bufferedStream = new BufferedStream(fileStream);
+                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, uploadUrl);
 
                 requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
                 requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Token", BaseToken);
@@ -337,7 +455,7 @@ namespace CustomBuildTool
                 requestMessage.Content = new StreamContent(bufferedStream);
                 requestMessage.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
-                var response = BuildHttpClient.SendMessage(requestMessage, GithubResponseContext.Default.GithubAssetsResponse);
+                var response = await BuildHttpClient.SendMessage(GithubHttpClient, requestMessage, GithubResponseContext.Default.GithubAssetsResponse);
                 if (response == null || !response.Uploaded || string.IsNullOrWhiteSpace(response.DownloadUrl))
                 {
                     Program.PrintColorMessage("[UploadAssets] upload failed", ConsoleColor.Red);
@@ -367,7 +485,7 @@ namespace CustomBuildTool
         /// <summary>
         /// Gets the list of assets associated with the release.
         /// </summary>
-        public List<GithubReleaseAsset> Files;
+        public readonly List<GithubReleaseAsset> Files;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="GithubRelease"/> class with default values.
@@ -391,10 +509,7 @@ namespace CustomBuildTool
         /// <summary>
         /// Gets a value indicating whether the release is valid (has a non-zero ID and at least one asset).
         /// </summary>
-        public bool Valid
-        {
-            get { return this.ReleaseId != 0 && this.Files.Count > 0; }
-        }
+        public bool Valid => this.ReleaseId != 0 && this.Files.Count > 0;
 
         /// <summary>
         /// Gets the download URL for a specified file name in the release assets.
@@ -403,10 +518,8 @@ namespace CustomBuildTool
         /// <returns>The download URL if found; otherwise, an empty string.</returns>
         public string GetFileUrl(string FileName)
         {
-            for (int i = 0; i < this.Files.Count; i++)
+            foreach (var entry in this.Files)
             {
-                var entry = this.Files[i];
-
                 if (string.Equals(FileName, entry.Filename, StringComparison.OrdinalIgnoreCase))
                 {
                     if (!string.IsNullOrWhiteSpace(entry.DownloadUrl))
@@ -420,16 +533,14 @@ namespace CustomBuildTool
         /// <summary>
         /// Gets deployment information for a specified asset name.
         /// </summary>
-        /// <param name="Name">The name of the deploy file.</param>
+        /// <param name="Name">The name of the deployment file.</param>
         /// <returns>
         /// The <see cref="GithubReleaseAsset"/> if found; otherwise, <c>null</c>.
         /// </returns>
         public GithubReleaseAsset GetDeployInfo(string Name)
         {
-            for (int i = 0; i < this.Files.Count; i++)
+            foreach (var entry in this.Files)
             {
-                var entry = this.Files[i];
-
                 if (string.Equals(entry.DeployFile.Name, Name, StringComparison.OrdinalIgnoreCase))
                 {
                     return entry;
@@ -452,89 +563,89 @@ namespace CustomBuildTool
         }
 
         /// <inheritdoc/>
-        public override bool Equals(object obj)
+        public override bool Equals(object Obj)
         {
-            return obj is GithubRelease file && this.ReleaseId == file.ReleaseId;
+            return Obj is GithubRelease file && this.ReleaseId == file.ReleaseId;
         }
 
         /// <inheritdoc/>
-        public bool Equals(GithubRelease other)
+        public bool Equals(GithubRelease Other)
         {
-            return other != null && this.ReleaseId == other.ReleaseId;
+            return Other != null && this.ReleaseId == Other.ReleaseId;
         }
 
         /// <inheritdoc/>
-        public int CompareTo(object obj)
+        public int CompareTo(object Obj)
         {
-            if (obj == null)
+            if (Obj == null)
                 return 1;
 
-            if (obj is GithubRelease package)
+            if (Obj is GithubRelease package)
                 return string.Compare(this.ReleaseId.ToString(), package.ReleaseId.ToString(), StringComparison.OrdinalIgnoreCase);
             else
                 return 1;
         }
 
         /// <inheritdoc/>
-        public int CompareTo(GithubRelease obj)
+        public int CompareTo(GithubRelease Obj)
         {
-            if (obj == null)
+            if (Obj == null)
                 return 1;
 
-            return string.Compare(this.ReleaseId.ToString(), obj.ReleaseId.ToString(), StringComparison.OrdinalIgnoreCase);
+            return string.Compare(this.ReleaseId.ToString(), Obj.ReleaseId.ToString(), StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
         /// Determines whether two <see cref="GithubRelease"/> instances are equal.
         /// </summary>
-        public static bool operator ==(GithubRelease left, GithubRelease right)
+        public static bool operator ==(GithubRelease Left, GithubRelease Right)
         {
-            if (ReferenceEquals(left, null))
+            if (ReferenceEquals(Left, null))
             {
-                return ReferenceEquals(right, null);
+                return ReferenceEquals(Right, null);
             }
 
-            return left.Equals(right);
+            return Left.Equals(Right);
         }
 
         /// <summary>
         /// Determines whether two <see cref="GithubRelease"/> instances are not equal.
         /// </summary>
-        public static bool operator !=(GithubRelease left, GithubRelease right)
+        public static bool operator !=(GithubRelease Left, GithubRelease Right)
         {
-            return !(left == right);
+            return !(Left == Right);
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubRelease"/> is less than another.
         /// </summary>
-        public static bool operator <(GithubRelease left, GithubRelease right)
+        public static bool operator <(GithubRelease Left, GithubRelease Right)
         {
-            return ReferenceEquals(left, null) ? !ReferenceEquals(right, null) : left.CompareTo(right) < 0;
+            return ReferenceEquals(Left, null) ? !ReferenceEquals(Right, null) : Left.CompareTo(Right) < 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubRelease"/> is less than or equal to another.
         /// </summary>
-        public static bool operator <=(GithubRelease left, GithubRelease right)
+        public static bool operator <=(GithubRelease Left, GithubRelease Right)
         {
-            return ReferenceEquals(left, null) || left.CompareTo(right) <= 0;
+            return ReferenceEquals(Left, null) || Left.CompareTo(Right) <= 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubRelease"/> is greater than another.
         /// </summary>
-        public static bool operator >(GithubRelease left, GithubRelease right)
+        public static bool operator >(GithubRelease Left, GithubRelease Right)
         {
-            return !ReferenceEquals(left, null) && left.CompareTo(right) > 0;
+            return !ReferenceEquals(Left, null) && Left.CompareTo(Right) > 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubRelease"/> is greater than or equal to another.
         /// </summary>
-        public static bool operator >=(GithubRelease left, GithubRelease right)
+        public static bool operator >=(GithubRelease Left, GithubRelease Right)
         {
-            return ReferenceEquals(left, null) ? ReferenceEquals(right, null) : left.CompareTo(right) >= 0;
+            return ReferenceEquals(Left, null) ? ReferenceEquals(Right, null) : Left.CompareTo(Right) >= 0;
         }
     }
 
@@ -575,89 +686,89 @@ namespace CustomBuildTool
         }
 
         /// <inheritdoc/>
-        public override bool Equals(object obj)
+        public override bool Equals(object Obj)
         {
-            return obj is GithubReleaseAsset file && this.Filename.Equals(file.Filename, StringComparison.OrdinalIgnoreCase);
+            return Obj is GithubReleaseAsset file && this.Filename.Equals(file.Filename, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <inheritdoc/>
-        public bool Equals(GithubReleaseAsset other)
+        public bool Equals(GithubReleaseAsset Other)
         {
-            return other != null && this.Filename.Equals(other.Filename, StringComparison.OrdinalIgnoreCase);
+            return Other != null && this.Filename.Equals(Other.Filename, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <inheritdoc/>
-        public int CompareTo(object obj)
+        public int CompareTo(object Obj)
         {
-            if (obj == null)
+            if (Obj == null)
                 return 1;
 
-            if (obj is GithubReleaseAsset package)
+            if (Obj is GithubReleaseAsset package)
                 return string.Compare(this.Filename, package.Filename, StringComparison.OrdinalIgnoreCase);
             else
                 return 1;
         }
 
         /// <inheritdoc/>
-        public int CompareTo(GithubReleaseAsset obj)
+        public int CompareTo(GithubReleaseAsset Obj)
         {
-            if (obj == null)
+            if (Obj == null)
                 return 1;
 
-            return string.Compare(this.Filename, obj.Filename, StringComparison.OrdinalIgnoreCase);
+            return string.Compare(this.Filename, Obj.Filename, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
         /// Determines whether two <see cref="GithubReleaseAsset"/> instances are equal.
         /// </summary>
-        public static bool operator ==(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator ==(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            if (ReferenceEquals(left, null))
+            if (ReferenceEquals(Left, null))
             {
-                return ReferenceEquals(right, null);
+                return ReferenceEquals(Right, null);
             }
 
-            return left.Equals(right);
+            return Left.Equals(Right);
         }
 
         /// <summary>
         /// Determines whether two <see cref="GithubReleaseAsset"/> instances are not equal.
         /// </summary>
-        public static bool operator !=(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator !=(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            return !(left == right);
+            return !(Left == Right);
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubReleaseAsset"/> is less than another.
         /// </summary>
-        public static bool operator <(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator <(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            return ReferenceEquals(left, null) ? !ReferenceEquals(right, null) : left.CompareTo(right) < 0;
+            return ReferenceEquals(Left, null) ? !ReferenceEquals(Right, null) : Left.CompareTo(Right) < 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubReleaseAsset"/> is less than or equal to another.
         /// </summary>
-        public static bool operator <=(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator <=(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            return ReferenceEquals(left, null) || left.CompareTo(right) <= 0;
+            return ReferenceEquals(Left, null) || Left.CompareTo(Right) <= 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubReleaseAsset"/> is greater than another.
         /// </summary>
-        public static bool operator >(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator >(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            return !ReferenceEquals(left, null) && left.CompareTo(right) > 0;
+            return !ReferenceEquals(Left, null) && Left.CompareTo(Right) > 0;
         }
 
         /// <summary>
         /// Determines whether one <see cref="GithubReleaseAsset"/> is greater than or equal to another.
         /// </summary>
-        public static bool operator >=(GithubReleaseAsset left, GithubReleaseAsset right)
+        public static bool operator >=(GithubReleaseAsset Left, GithubReleaseAsset Right)
         {
-            return ReferenceEquals(left, null) ? ReferenceEquals(right, null) : left.CompareTo(right) >= 0;
+            return ReferenceEquals(Left, null) ? ReferenceEquals(Right, null) : Left.CompareTo(Right) >= 0;
         }
     }
 
@@ -668,20 +779,20 @@ namespace CustomBuildTool
     /// This class stores deployment file information and provides methods to update download details
     /// from GitHub API responses. The hash code is based on the file name.
     /// </remarks>
-    /// <param name="Name">The name of the deploy file.</param>
-    /// <param name="Filename">The filename of the deploy file.</param>
-    /// <param name="FileHash">The hash value of the deploy file.</param>
-    /// <param name="FileSignature">The digital signature of the deploy file.</param>
-    /// <param name="FileLength">The file size/length of the deploy file.</param>
+    /// <param name="Name">The name of the deployment file.</param>
+    /// <param name="Filename">The filename of the deployment file.</param>
+    /// <param name="FileHash">The hash value of the deployment file.</param>
+    /// <param name="FileSignature">The digital signature of the deployment file.</param>
+    /// <param name="FileLength">The file size/length of the deployment file.</param>
     public class DeployFile(string Name, string Filename, string FileHash, string FileSignature, string FileLength)
     {
         /// <summary>
-        /// Gets the name of the deploy file.
+        /// Gets the name of the deployment file.
         /// </summary>
         public readonly string Name = Name;
 
         /// <summary>
-        /// Gets the filename of the deploy file.
+        /// Gets the filename of the deployment file.
         /// </summary>
         public readonly string FileName = Filename;
 
@@ -691,12 +802,12 @@ namespace CustomBuildTool
         public readonly string FileHash = FileHash;
 
         /// <summary>
-        /// Gets the digital signature of the deploy file.
+        /// Gets the digital signature of the deployment file.
         /// </summary>
         public readonly string FileSignature = FileSignature;
 
         /// <summary>
-        /// Gets the file size/length of the deploy file.
+        /// Gets the file size/length of the deployment file.
         /// </summary>
         public readonly string FileLength = FileLength;
 
@@ -713,31 +824,31 @@ namespace CustomBuildTool
         /// <summary>
         /// Updates the download hash and link from a GitHub assets response.
         /// </summary>
-        /// <param name="response">The GitHub assets response containing hash and download URL.</param>
+        /// <param name="Response">The GitHub assets response containing hash and download URL.</param>
         /// <returns>True if the response was successfully processed; otherwise, false.</returns>
         /// <remarks>
         /// Returns false if the response is null, the hash value is empty, or the download URL is empty.
         /// </remarks>
-        public bool UpdateAssetsResponse(GithubAssetsResponse response)
+        public bool UpdateAssetsResponse(GithubAssetsResponse Response)
         {
-            if (response == null)
+            if (Response == null)
             {
                 Program.PrintColorMessage("[UpdateAssetsResponse] response null.", ConsoleColor.Red);
                 return false;
             }
-            if (string.IsNullOrWhiteSpace(response.HashValue))
+            if (string.IsNullOrWhiteSpace(Response.HashValue))
             {
                 Program.PrintColorMessage("[UpdateAssetsResponse] HashValue null.", ConsoleColor.Red);
                 return false;
             }
-            if (string.IsNullOrWhiteSpace(response.DownloadUrl))
+            if (string.IsNullOrWhiteSpace(Response.DownloadUrl))
             {
                 Program.PrintColorMessage("[UpdateAssetsResponse] DownloadUrl null.", ConsoleColor.Red);
                 return false;
             }
 
-            this.DownloadHash = response.HashValue;
-            this.DownloadLink = response.DownloadUrl;
+            this.DownloadHash = Response.HashValue;
+            this.DownloadLink = Response.DownloadUrl;
             return true;
         }
 

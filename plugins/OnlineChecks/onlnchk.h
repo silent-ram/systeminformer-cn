@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2012-2016
+ *     dmex    2012-2026
  *
  */
 
@@ -24,12 +24,19 @@
 #include "resource.h"
 
 #define PLUGIN_NAME L"OnlineChecks"
-#define SETTING_NAME_VIRUSTOTAL_SCAN_ENABLED (PLUGIN_NAME L".EnableVirusTotalScanning")
-#define SETTING_NAME_VIRUSTOTAL_HIGHLIGHT_DETECTIONS (PLUGIN_NAME L".VirusTotalHighlightDetection")
-#define SETTING_NAME_VIRUSTOTAL_DEFAULT_ACTION (PLUGIN_NAME L".VirusTotalDefautAction")
-#define SETTING_NAME_VIRUSTOTAL_DEFAULT_PAT (PLUGIN_NAME L".VirusTotalDefautPAT")
-#define SETTING_NAME_HYBRIDANAL_DEFAULT_PAT (PLUGIN_NAME L".HybridAnalysisDefautPAT")
-#define SETTING_NAME_FILESCAN_DEFAULT_PAT (PLUGIN_NAME L".FileScanDefautPAT")
+#define SETTING_NAME_SCAN_ENABLED (PLUGIN_NAME L".EnableScanning")
+#define SETTING_NAME_HYBRIDANALYSIS_LOOKUPS_ENABLED (PLUGIN_NAME L".HybridAnalysisEnableLookups")
+#define SETTING_NAME_HYBRIDANALYSIS_SUBMIT_ENABLED (PLUGIN_NAME L".HybridAnalysisEnableAutoSubmit")
+#define SETTING_NAME_VIRUSTOTAL_LOOKUPS_ENABLED (PLUGIN_NAME L".VirusTotalEnableLookups")
+#define SETTING_NAME_SCAN_EXCLUDE_LIST (PLUGIN_NAME L".ScanExcludeList")
+#define SETTING_NAME_PARTNER_PROMPT_SHOWN (PLUGIN_NAME L".PartnerPromptShown")
+#define SETTING_NAME_SCAN_MAX_FILE_SIZE (PLUGIN_NAME L".ScanMaxFileSize")
+#define SETTING_NAME_SCAN_STARTUP_DELAY (PLUGIN_NAME L".ScanStartupDelay")
+#define SETTING_NAME_SCAN_SUBMIT_TIMEOUT (PLUGIN_NAME L".ScanSubmitTimeout")
+#define SETTING_NAME_VIRUSTOTAL_DEFAULT_ACTION (PLUGIN_NAME L".VirusTotalDefaultAction")
+#define SETTING_NAME_VIRUSTOTAL_DEFAULT_PAT (PLUGIN_NAME L".VirusTotalDefaultPAT")
+#define SETTING_NAME_HYBRIDANALYSIS_DEFAULT_PAT (PLUGIN_NAME L".HybridAnalysisDefaultPAT")
+#define SETTING_NAME_FILESCAN_DEFAULT_PAT (PLUGIN_NAME L".FileScanDefaultPAT")
 
 #define UM_UPLOAD (WM_APP + 1)
 #define UM_EXISTS (WM_APP + 2)
@@ -38,6 +45,8 @@
 #define UM_SHOWDIALOG (WM_APP + 5)
 
 extern PPH_PLUGIN PluginInstance;
+extern ULONG ScanMaxFileSize;
+extern ULONG ScanSubmitTimeout;
 
 typedef struct _SERVICE_INFO
 {
@@ -47,57 +56,47 @@ typedef struct _SERVICE_INFO
     PCWSTR FileNameFieldName;
 } SERVICE_INFO, *PSERVICE_INFO;
 
-typedef struct _PROCESS_EXTENSION
+typedef enum _SCAN_TYPE
+{
+    SCAN_TYPE_VIRUSTOTAL = 0,
+    SCAN_TYPE_HYBRIDANALYSIS = 1,
+    SCAN_TYPE_MAX = 2,
+} SCAN_TYPE;
+
+typedef struct _SCAN_ITEM SCAN_ITEM;
+typedef struct _SCAN_ITEM* PSCAN_ITEM;
+typedef struct _SCAN_HASH SCAN_HASH;
+typedef struct _SCAN_HASH* PSCAN_HASH;
+
+typedef struct _SCAN_CONTEXT
+{
+    PSCAN_HASH FileHash;
+    PSCAN_ITEM ScanItems[SCAN_TYPE_MAX];
+} SCAN_CONTEXT, *PSCAN_CONTEXT;
+
+typedef enum _SCAN_EXTENSION_TYPE
+{
+    SCAN_EXTENSION_PROCESS,
+    SCAN_EXTENSION_MODULE,
+    SCAN_EXTENSION_SERVICE,
+} SCAN_EXTENSION_TYPE;
+
+typedef struct _SCAN_EXTENSION
 {
     LIST_ENTRY ListEntry;
+    SCAN_EXTENSION_TYPE Type;
 
     union
     {
-        BOOLEAN Flags;
-        struct
-        {
-            BOOLEAN Stage1 : 1;
-            BOOLEAN ResultValid : 1;
-            BOOLEAN ServiceValid : 1;
-            BOOLEAN Spare : 5;
-        };
+        PPH_PROCESS_ITEM ProcessItem;
+        PPH_MODULE_ITEM ModuleItem;
+        PPH_SERVICE_ITEM ServiceItem;
     };
 
-    INT64 Retries;
-    INT64 Positives;
-    PPH_STRING VirusTotalResult;
-    PPH_STRING FilePath;
-
-    PPH_PROCESS_ITEM ProcessItem;
-    PPH_MODULE_ITEM ModuleItem;
-    PPH_SERVICE_ITEM ServiceItem;
-} PROCESS_EXTENSION, *PPROCESS_EXTENSION;
-
-typedef struct _VIRUSTOTAL_FILE_HASH_ENTRY
-{
-    union
-    {
-        BOOLEAN Flags;
-        struct
-        {
-            BOOLEAN Stage1 : 1;
-            BOOLEAN Processing : 1;
-            BOOLEAN Processed : 1;
-            BOOLEAN Found : 1;
-            BOOLEAN Spare : 4;
-        };
-    };
-
-    PPROCESS_EXTENSION Extension;
-
-    INT64 Positives;
-    INT64 Total;
     PPH_STRING FileName;
-    PPH_STRING FileHash;
-    PPH_BYTES FileNameAnsi;
-    PPH_BYTES FileHashAnsi;
-    PPH_BYTES CreationTime;
-} VIRUSTOTAL_FILE_HASH_ENTRY, *PVIRUSTOTAL_FILE_HASH_ENTRY;
+    SCAN_CONTEXT ScanContext;
+    PPH_STRING ScanResults[SCAN_TYPE_MAX];
+} SCAN_EXTENSION, *PSCAN_EXTENSION;
 
 typedef struct _UPLOAD_CONTEXT
 {
@@ -113,6 +112,7 @@ typedef struct _UPLOAD_CONTEXT
 
     HWND DialogHandle;
     WNDPROC DialogWindowProc;
+    LONG WindowDpi;
 
     //HANDLE TaskbarListClass;
 
@@ -147,12 +147,54 @@ typedef struct _UPLOAD_CONTEXT
 
 // options.c
 
+extern BOOLEAN OnlineChecksPreEnableUi;
+
 INT_PTR CALLBACK OptionsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
+
+_Function_class_(PH_CALLBACK_FUNCTION)
+VOID NTAPI OptionsSettingsUpdatedCallback(
+    _In_ PVOID Parameter,
+    _In_ PVOID Context
+    );
+
+// exclude.c
+
+VOID ScanLoadExclusions(
+    VOID
+    );
+
+BOOLEAN ScanIsFileExcluded(
+    _In_opt_ PPH_STRING FileName
+    );
+
+VOID ScanExclusionsPopulateListBox(
+    _In_ HWND ListBoxHandle
+    );
+
+VOID ScanExclusionsAddFromEdit(
+    _In_ HWND WindowHandle,
+    _In_ HWND ListBoxHandle,
+    _In_ HWND EditHandle
+    );
+
+VOID ScanExclusionsSaveListBox(
+    _In_ HWND ListBoxHandle
+    );
+
+// partner.c
+
+_Function_class_(PH_CALLBACK_FUNCTION)
+VOID NTAPI MainWindowShowingCallback(
+    _In_ PVOID Parameter,
+    _In_ PVOID Context
+    );
+
+// upload.c
 
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS UploadFileThreadStart(
@@ -205,7 +247,6 @@ VOID VirusTotalShowErrorDialog(
 #define MENUITEM_HYBRIDANALYSIS_UPLOAD_SERVICE 103
 #define MENUITEM_HYBRIDANALYSIS_UPLOAD_FILE 104
 
-#define ENABLE_SERVICE_VIRUSTOTAL 110
 #define MENUITEM_VIRUSTOTAL_QUEUE 111
 #define MENUITEM_VIRUSTOTAL_UPLOAD 112
 #define MENUITEM_VIRUSTOTAL_UPLOAD_SERVICE 113
@@ -230,12 +271,15 @@ VOID UploadServiceToOnlineService(
     _In_ ULONG Service
     );
 
-typedef enum _NETWORK_COLUMN_ID
+typedef enum _COLUMN_ID
 {
-    COLUMN_ID_VIUSTOTAL_PROCESS = 1,
-    COLUMN_ID_VIUSTOTAL_MODULE = 2,
-    COLUMN_ID_VIUSTOTAL_SERVICE = 3
-} NETWORK_COLUMN_ID;
+    COLUMN_ID_VIRUSTOTAL_PROCESS = 1,
+    COLUMN_ID_VIRUSTOTAL_MODULE = 2,
+    COLUMN_ID_VIRUSTOTAL_SERVICE = 3,
+    COLUMN_ID_HYBRIDANALYSIS_PROCESS = 4,
+    COLUMN_ID_HYBRIDANALYSIS_MODULE = 5,
+    COLUMN_ID_HYBRIDANALYSIS_SERVICE = 6,
+} COLUMN_ID;
 
 NTSTATUS HashFileAndResetPosition(
     _In_ HANDLE FileHandle,
@@ -276,31 +320,46 @@ typedef struct _VIRUSTOTAL_API_RESPONSE
 
 typedef struct _VIRUSTOTAL_FILE_REPORT
 {
-    //PPH_STRING StatusMessage;
-    //PPH_STRING PermaLink;
+    ULONG HttpStatus;
     PPH_STRING ScanId;
     PPH_STRING ScanDate;
-    PPH_STRING Positives;
-    PPH_STRING Total;
-    PPH_LIST ScanResults;
+    ULONG64 Malicious;
+    ULONG64 Undetected;
 } VIRUSTOTAL_FILE_REPORT, *PVIRUSTOTAL_FILE_REPORT;
 
-typedef struct _VIRUSTOTAL_FILE_REPORT_RESULT
-{
-    //BOOLEAN Detected;
-    PPH_STRING Vendor;
-    PPH_STRING DetectionName;
-    PPH_STRING EngineVersion;
-    PPH_STRING DatabaseDate;
-} VIRUSTOTAL_FILE_REPORT_RESULT, *PVIRUSTOTAL_FILE_REPORT_RESULT;
-
-PVIRUSTOTAL_FILE_REPORT VirusTotalRequestFileReport(
+NTSTATUS VirusTotalRequestFileReport(
     _In_ PPH_STRING FileHash,
-    _In_ PPH_STRING FilePat
+    _In_opt_ PPH_STRING ApiKey,
+    _Out_ PVIRUSTOTAL_FILE_REPORT* FileReport
     );
 
 VOID VirusTotalFreeFileReport(
     _In_ PVIRUSTOTAL_FILE_REPORT FileReport
+    );
+
+typedef struct _VIRUSTOTAL_FILE_REPORT_ENTRY
+{
+    PPH_STRING Sha256;
+    ULONG HttpStatus;
+    ULONG64 Malicious;
+    ULONG64 Undetected;
+} VIRUSTOTAL_FILE_REPORT_ENTRY, *PVIRUSTOTAL_FILE_REPORT_ENTRY;
+
+typedef struct _VIRUSTOTAL_FILE_REPORT_BATCH
+{
+    ULONG HttpStatus;
+    ULONG Count;
+    PVIRUSTOTAL_FILE_REPORT_ENTRY Entries;
+} VIRUSTOTAL_FILE_REPORT_BATCH, *PVIRUSTOTAL_FILE_REPORT_BATCH;
+
+NTSTATUS VirusTotalRequestFileReportBatch(
+    _In_reads_(Count) PPH_STRING* FileHashes,
+    _In_ ULONG Count,
+    _Out_ PVIRUSTOTAL_FILE_REPORT_BATCH* Batch
+    );
+
+VOID VirusTotalFreeFileReportBatch(
+    _In_ PVIRUSTOTAL_FILE_REPORT_BATCH Batch
     );
 
 PVIRUSTOTAL_API_RESPONSE VirusTotalRequestFileReScan(
@@ -310,6 +369,135 @@ PVIRUSTOTAL_API_RESPONSE VirusTotalRequestFileReScan(
 
 VOID VirusTotalFreeFileReScan(
     _In_ PVIRUSTOTAL_API_RESPONSE FileReScan
+    );
+
+typedef struct _HYBRIDANALYSIS_FILE_REPORT
+{
+    ULONG HttpStatus;
+    ULONG64 ThreatScore;
+    PPH_STRING Verdict;
+    ULONG64 MultiscanResult;
+    PPH_STRING VxFamily;
+} HYBRIDANALYSIS_FILE_REPORT, *PHYBRIDANALYSIS_FILE_REPORT;
+
+NTSTATUS HybridAnalysisRequestFileReport(
+    _In_ PPH_STRING FileHash,
+    _In_opt_ PPH_STRING ApiKey,
+    _Out_ PHYBRIDANALYSIS_FILE_REPORT* FileReport
+    );
+
+VOID HybridAnalysisFreeFileReport(
+    _In_ PHYBRIDANALYSIS_FILE_REPORT FileReport
+    );
+
+typedef struct _HYBRIDANALYSIS_FILE_REPORT_ENTRY
+{
+    PPH_STRING Sha256;
+    ULONG HttpStatus;
+    ULONG64 MultiscanResult;
+    PPH_STRING VxFamily;
+    ULONG64 ThreatScore;
+    PPH_STRING Verdict;
+} HYBRIDANALYSIS_FILE_REPORT_ENTRY, *PHYBRIDANALYSIS_FILE_REPORT_ENTRY;
+
+typedef struct _HYBRIDANALYSIS_FILE_REPORT_BATCH
+{
+    ULONG HttpStatus;
+    ULONG Count;
+    PHYBRIDANALYSIS_FILE_REPORT_ENTRY Entries;
+} HYBRIDANALYSIS_FILE_REPORT_BATCH, *PHYBRIDANALYSIS_FILE_REPORT_BATCH;
+
+NTSTATUS HybridAnalysisRequestFileReportBatch(
+    _In_reads_(Count) PPH_STRING* FileHashes,
+    _In_ ULONG Count,
+    _Out_ PHYBRIDANALYSIS_FILE_REPORT_BATCH* Batch
+    );
+
+VOID HybridAnalysisFreeFileReportBatch(
+    _In_ PHYBRIDANALYSIS_FILE_REPORT_BATCH Batch
+    );
+
+NTSTATUS HybridAnalysisSubmitFile(
+    _In_ PPH_STRING FileName,
+    _In_opt_ PPH_STRING ApiKey,
+    _Out_ PPH_STRING* Id,
+    _Out_ PBOOLEAN Finished
+    );
+
+NTSTATUS HybridAnalysisSubmitFinished(
+    _In_ PPH_STRING Id,
+    _In_opt_ PPH_STRING ApiKey,
+    _Out_ PBOOLEAN Finished
+    );
+
+// scan
+
+#define MENUITEM_VIRUSTOTAL_SCAN_PROCESS 200
+#define MENUITEM_HYBRIDANALYSIS_SCAN_PROCESS 201
+#define MENUITEM_VIRUSTOTAL_SCAN_MODULE 202
+#define MENUITEM_HYBRIDANALYSIS_SCAN_MODULE 203
+#define MENUITEM_VIRUSTOTAL_SCAN_SERVICE 204
+#define MENUITEM_HYBRIDANALYSIS_SCAN_SERVICE 205
+
+BOOLEAN InitializeScanning(
+    VOID
+    );
+
+VOID CleanupScanning(
+    VOID
+    );
+
+VOID ReapScanHashCache(
+    VOID
+    );
+
+VOID InitializeScanContext(
+    _Out_ PSCAN_CONTEXT Context
+    );
+
+#define SCAN_FLAG_RESCAN        0x00000001
+#define SCAN_FLAG_LOCAL_ONLY    0x00000002
+#define SCAN_FLAG_SUBMIT        0x00000004
+
+typedef
+_Function_class_(SCAN_COMPLETE_CALLBACK)
+VOID NTAPI SCAN_COMPLETE_CALLBACK(
+    _In_ SCAN_TYPE Type,
+    _In_ PPH_STRING FileName,
+    _In_ PSCAN_HASH FileHash,
+    _In_ PPH_STRING Result,
+    _In_opt_ PVOID Context
+    );
+typedef SCAN_COMPLETE_CALLBACK* PSCAN_COMPLETE_CALLBACK;
+
+VOID EnqueueScan(
+    _In_ PSCAN_CONTEXT Context,
+    _In_ SCAN_TYPE Type,
+    _In_ PPH_STRING FileName,
+    _In_ ULONG Flags,
+    _In_opt_ PSCAN_COMPLETE_CALLBACK Callback,
+    _In_opt_ PVOID CallbackContext
+    );
+
+BOOLEAN ScanHashEqual(
+    _In_ PSCAN_HASH Hash1,
+    _In_ PSCAN_HASH Hash2
+    );
+
+VOID EvaluateScanContext(
+    _In_ PLARGE_INTEGER SystemTime,
+    _Inout_ PSCAN_CONTEXT Context,
+    _In_ PPH_STRING FileName,
+    _In_reads_(SCAN_TYPE_MAX) PULONG Flags
+    );
+
+VOID DeleteScanContext(
+    _In_ PSCAN_CONTEXT Context
+    );
+
+PPH_STRING ReferenceScanResult(
+    _In_ PSCAN_CONTEXT Context,
+    _In_ SCAN_TYPE Type
     );
 
 #endif

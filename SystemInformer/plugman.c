@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -262,7 +262,7 @@ VOID UpdatePluginsNode(
 }
 
 BOOLEAN NTAPI PluginsTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -281,13 +281,13 @@ BOOLEAN NTAPI PluginsTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     //SORT_FUNCTION(Author),
                     SORT_FUNCTION(Version)
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PH_PLUGIN_TREE_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -350,7 +350,7 @@ BOOLEAN NTAPI PluginsTreeNewCallback(
             context->TreeNewSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -387,13 +387,13 @@ BOOLEAN NTAPI PluginsTreeNewCallback(
     //    {
     //        PH_TN_COLUMN_MENU_DATA data;
     //
-    //        data.TreeNewHandle = hwnd;
+    //        data.TreeNewHandle = WindowHandle;
     //        data.MouseEvent = Parameter1;
     //        data.DefaultSortColumn = 0;
     //        data.DefaultSortOrder = AscendingSortOrder;
     //        PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_SHOW_RESET_SORT);
     //
-    //        data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
+    //        data.Selection = PhShowEMenu(data.Menu, WindowHandle, PH_EMENU_SHOW_LEFTRIGHT,
     //            PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
     //        PhHandleTreeNewColumnMenu(&data);
     //        PhDeleteTreeNewColumnMenu(&data);
@@ -416,12 +416,12 @@ BOOLEAN NTAPI PluginsTreeNewCallback(
                     SIZE textSize;
                     LONG dpiValue;
 
-                    dpiValue = PhGetWindowDpi(hwnd);
+                    dpiValue = PhGetWindowDpi(WindowHandle);
 
-                    rect.left += PhGetDpi(15, dpiValue);
-                    rect.top += PhGetDpi(5, dpiValue);
-                    rect.right -= PhGetDpi(5, dpiValue);
-                    rect.bottom -= PhGetDpi(8, dpiValue);
+                    rect.left += PhScaleToDisplay(15, dpiValue);
+                    rect.top += PhScaleToDisplay(5, dpiValue);
+                    rect.right -= PhScaleToDisplay(5, dpiValue);
+                    rect.bottom -= PhScaleToDisplay(8, dpiValue);
 
                     // top
                     if (PhEnableThemeSupport)
@@ -544,7 +544,7 @@ VOID InitializePluginsTree(
     PhSetControlTheme(Context->TreeNewHandle, L"explorer");
 
     TreeNew_SetCallback(Context->TreeNewHandle, PluginsTreeNewCallback, Context);
-    TreeNew_SetRowHeight(Context->TreeNewHandle, PhGetDpi(48, dpiValue));
+    TreeNew_SetRowHeight(Context->TreeNewHandle, PhScaleToDisplay(48, dpiValue));
 
     TreeNew_SetRedraw(Context->TreeNewHandle, FALSE);
 
@@ -806,6 +806,17 @@ INT_PTR CALLBACK PhPluginsDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT normalFontHandle;
+            HFONT titleFontHandle;
+
+            if (normalFontHandle = PhCreateCommonFont(-10, FW_NORMAL, NULL, LOWORD(wParam)))
+                PhSwapReferenceFont(&context->NormalFontHandle, NULL, normalFontHandle, FALSE);
+            if (titleFontHandle = PhCreateCommonFont(-14, FW_BOLD, NULL, LOWORD(wParam)))
+                PhSwapReferenceFont(&context->TitleFontHandle, NULL, titleFontHandle, FALSE);
+
+            TreeNew_SetRowHeight(context->TreeNewHandle, PhScaleToDisplay(48, LOWORD(wParam)));
+            TreeNew_NodesStructured(context->TreeNewHandle);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
         }

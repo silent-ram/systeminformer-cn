@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -505,7 +505,8 @@ NTSTATUS PhRunAsAdminTaskUIAccess(
         NULL,
         TRUE,
         FALSE,
-        TRUE
+        TRUE,
+        FALSE
         );
 
 CleanupExit:

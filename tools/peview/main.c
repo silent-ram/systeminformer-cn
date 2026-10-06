@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -44,19 +44,35 @@ NTSTATUS PvpConnectKph(
     //if (PhIsNullOrEmptyString(portName = PhGetStringSetting(L"KsiPortName")))
         PhMoveReference(&portName, PhCreateString(KPH_PORT_NAME));
 
-    status = KphCommsStart(&portName->sr, NULL);
+    status = KphCommsStart(&portName->sr, NULL, 0);
 
     PhDereferenceObject(portName);
 
     return status;
 }
 
-NTSTATUS PvpInitializeMutant()
+VOID PvpInitializeFileBasicInfo(
+    _In_ HANDLE FileHandle
+    )
 {
+    FILE_BASIC_INFORMATION basicInfo;
+
+    ZeroMemory(&basicInfo, sizeof(FILE_BASIC_INFORMATION));
+    basicInfo.CreationTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+    basicInfo.LastAccessTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+    basicInfo.LastWriteTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+    basicInfo.ChangeTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+
+    PhSetFileBasicInformation(FileHandle, &basicInfo);
+}
+
+NTSTATUS PvpInitializeMutant(
+    VOID
+    )
+{
+    NTSTATUS status;
     HANDLE mutantHandle;
-    OBJECT_ATTRIBUTES objectAttributes;
-    UNICODE_STRING objectName;
-    PH_STRINGREF objectNameSr;
+    PH_STRINGREF objectName;
     SIZE_T returnLength;
     WCHAR formatBuffer[PH_INT64_STR_LEN_1];
     PH_FORMAT format[2];
@@ -76,28 +92,18 @@ NTSTATUS PvpInitializeMutant()
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    objectNameSr.Length = returnLength - sizeof(UNICODE_NULL);
-    objectNameSr.Buffer = formatBuffer;
+    objectName.Length = returnLength - sizeof(UNICODE_NULL);
+    objectName.Buffer = formatBuffer;
 
-    if (!PhStringRefToUnicodeString(&objectNameSr, &objectName))
-        return STATUS_NAME_TOO_LONG;
-
-    InitializeObjectAttributes(
-        &objectAttributes,
-        &objectName,
-        OBJ_CASE_INSENSITIVE,
-        PhGetNamespaceHandle(),
-        NULL
-        );
-
-    NtCreateMutant(
+    status = PhCreateMutant(
         &mutantHandle,
         MUTANT_QUERY_STATE,
-        &objectAttributes,
+        PhGetNamespaceHandle2(),
+        &objectName,
         TRUE
         );
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 INT WINAPI wWinMain(
@@ -143,6 +149,7 @@ INT WINAPI wWinMain(
     PhSettingsInitialization();
     PvInitializeSettings();
     PvPropInitialization();
+    PhScrollNewWindowInitialization();
     PhTreeNewInitialization();
     PvInitializeSuperclassControls();
     PvpConnectKph();
@@ -184,7 +191,7 @@ INT WINAPI wWinMain(
 
                 if (applicationFileName = PhGetApplicationFileNameWin32())
                 {
-                    PhMoveReference(&PvFileName, PhConcatStrings(3, L"\"", PvFileName->Buffer, L"\""));
+                    PhMoveReference(&PvFileName, PhQuoteCommandLine(&PvFileName->sr, TRUE));
 
                     AllowSetForegroundWindow(ASFW_ANY);
 

@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2015-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_SYSINFO_H
 #define PH_SYSINFO_H
+
+EXTERN_C_START
 
 // begin_phapppub
 typedef enum _PH_SYSINFO_VIEW_TYPE
@@ -46,14 +48,14 @@ typedef struct _PH_SYSINFO_PARAMETERS
     COLORREF GraphBackColor;
     COLORREF PanelForeColor;
 
-    ULONG MinimumGraphHeight;
-    ULONG SectionViewGraphHeight;
+    LONG MinimumGraphHeight;
+    LONG SectionViewGraphHeight;
     LONG PanelWidth;
     LONG WindowDpi;
 // end_phapppub
 
-    ULONG PanelPadding;
-    ULONG WindowPadding;
+    LONG PanelPadding;
+    LONG WindowPadding;
     ULONG GraphPadding;
     ULONG SmallGraphWidth;
     ULONG SmallGraphPadding;
@@ -213,5 +215,7 @@ PhShowSystemInformationDialog(
     _In_opt_ PCWSTR SectionName
     );
 // end_phapppub
+
+EXTERN_C_END
 
 #endif

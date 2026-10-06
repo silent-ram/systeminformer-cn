@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017
+ *     dmex    2017-2026
  *
  */
 
@@ -100,6 +100,13 @@ PhGetJsonUInt64Object(
     );
 
 PHLIBAPI
+LONGLONG
+NTAPI
+PhGetJsonInt64Object(
+    _In_ PVOID Object
+    );
+
+PHLIBAPI
 PVOID
 NTAPI
 PhCreateJsonObject(
@@ -174,6 +181,24 @@ PhAddJsonObject2(
     _In_ PCSTR Key,
     _In_ PCSTR Value,
     _In_ SIZE_T Length
+    );
+
+PHLIBAPI
+VOID
+NTAPI
+PhAddJsonObjectUtf8(
+    _In_ PVOID Object,
+    _In_ PCSTR Key,
+    _In_ PPH_BYTES String
+    );
+
+PHLIBAPI
+VOID
+NTAPI
+PhAddJsonObjectBoolean(
+    _In_ PVOID Object,
+    _In_ PCSTR Key,
+    _In_ BOOLEAN Value
     );
 
 PHLIBAPI
@@ -280,6 +305,24 @@ PhLoadJsonObjectFromFile(
 #define PH_JSON_TO_STRING_PLAIN 0x0001
 #define PH_JSON_TO_STRING_SPACED 0x0002
 #define PH_JSON_TO_STRING_PRETTY 0x0004
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhJsonObjectToString(
+    _In_ PPH_BYTES_BUILDER StringBuilder,
+    _In_ PVOID Object,
+    _In_ ULONG Level,
+    _In_ ULONG Flags
+    );
+
+PHLIBAPI
+PPH_BYTES
+NTAPI
+PhJsonObjectToJsonString(
+    _In_ PVOID Object,
+    _In_ ULONG Flags
+    );
 
 PHLIBAPI
 NTSTATUS

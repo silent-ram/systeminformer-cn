@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex         2016-2024
+ *     dmex         2016-2026
  *     Dart Vanya   2024
  *
  */
@@ -415,8 +415,8 @@ VOID EtInitializeTreeImages(
     dpiValue = PhGetWindowDpi(Context->TreeViewHandle);
 
     Context->TreeImageList = PhImageListCreate(
-        PhGetDpi(24, dpiValue),
-        PhGetDpi(24, dpiValue),
+        PhScaleToDisplay(24, dpiValue),
+        PhScaleToDisplay(24, dpiValue),
         ILC_MASK | ILC_COLOR32,
         1, 1
         );
@@ -425,8 +425,8 @@ VOID EtInitializeTreeImages(
         PluginInstance->DllBase,
         MAKEINTRESOURCE(IDI_FOLDER),
         PH_LOAD_ICON_SIZE_LARGE,
-        PhGetDpi(16, dpiValue),
-        PhGetDpi(16, dpiValue),
+        PhScaleToDisplay(16, dpiValue),
+        PhScaleToDisplay(16, dpiValue),
         dpiValue
         ))
     {
@@ -445,7 +445,7 @@ VOID EtInitializeListImages(
     INT32 index;
 
     dpiValue = PhGetWindowDpi(Context->TreeViewHandle);
-    size = PhGetDpi(20, dpiValue); // 24
+    size = PhScaleToDisplay(20, dpiValue); // 24
 
     Context->ListImageList = PhImageListCreate(
         size,
@@ -839,7 +839,10 @@ NTSTATUS EtpTargetResolverThreadStart(
         if (currentfilter)
             PhDereferenceObject(currentfilter);
 
+#pragma warning(push)
+#pragma warning(disable : 6387)
         WritePointerRelease(&context->BreakResolverThread, NULL);
+#pragma warning(pop)
     }
 
     PhDereferenceObject(threadContext->EntryToResolve);
@@ -1443,7 +1446,10 @@ VOID EtObjectManagerFreeListViewItems(
     if (ReadPointerAcquire(&Context->BreakResolverThread))
     {
         WriteRelease8(Context->BreakResolverThread, TRUE);
+#pragma warning(push)
+#pragma warning(disable : 6387)
         WritePointerRelease(&Context->BreakResolverThread, NULL);
+#pragma warning(pop)
     }
 
     PhClearReference(&Context->CurrentPath);
@@ -2493,8 +2499,7 @@ VOID NTAPI EtpObjectManagerRefresh(
 
     SendMessage(Context->TreeViewHandle, WM_SETREDRAW, FALSE, 0);
 
-    PhGetSelectedListViewItemParams(Context->ListViewHandle, &listviewItems, &numberOfItems);
-    if (numberOfItems != 0)
+    if (PhGetSelectedListViewItemParams(Context->ListViewHandle, &listviewItems, &numberOfItems))
         oldSelect = PhReferenceObject(listviewItems[0]->Name);
 
     ExtendedListView_SetRedraw(Context->ListViewHandle, FALSE);
@@ -2609,8 +2614,7 @@ VOID NTAPI EtpObjectManagerSearchControlCallback(
 
     assert(context);
 
-    PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-    if (numberOfItems != 0)
+    if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
         oldSelect = PhReferenceObject(listviewItems[0]->Name);
 
     ExtendedListView_SetRedraw(context->ListViewHandle, FALSE);
@@ -2639,8 +2643,7 @@ VOID NTAPI EtpObjectManagerSearchControlCallback(
 
     ExtendedListView_SetRedraw(context->ListViewHandle, TRUE);
 
-    PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-    if (numberOfItems != 0)
+    if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
         oldSelect = EtGetObjectFullPath(listviewItems[0]->BaseDirectory, listviewItems[0]->Name);
     else
         oldSelect = PhReferenceObject(context->CurrentPath);
@@ -2907,7 +2910,7 @@ INT_PTR CALLBACK WinObjDlgProc(
             }
 
             context->CurrentDirectoryList = PhCreateList(100);
-            if (!EtObjectManagerOwnHandles || !PhReferenceObjectSafe(EtObjectManagerOwnHandles))
+            if (!EtObjectManagerOwnHandles || !PhReferenceObjectUnsafe(EtObjectManagerOwnHandles))
                 EtObjectManagerOwnHandles = PhCreateList(10);
 
             PhSetApplicationWindowIcon(hwndDlg);
@@ -3316,8 +3319,7 @@ INT_PTR CALLBACK WinObjDlgProc(
                     break;
                 }
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     PET_OBJECT_ENTRY entry = listviewItems[0];
 
@@ -3526,9 +3528,8 @@ INT_PTR CALLBACK WinObjDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
             else if ((HWND)wParam == context->TreeViewHandle)
             {
                 TVHITTESTINFO treeHitTest = { 0 };

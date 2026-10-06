@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2018-2022
+ *     dmex    2018-2026
  *
  */
 
@@ -68,7 +68,7 @@ PhLookupSid(
     );
 
 PHLIBAPI
-VOID
+NTSTATUS
 NTAPI
 PhLookupSids(
     _In_ ULONG Count,
@@ -235,6 +235,36 @@ PPH_STRING
 NTAPI
 PhGetAzureDirectoryObjectSid(
     _In_ PSID ActiveDirectorySid
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsDomainJoined(
+    VOID
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhGetSidAuthorityName(
+    _In_ PSID Sid
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhFormatSidTooltip(
+    _In_ PSID Sid,
+    _In_ BOOLEAN IncludeName,
+    _In_opt_ PLSA_USER_ACCOUNT_TYPE AccountType
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsServiceSid(
+    _In_ PSID Sid
     );
 
 #ifdef __cplusplus

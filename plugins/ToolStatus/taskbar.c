@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -243,6 +243,7 @@ HICON PhGetBlackIcon(
     {
         ULONG width;
         ULONG height;
+        SIZE_T bitsSize;
         PVOID bits;
         HDC hdc;
         HBITMAP mask;
@@ -250,10 +251,21 @@ HICON PhGetBlackIcon(
         ICONINFO iconInfo;
 
         PhBeginBitmap2(&PhBlackBitmapContext, &width, &height, &PhBlackBitmap, &bits, &hdc, &oldBitmap);
-        memset(bits, TaskbarTransparencyEnabled ? 1 : 0, width * height * sizeof(RGBQUAD));
+
+        if (!NT_SUCCESS(RtlSizeTMult(width, height, &bitsSize)) ||
+            !NT_SUCCESS(RtlSizeTMult(bitsSize, sizeof(RGBQUAD), &bitsSize)))
+        {
+            SelectBitmap(hdc, oldBitmap);
+            return NULL;
+        }
+
+        memset(bits, TaskbarTransparencyEnabled ? 1 : 0, bitsSize);
 
         if (!(mask = CreateBitmap(width, height, 1, 1, NULL)))
+        {
+            SelectBitmap(hdc, oldBitmap);
             return NULL;
+        }
 
         iconInfo.fIcon = TRUE;
         iconInfo.xHotspot = 0;
@@ -273,17 +285,30 @@ HICON PhBitmapToIcon(
     _In_ HBITMAP Bitmap
     )
 {
+    HICON iconHandle;
+    HBITMAP mask;
     ICONINFO iconInfo;
+    BITMAP bitmapInfo;
 
-    PhGetBlackIcon();
+    memset(&bitmapInfo, 0, sizeof(BITMAP));
 
+    if (GetObject(Bitmap, sizeof(BITMAP), &bitmapInfo) == 0)
+        return NULL;
+
+    if (!(mask = CreateBitmap(bitmapInfo.bmWidth, bitmapInfo.bmHeight, 1, 1, NULL)))
+        return NULL;
+
+    memset(&iconInfo, 0, sizeof(ICONINFO));
     iconInfo.fIcon = TRUE;
     iconInfo.xHotspot = 0;
     iconInfo.yHotspot = 0;
-    iconInfo.hbmMask = PhBlackBitmap;
+    iconInfo.hbmMask = mask;
     iconInfo.hbmColor = Bitmap;
 
-    return CreateIconIndirect(&iconInfo);
+    iconHandle = CreateIconIndirect(&iconInfo);
+    DeleteBitmap(mask);
+
+    return iconHandle;
 }
 
 HICON PhUpdateIconCpuHistory(
@@ -320,9 +345,16 @@ HICON PhUpdateIconCpuHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
     if (!(lineData2 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        _freea(lineData1);
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CpuKernelHistory->Count);
     PhCopyCircularBuffer_FLOAT(Statistics->CpuKernelHistory, lineData1, lineDataCount);
@@ -382,9 +414,16 @@ HICON PhUpdateIconIoHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
     if (!(lineData2 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        _freea(lineData1);
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->IoReadHistory->Count);
     max = 1024 * 1024; // minimum scaling of 1 MB.
@@ -459,7 +498,10 @@ HICON PhUpdateIconCommitHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CommitHistory->Count);
 
@@ -521,7 +563,10 @@ HICON PhUpdateIconPhysicalHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CommitHistory->Count);
 
@@ -542,7 +587,6 @@ HICON PhUpdateIconPhysicalHistory(
     _freea(lineData1);
 
     return icon;
-    return 0;
 }
 
 HICON PhUpdateIconCpuUsage(
@@ -575,12 +619,13 @@ HICON PhUpdateIconCpuUsage(
         HPEN dcPen;
         POINT points[2];
 
-        dcBrush = GetStockBrush(DC_BRUSH);
-        dcPen = GetStockPen(DC_PEN);
+        dcBrush = PhGetStockBrush(DC_BRUSH);
+        dcPen = PhGetStockPen(DC_PEN);
         rect.left = 0;
         rect.top = 0;
         rect.right = width;
         rect.bottom = height;
+        SelectBrush(hdc, dcBrush);
         SetDCBrushColor(hdc, RGB(0x00, 0x00, 0x00));
         FillRect(hdc, &rect, dcBrush);
 
@@ -601,6 +646,7 @@ HICON PhUpdateIconCpuUsage(
             rect.top = height - ul - kl;
             rect.right = width;
             rect.bottom = height - kl;
+            SelectBrush(hdc, dcBrush);
             SetDCBrushColor(hdc, ubColor);
             FillRect(hdc, &rect, dcBrush);
 
@@ -619,6 +665,7 @@ HICON PhUpdateIconCpuUsage(
                 rect.top = height - kl;
                 rect.right = width;
                 rect.bottom = height;
+                SelectBrush(hdc, dcBrush);
                 SetDCBrushColor(hdc, kbColor);
                 FillRect(hdc, &rect, dcBrush);
 

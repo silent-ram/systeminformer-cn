@@ -288,6 +288,34 @@ void DisableProviders(TRACEHANDLE sessionHandle)
 
 void CALLBACK EventRecordCallback(EVENT_RECORD* pEventRecord)
 {
+    struct EventProcessingGuard
+    {
+        BOOLEAN Active;
+        BOOLEAN Counted;
+
+        EventProcessingGuard(
+            VOID
+            )
+            : Active(FALSE)
+            , Counted(FALSE)
+        {
+            Active = EnterPresentEventProcessing(&Counted);
+        }
+
+        ~EventProcessingGuard(
+            VOID
+            )
+        {
+            if (Active)
+            {
+                LeavePresentEventProcessing(Counted);
+            }
+        }
+    } guard;
+
+    if (!guard.Active)
+        return;
+
     auto const& hdr = pEventRecord->EventHeader;
 
     if (hdr.ProviderId == Microsoft_Windows_DxgKrnl::GUID)
@@ -336,7 +364,7 @@ VOID TraceSession_Stop(
         sessionProps.Wnode.BufferSize = (ULONG)sizeof(TraceProperties);
         sessionProps.LoggerNameOffset = offsetof(TraceProperties, mSessionName);
         ControlTrace(mSessionHandle, nullptr, &sessionProps, EVENT_TRACE_CONTROL_STOP);
-        mSessionHandle = INVALID_PROCESSTRACE_HANDLE;
+        mSessionHandle = 0; // invalid session handles are 0
     }
 }
 
@@ -350,85 +378,166 @@ ULONG TraceSession_StopNamedSession(
     return ControlTrace(NULL, L"SiPresentTraceSession", &sessionProps, EVENT_TRACE_CONTROL_STOP);
 }
 
-BOOLEAN StartFpsTraceSession(
+static ULONG WINAPI FpsBufferCallback(
+    _In_ PEVENT_TRACE_LOGFILE LogFile
+    )
+{
+    // Returning FALSE causes ProcessTrace to return, which is how we unblock the
+    // consumer thread during shutdown.
+    return !IsFpsTraceStopping();
+}
+
+// (Re)establish the ETW session: start the trace, enable providers, and open the
+// consumer trace. Does NOT start or touch the worker threads, so it is safe to
+// call both at startup and from the consumer thread when rebuilding a dropped
+// session.
+BOOLEAN EtEstablishFpsTraceSession(
     VOID
     )
 {
     ULONG status;
 
-    PhQueryPerformanceCounter(&TraceStartQpc);
-    PhQueryPerformanceFrequency(&TraceFrequencyQpc);
-
     TraceProperties sessionProps = {};
     sessionProps.Wnode.BufferSize = (ULONG)sizeof(TraceProperties);
-    sessionProps.Wnode.ClientContext = 1;
+    sessionProps.Wnode.ClientContext = 1; // QPC timestamps
     sessionProps.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
     sessionProps.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG;
+    sessionProps.BufferSize = 64;      // KB per buffer
+    sessionProps.MinimumBuffers = 128;
+    sessionProps.MaximumBuffers = 512;
     sessionProps.LogFileNameOffset = 0;
     sessionProps.LoggerNameOffset = offsetof(TraceProperties, mSessionName);  // Location of session name; will be written by StartTrace()
 
-    status = ControlTrace(
-        NULL,
-        L"SiPresentTraceSession",
-        &sessionProps,
-        EVENT_TRACE_CONTROL_QUERY
-        );
+    status = StartTrace(&mSessionHandle, L"SiPresentTraceSession", &sessionProps);
 
-    if (status == ERROR_SUCCESS)
+    if (status == ERROR_ALREADY_EXISTS)
     {
-        mSessionHandle = sessionProps.Wnode.HistoricalContext;
-    }
-    else
-    {
+        // A session with this name already exists -- typically orphaned by a
+        // previous instance that crashed. Stop it and start fresh so our
+        // providers and keywords are applied to a known-clean session (reusing
+        // the inherited session cannot undo its stale configuration).
+        TraceSession_StopNamedSession();
+
         sessionProps.LogFileNameOffset = 0;
-        status = StartTrace(
-            &mSessionHandle,
-            L"SiPresentTraceSession",
-            &sessionProps
-            );
-
-        if (status == ERROR_SUCCESS)
-        {
-            status = EnableProviders(mSessionHandle, sessionProps.Wnode.Guid);
-        }
+        status = StartTrace(&mSessionHandle, L"SiPresentTraceSession", &sessionProps);
     }
 
     if (status != ERROR_SUCCESS)
     {
-        TraceSession_Stop();
-        mSessionHandle = INVALID_PROCESSTRACE_HANDLE;
+        mSessionHandle = 0;
         return FALSE;
     }
 
-    {
-        EVENT_TRACE_LOGFILE traceProps = {};
-        traceProps.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
-        traceProps.EventRecordCallback = EventRecordCallback;
-        traceProps.LoggerName = const_cast<LPWSTR>(L"SiPresentTraceSession");
-        mTraceHandle = OpenTrace(&traceProps);
+    status = EnableProviders(mSessionHandle, sessionProps.Wnode.Guid);
 
-        if (mTraceHandle == INVALID_PROCESSTRACE_HANDLE)
-        {
-            TraceSession_Stop();
-            return FALSE;
-        }
+    if (status != ERROR_SUCCESS)
+    {
+        TraceSession_Stop();
+        return FALSE;
     }
 
+    EVENT_TRACE_LOGFILE traceProps = {};
+    traceProps.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+    traceProps.EventRecordCallback = EventRecordCallback;
+    traceProps.BufferCallback = FpsBufferCallback;
+    traceProps.LoggerName = const_cast<LPWSTR>(L"SiPresentTraceSession");
+    mTraceHandle = OpenTrace(&traceProps);
+
+    if (mTraceHandle == INVALID_PROCESSTRACE_HANDLE)
+    {
+        TraceSession_Stop();
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+VOID EtFramesQueryEtwStatus(
+    VOID
+    )
+{
+#ifdef DEBUG
+    static ULONG lastEventsLost = 0;
+    static ULONG lastBuffersLost = 0;
+
+    if (mSessionHandle == 0 || mSessionHandle == INVALID_PROCESSTRACE_HANDLE)
+        return;
+
+    TraceProperties sessionProps = {};
+    sessionProps.Wnode.BufferSize = (ULONG)sizeof(TraceProperties);
+    sessionProps.LoggerNameOffset = offsetof(TraceProperties, mSessionName);
+
+    if (ControlTrace(mSessionHandle, nullptr, &sessionProps, EVENT_TRACE_CONTROL_QUERY) == ERROR_SUCCESS)
+    {
+        if (sessionProps.EventsLost != lastEventsLost || sessionProps.RealTimeBuffersLost != lastBuffersLost)
+        {
+            dprintf("[FPS] ETW session EventsLost=%lu RealTimeBuffersLost=%lu\n",
+                sessionProps.EventsLost, sessionProps.RealTimeBuffersLost);
+            lastEventsLost = sessionProps.EventsLost;
+            lastBuffersLost = sessionProps.RealTimeBuffersLost;
+        }
+    }
+#endif
+}
+
+BOOLEAN StartFpsTraceSession(
+    VOID
+    )
+{
+    PhQueryPerformanceCounter(&TraceStartQpc);
+    PhQueryPerformanceFrequency(&TraceFrequencyQpc);
+    SetPresentEventProcessingToggleMode(TRUE);
+
+    if (!EtEstablishFpsTraceSession())
+        return FALSE;
+
+    ResetPresentTrackingData(TRUE);
     StartConsumerThread(mTraceHandle);
     StartOutputThread();
 
     return TRUE;
 }
 
+// Called from the consumer thread when ProcessTrace returns unexpectedly (the
+// session was lost). Tears down the old session/handle and rebuilds it, returning
+// the new trace handle or INVALID_PROCESSTRACE_HANDLE on failure.
+TRACEHANDLE RestartFpsTraceSession(
+    VOID
+    )
+{
+    // Bail before touching the session globals if a shutdown is already underway
+    // (StopFpsTraceSession will stop the session and join us). This narrows, but
+    // does not fully close, the window where a shutdown races an unexpected
+    // session loss; a lock around the session handles is deferred to Phase 2.
+    if (IsFpsTraceStopping())
+        return INVALID_PROCESSTRACE_HANDLE;
+
+    TraceSession_Stop();
+
+    if (IsFpsTraceStopping() || !EtEstablishFpsTraceSession())
+        return INVALID_PROCESSTRACE_HANDLE;
+
+    ResetPresentTrackingData(TRUE);
+
+    return mTraceHandle;
+}
+
 VOID StopFpsTraceSession(
     VOID
     )
 {
+    // Request shutdown and wake the output thread before stopping the session, so
+    // the consumer thread observes the quit flag rather than trying to rebuild.
+    SignalStopFpsThreads();
+
+    // CloseTrace + ControlTrace(STOP) here is what unblocks the consumer's
+    // ProcessTrace call.
     TraceSession_Stop();
 
-    // Wait for the consumer and output threads to end (which are using the consumers).
+    // Join both worker threads before their shared state (the hashtables) is torn
+    // down by EtFramesMonitorUninitialization.
     WaitForConsumerThreadToExit();
-    StopOutputThread();
+    WaitForOutputThreadToExit();
 }
 
 VOID DequeueAnalyzedInfo(
@@ -439,21 +548,21 @@ VOID DequeueAnalyzedInfo(
     //DequeueLostPresentEvents(*lostPresentEvents);
 }
 
-FLOAT QpcDeltaToSeconds(
+DOUBLE QpcDeltaToSeconds(
     _In_ ULONGLONG qpcDelta
     )
 {
-    return static_cast<FLOAT>(qpcDelta) / static_cast<FLOAT>(TraceFrequencyQpc.QuadPart);
+    return static_cast<DOUBLE>(qpcDelta) / static_cast<DOUBLE>(TraceFrequencyQpc.QuadPart);
 }
 
 ULONGLONG SecondsDeltaToQpc(
-    _In_ FLOAT secondsDelta
+    _In_ DOUBLE secondsDelta
     )
 {
-    return static_cast<ULONGLONG>(secondsDelta * static_cast<FLOAT>(TraceFrequencyQpc.QuadPart));
+    return static_cast<ULONGLONG>(secondsDelta * static_cast<DOUBLE>(TraceFrequencyQpc.QuadPart));
 }
 
-FLOAT QpcToSeconds(
+DOUBLE QpcToSeconds(
     _In_ ULONGLONG qpc
     )
 {

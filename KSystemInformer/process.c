@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     jxy-s   2020-2024
+ *     jxy-s   2020-2026
  *
  */
 
@@ -21,10 +21,9 @@ KPH_PAGED_FILE();
  *
  * \param[out] ProcessHandle A variable which receives the process handle.
  * \param[in] DesiredAccess The desired access to the process.
- * \param[in] ClientId The identifier of a process or thread. If \a
- * UniqueThread
- * is present, the process of the identified thread will be opened. If
- * \a UniqueProcess is present, the identified process will be opened.
+ * \param[in] ClientId The identifier of a client. UniqueThread is optional.
+ * If UniqueThread is present, the thread of the referenced process will be
+ * checked against this identifier.
  * \param[in] AccessMode The mode in which to perform access checks.
  *
  * \return Successful or errant status.
@@ -47,22 +46,13 @@ NTSTATUS KphOpenProcess(
 
     process = NULL;
 
-    if (AccessMode != KernelMode)
+    status = KphCopyFromMode(&clientId,
+                             ClientId,
+                             sizeof(CLIENT_ID),
+                             AccessMode);
+    if (!NT_SUCCESS(status))
     {
-        __try
-        {
-            ProbeOutputType(ProcessHandle, HANDLE);
-            ProbeInputType(ClientId, CLIENT_ID);
-            RtlCopyVolatileMemory(&clientId, ClientId, sizeof(CLIENT_ID));
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return GetExceptionCode();
-        }
-    }
-    else
-    {
-        clientId = *ClientId;
+        goto Exit;
     }
 
     //
@@ -139,22 +129,7 @@ NTSTATUS KphOpenProcess(
         goto Exit;
     }
 
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            *ProcessHandle = processHandle;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            ObCloseHandle(processHandle, UserMode);
-            status = GetExceptionCode();
-        }
-    }
-    else
-    {
-        *ProcessHandle = processHandle;
-    }
+    status = KphWriteHandleToMode(ProcessHandle, processHandle, AccessMode);
 
 Exit:
 
@@ -192,20 +167,7 @@ NTSTATUS KphOpenProcessToken(
 
     KPH_PAGED_CODE_PASSIVE();
 
-    process = NULL;
     primaryToken = NULL;
-
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            ProbeOutputType(TokenHandle, HANDLE);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return GetExceptionCode();
-        }
-    }
 
     status = ObReferenceObjectByHandle(ProcessHandle,
                                        0,
@@ -272,22 +234,7 @@ NTSTATUS KphOpenProcessToken(
         goto Exit;
     }
 
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            *TokenHandle = tokenHandle;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            ObCloseHandle(tokenHandle, UserMode);
-            status = GetExceptionCode();
-        }
-    }
-    else
-    {
-        *TokenHandle = tokenHandle;
-    }
+    status = KphWriteHandleToMode(TokenHandle, tokenHandle, AccessMode);
 
 Exit:
 
@@ -330,19 +277,7 @@ NTSTATUS KphOpenProcessJob(
 
     KPH_PAGED_CODE_PASSIVE();
 
-    process = NULL;
-
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            ProbeOutputType(JobHandle, HANDLE);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return GetExceptionCode();
-        }
-    }
+    job = NULL;
 
     status = ObReferenceObjectByHandle(ProcessHandle,
                                        0,
@@ -361,7 +296,25 @@ NTSTATUS KphOpenProcessJob(
         goto Exit;
     }
 
+    status = PsAcquireProcessExitSynchronization(process);
+    if (!NT_SUCCESS(status))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      GENERAL,
+                      "PsAcquireProcessExitSynchronization failed: %!STATUS!",
+                      status);
+
+        goto Exit;
+    }
+
     job = PsGetProcessJob(process);
+    if (job)
+    {
+        ObReferenceObject(job);
+    }
+
+    PsReleaseProcessExitSynchronization(process);
+
     if (!job)
     {
         status = STATUS_NOT_FOUND;
@@ -405,24 +358,15 @@ NTSTATUS KphOpenProcessJob(
         goto Exit;
     }
 
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            *JobHandle = jobHandle;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            ObCloseHandle(jobHandle, UserMode);
-            status = GetExceptionCode();
-        }
-    }
-    else
-    {
-        *JobHandle = jobHandle;
-    }
+    status = KphWriteHandleToMode(JobHandle, jobHandle, AccessMode);
 
 Exit:
+
+    if (job)
+    {
+        ObDereferenceObject(job);
+    }
+
     if (process)
     {
         ObDereferenceObject(process);
@@ -435,9 +379,7 @@ Exit:
  * Terminates a process.
  *
  * \param[in] ProcessHandle A handle to a process.
- * \param[in] ExitStatus A status value which indicates why the process is
- * being terminated.
- * \param[in] Key An access key.
+ * \param[in] ExitStatus A status value initiating why the process terminated.
  * \param[in] AccessMode The mode in which to perform access checks.
  *
  * \return Successful or errant status.
@@ -550,8 +492,7 @@ Exit:
  * \param[in] ProcessInformationClass Information class to query.
  * \param[out] ProcessInformation Populated with process information by class.
  * \param[in] ProcessInformationLength Length of the process information buffer.
- * \param[out] ReturnLength Number of bytes written or necessary for the
- * information.
+ * \param[out] ReturnLength Receives the number of bytes written or required.
  * \param[in] AccessMode The mode in which to perform access checks.
  *
  * \return Successful or errant status.
@@ -576,30 +517,8 @@ NTSTATUS KphQueryInformationProcess(
     KPH_PAGED_CODE_PASSIVE();
 
     dyn = NULL;
-    processObject = NULL;
     process = NULL;
     returnLength = 0;
-
-    if (AccessMode != KernelMode)
-    {
-        __try
-        {
-            if (ProcessInformation)
-            {
-                ProbeOutputBytes(ProcessInformation, ProcessInformationLength);
-            }
-
-            if (ReturnLength)
-            {
-                ProbeOutputType(ReturnLength, ULONG);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            status = GetExceptionCode();
-            goto Exit;
-        }
-    }
 
     status = ObReferenceObjectByHandle(ProcessHandle,
                                        0,
@@ -633,7 +552,7 @@ NTSTATUS KphQueryInformationProcess(
     {
         case KphProcessBasicInformation:
         {
-            PKPH_PROCESS_BASIC_INFORMATION info;
+            KPH_PROCESS_BASIC_INFORMATION info;
 
             if (!ProcessInformation ||
                 (ProcessInformationLength < sizeof(KPH_PROCESS_BASIC_INFORMATION)))
@@ -643,58 +562,50 @@ NTSTATUS KphQueryInformationProcess(
                 goto Exit;
             }
 
-            info = ProcessInformation;
+            RtlZeroMemory(&info, sizeof(info));
 
-            __try
+            info.ProcessState = KphGetProcessState(process);
+            info.ProcessStartKey = KphGetProcessStartKey(processObject);
+            info.CreatorClientId.UniqueProcess = process->CreatorClientId.UniqueProcess;
+            info.CreatorClientId.UniqueThread = process->CreatorClientId.UniqueThread;
+            info.NumberOfImageLoads = ReadSizeTNoFence(&process->NumberOfImageLoads);
+            info.Flags = process->Flags;
+            info.NumberOfMicrosoftImageLoads = ReadSizeTNoFence(&process->NumberOfMicrosoftImageLoads);
+            info.NumberOfAntimalwareImageLoads = ReadSizeTNoFence(&process->NumberOfAntimalwareImageLoads);
+            info.NumberOfVerifiedImageLoads = ReadSizeTNoFence(&process->NumberOfVerifiedImageLoads);
+            info.NumberOfUntrustedImageLoads = ReadSizeTNoFence(&process->NumberOfUntrustedImageLoads);
+
+            info.UserWritableReferences = 0;
+            if (process->FileObject &&
+                process->FileObject->SectionObjectPointer)
             {
-                KphAcquireRWLockShared(&process->ThreadListLock);
-                KphAcquireRWLockShared(&process->ProtectionLock);
-
-                info->ProcessState = KphGetProcessState(process);
-
-                info->ProcessStartKey = KphGetProcessStartKey(processObject);
-                info->CreatorClientId.UniqueProcess = process->CreatorClientId.UniqueProcess;
-                info->CreatorClientId.UniqueThread = process->CreatorClientId.UniqueThread;
-
-                info->NumberOfImageLoads = process->NumberOfImageLoads;
-
-                info->Flags = process->Flags;
-
-                info->NumberOfThreads = process->NumberOfThreads;
-
-                info->ProcessAllowedMask = process->ProcessAllowedMask;
-                info->ThreadAllowedMask = process->ThreadAllowedMask;
-
-                info->NumberOfMicrosoftImageLoads = process->NumberOfMicrosoftImageLoads;
-                info->NumberOfAntimalwareImageLoads = process->NumberOfAntimalwareImageLoads;
-                info->NumberOfVerifiedImageLoads = process->NumberOfVerifiedImageLoads;
-                info->NumberOfUntrustedImageLoads = process->NumberOfUntrustedImageLoads;
-
-                KphReleaseRWLock(&process->ProtectionLock);
-                KphReleaseRWLock(&process->ThreadListLock);
-
-                info->UserWritableReferences = 0;
-                if (process->FileObject &&
-                    process->FileObject->SectionObjectPointer)
-                {
-                    info->UserWritableReferences =
-                        MmDoesFileHaveUserWritableReferences(process->FileObject->SectionObjectPointer);
-                }
-
-                returnLength = sizeof(KPH_PROCESS_BASIC_INFORMATION);
-                status = STATUS_SUCCESS;
+                info.UserWritableReferences =
+                    MmDoesFileHaveUserWritableReferences(process->FileObject->SectionObjectPointer);
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+
+            KphAcquireRWLockShared(&process->Protection.AllowedMaskLock);
+            info.ProcessAllowedMask = process->Protection.ProcessAllowedMask;
+            info.ThreadAllowedMask = process->Protection.ThreadAllowedMask;
+            KphReleaseRWLock(&process->Protection.AllowedMaskLock);
+
+            KphAcquireRWLockShared(&process->ThreadListLock);
+            info.NumberOfThreads = process->NumberOfThreads;
+            KphReleaseRWLock(&process->ThreadListLock);
+
+            status = KphCopyToMode(ProcessInformation,
+                                   &info,
+                                   sizeof(KPH_PROCESS_BASIC_INFORMATION),
+                                   AccessMode);
+            if (NT_SUCCESS(status))
             {
-                status = GetExceptionCode();
-                goto Exit;
+                returnLength = sizeof(KPH_PROCESS_BASIC_INFORMATION);
             }
 
             break;
         }
         case KphProcessStateInformation:
         {
-            PKPH_PROCESS_STATE state;
+            KPH_PROCESS_STATE processState;
 
             if (!ProcessInformation ||
                 (ProcessInformationLength < sizeof(KPH_PROCESS_STATE)))
@@ -704,18 +615,14 @@ NTSTATUS KphQueryInformationProcess(
                 goto Exit;
             }
 
-            state = ProcessInformation;
+            processState = KphGetProcessState(process);
 
-            __try
+            status = KphWriteULongToMode(ProcessInformation,
+                                         processState,
+                                         AccessMode);
+            if (NT_SUCCESS(status))
             {
-                *state = KphGetProcessState(process);
                 returnLength = sizeof(KPH_PROCESS_STATE);
-                status = STATUS_SUCCESS;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                status = GetExceptionCode();
-                goto Exit;
             }
 
             break;
@@ -745,23 +652,19 @@ NTSTATUS KphQueryInformationProcess(
             status = KphQueryInformationProcessContext(process,
                                                        KphProcessContextWSLProcessId,
                                                        &processId,
-                                                       sizeof(processId),
+                                                       sizeof(ULONG),
                                                        NULL);
             if (!NT_SUCCESS(status))
             {
                 goto Exit;
             }
 
-            __try
+            status = KphWriteULongToMode(ProcessInformation,
+                                         processId,
+                                         AccessMode);
+            if (NT_SUCCESS(status))
             {
-                *(PULONG)ProcessInformation = processId;
                 returnLength = sizeof(ULONG);
-                status = STATUS_SUCCESS;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                status = GetExceptionCode();
-                goto Exit;
             }
 
             break;
@@ -780,16 +683,12 @@ NTSTATUS KphQueryInformationProcess(
 
             sequenceNumber = KphGetProcessSequenceNumber(processObject);
 
-            __try
+            status = KphWriteULong64ToMode(ProcessInformation,
+                                           sequenceNumber,
+                                           AccessMode);
+            if (NT_SUCCESS(status))
             {
-                *(PULONG64)ProcessInformation = sequenceNumber;
                 returnLength = sizeof(ULONG64);
-                status = STATUS_SUCCESS;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                status = GetExceptionCode();
-                goto Exit;
             }
 
             break;
@@ -808,16 +707,12 @@ NTSTATUS KphQueryInformationProcess(
 
             startKey = KphGetProcessStartKey(processObject);
 
-            __try
+            status = KphWriteULong64ToMode(ProcessInformation,
+                                           startKey,
+                                           AccessMode);
+            if (NT_SUCCESS(status))
             {
-                *(PULONG64)ProcessInformation = startKey;
                 returnLength = sizeof(ULONG64);
-                status = STATUS_SUCCESS;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                status = GetExceptionCode();
-                goto Exit;
             }
 
             break;
@@ -893,27 +788,29 @@ NTSTATUS KphQueryInformationProcess(
                 goto Exit;
             }
 
-            if (AccessMode != KernelMode)
+            status = KphWriteHandleToMode(ProcessInformation,
+                                          processSectionHandle,
+                                          AccessMode);
+            if (NT_SUCCESS(status))
             {
-                __try
-                {
-                    *(PHANDLE)ProcessInformation = processSectionHandle;
-                    returnLength = sizeof(HANDLE);
-                    status = STATUS_SUCCESS;
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
-                    status = GetExceptionCode();
-                    ObCloseHandle(processSectionHandle, UserMode);
-                    goto Exit;
-                }
-            }
-            else
-            {
-                *(PHANDLE)ProcessInformation = processSectionHandle;
                 returnLength = sizeof(HANDLE);
-                status = STATUS_SUCCESS;
             }
+
+            break;
+        }
+        case KphProcessImageFileName:
+        {
+            if (!process->ImageFileName)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto Exit;
+            }
+
+            status = KphCopyUnicodeStringToMode(ProcessInformation,
+                                                ProcessInformationLength,
+                                                process->ImageFileName,
+                                                &returnLength,
+                                                AccessMode);
 
             break;
         }
@@ -928,21 +825,7 @@ Exit:
 
     if (ReturnLength)
     {
-        if (AccessMode != KernelMode)
-        {
-            __try
-            {
-                *ReturnLength = returnLength;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                NOTHING;
-            }
-        }
-        else
-        {
-            *ReturnLength = returnLength;
-        }
+        KphWriteULongToMode(ReturnLength, returnLength, AccessMode);
     }
 
     if (process)
@@ -1020,10 +903,9 @@ NTSTATUS KphSetInformationProcess(
 
         __try
         {
-            ProbeInputBytes(ProcessInformation, ProcessInformationLength);
-            RtlCopyVolatileMemory(processInformation,
-                                  ProcessInformation,
-                                  ProcessInformationLength);
+            CopyFromUser(processInformation,
+                         ProcessInformation,
+                         ProcessInformationLength);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -1164,14 +1046,14 @@ NTSTATUS KphSetInformationProcess(
         {
             QUOTA_LIMITS_EX quotaLimits;
 
-            RtlZeroMemory(&quotaLimits, sizeof(quotaLimits));
+            RtlZeroMemory(&quotaLimits, sizeof(QUOTA_LIMITS_EX));
             quotaLimits.MinimumWorkingSetSize = SIZE_T_MAX;
             quotaLimits.MaximumWorkingSetSize = SIZE_T_MAX;
 
             status = ZwSetInformationProcess(processHandle,
                                              ProcessQuotaLimits,
                                              &quotaLimits,
-                                             sizeof(quotaLimits));
+                                             sizeof(QUOTA_LIMITS_EX));
             //
             // Bypass generic call to exit immediately.
             //

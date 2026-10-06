@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2008-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -273,7 +273,7 @@ typedef enum _PH_TREENEW_MESSAGE
 
 typedef BOOLEAN _Function_class_(PH_TREENEW_CALLBACK)
 NTAPI PH_TREENEW_CALLBACK(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_opt_ PVOID Parameter1,
     _In_opt_ PVOID Parameter2,
@@ -353,6 +353,7 @@ typedef struct _PH_TREENEW_CUSTOM_DRAW
     RECT CellRect;
     RECT TextRect;
     ULONG Flags;
+    ULONG WindowDpi;
 } PH_TREENEW_CUSTOM_DRAW, *PPH_TREENEW_CUSTOM_DRAW;
 
 typedef struct _PH_TREENEW_MOUSE_EVENT
@@ -881,7 +882,7 @@ FORCEINLINE VOID PhInvalidateTreeNewNode(
 }
 
 FORCEINLINE BOOLEAN PhAddTreeNewColumn(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ ULONG Id,
     _In_ BOOLEAN Visible,
     _In_ PCWSTR Text,
@@ -906,11 +907,11 @@ FORCEINLINE BOOLEAN PhAddTreeNewColumn(
     if (DisplayIndex == -2)
         column.Fixed = TRUE;
 
-    return !!TreeNew_AddColumn(hwnd, &column);
+    return !!TreeNew_AddColumn(WindowHandle, &column);
 }
 
 FORCEINLINE BOOLEAN PhAddTreeNewColumnEx(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ ULONG Id,
     _In_ BOOLEAN Visible,
     _In_ PCWSTR Text,
@@ -938,11 +939,11 @@ FORCEINLINE BOOLEAN PhAddTreeNewColumnEx(
     if (SortDescending)
         column.SortDescending = TRUE;
 
-    return !!TreeNew_AddColumn(hwnd, &column);
+    return !!TreeNew_AddColumn(WindowHandle, &column);
 }
 
 FORCEINLINE BOOLEAN PhAddTreeNewColumnEx2(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ ULONG Id,
     _In_ BOOLEAN Visible,
     _In_ PCWSTR Text,
@@ -973,7 +974,7 @@ FORCEINLINE BOOLEAN PhAddTreeNewColumnEx2(
     if (!(ExtraFlags & TN_COLUMN_FLAG_NODPISCALEONADD))
         column.DpiScaleOnAdd = TRUE;
 
-    return !!TreeNew_AddColumn(hwnd, &column);
+    return !!TreeNew_AddColumn(WindowHandle, &column);
 }
 
 EXTERN_C_END

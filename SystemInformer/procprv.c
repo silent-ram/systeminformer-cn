@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *     jxy-s   2020-2021
  *
  */
@@ -120,6 +120,12 @@ typedef struct _PH_SID_FULL_NAME_CACHE_ENTRY
     PPH_STRING FullName;
 } PH_SID_FULL_NAME_CACHE_ENTRY, *PPH_SID_FULL_NAME_CACHE_ENTRY;
 
+typedef struct _PH_SID_RESOLVE_QUEUE_ENTRY
+{
+    PSID Sid;
+    ULONG SidLength;
+} PH_SID_RESOLVE_QUEUE_ENTRY, *PPH_SID_RESOLVE_QUEUE_ENTRY;
+
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpProcessItemDeleteProcedure(
     _In_ PVOID Object,
@@ -146,6 +152,31 @@ VOID PhpRemoveProcessRecord(
     _Inout_ PPH_PROCESS_RECORD ProcessRecord
     );
 
+PPH_STRING PhpGetSidFullNameCached(
+    _In_ PCSID Sid
+    );
+
+PPH_STRING PhpGetSidFullNameCachedSlow(
+    _In_ PSID Sid
+    );
+
+VOID PhpQueueSidForBulkResolution(
+    _In_ PSID Sid
+    );
+
+VOID PhpBulkResolveSidsToCache(
+    _In_ PSID* Sids,
+    _In_ ULONG Count
+    );
+
+VOID PhpProcessBulkSidResolution(
+    VOID
+    );
+
+VOID PhpRemoveProcessRecord(
+    _Inout_ PPH_PROCESS_RECORD ProcessRecord
+    );
+
 PPH_OBJECT_TYPE PhProcessItemType = NULL;
 
 PPH_HASH_ENTRY PhProcessHashSet[256] = PH_HASH_SET_INIT;
@@ -156,6 +187,10 @@ SLIST_HEADER PhProcessQueryDataListHead;
 
 PPH_LIST PhProcessRecordList = NULL;
 PH_QUEUED_LOCK PhProcessRecordListLock = PH_QUEUED_LOCK_INIT;
+
+static PPH_HASHTABLE PhpSidFullNameCacheHashtable = NULL;
+static PPH_HASHTABLE PhpSidResolveQueue = NULL;
+static PH_QUEUED_LOCK PhpSidResolveQueueLock = PH_QUEUED_LOCK_INIT;
 
 ULONG PhStatisticsSampleCount = 512;
 BOOLEAN PhEnableProcessExtension = TRUE;
@@ -229,8 +264,6 @@ PH_CIRCULAR_BUFFER_FLOAT PhMaxCpuUsageHistory;
 PH_CIRCULAR_BUFFER_ULONG64 PhMaxIoReadOtherHistory;
 PH_CIRCULAR_BUFFER_ULONG64 PhMaxIoWriteHistory;
 #endif
-
-static PPH_HASHTABLE PhpSidFullNameCacheHashtable = NULL;
 
 BOOLEAN PhProcessProviderInitialization(
     VOID
@@ -418,7 +451,7 @@ VOID PhpProcessItemDeleteProcedure(
 
     if (!PhSystemProcessorInformation.SingleProcessorGroup)
     {
-        if (processItem->AffinityMasks) PhFree(processItem->AffinityMasks);
+        if (processItem->AffinityMaskGroups) PhFree(processItem->AffinityMaskGroups);
     }
 
     if (processItem->FreezeHandle) NtClose(processItem->FreezeHandle);
@@ -603,6 +636,154 @@ static ULONG PhpSidFullNameCacheHashtableHashFunction(
     PPH_SID_FULL_NAME_CACHE_ENTRY entry = Entry;
 
     return PhHashBytes((PUCHAR)entry->Sid, PhLengthSid(entry->Sid));
+}
+
+_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
+static BOOLEAN PhpSidResolveQueueHashtableEqualFunction(
+    _In_ PVOID Entry1,
+    _In_ PVOID Entry2
+    )
+{
+    PPH_SID_RESOLVE_QUEUE_ENTRY entry1 = Entry1;
+    PPH_SID_RESOLVE_QUEUE_ENTRY entry2 = Entry2;
+
+    return PhEqualSid(entry1->Sid, entry2->Sid);
+}
+
+_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
+static ULONG PhpSidResolveQueueHashtableHashFunction(
+    _In_ PVOID Entry
+    )
+{
+    PPH_SID_RESOLVE_QUEUE_ENTRY entry = Entry;
+
+    return PhHashBytes((PUCHAR)entry->Sid, PhLengthSid(entry->Sid));
+}
+
+VOID PhpQueueSidForBulkResolution(
+    _In_ PSID Sid
+    )
+{
+    PH_SID_RESOLVE_QUEUE_ENTRY lookupEntry;
+    PPH_SID_RESOLVE_QUEUE_ENTRY entry;
+
+    PhAcquireQueuedLockExclusive(&PhpSidResolveQueueLock);
+
+    if (!PhpSidResolveQueue)
+    {
+        PhpSidResolveQueue = PhCreateHashtable(
+            sizeof(PH_SID_RESOLVE_QUEUE_ENTRY),
+            PhpSidResolveQueueHashtableEqualFunction,
+            PhpSidResolveQueueHashtableHashFunction,
+            64
+            );
+    }
+
+    lookupEntry.Sid = Sid;
+    entry = PhFindEntryHashtable(PhpSidResolveQueue, &lookupEntry);
+
+    if (!entry)
+    {
+        PH_SID_RESOLVE_QUEUE_ENTRY newEntry;
+
+        newEntry.SidLength = PhLengthSid(Sid);
+        newEntry.Sid = PhAllocateCopy(Sid, newEntry.SidLength);
+
+        PhAddEntryHashtable(PhpSidResolveQueue, &newEntry);
+    }
+
+    PhReleaseQueuedLockExclusive(&PhpSidResolveQueueLock);
+}
+
+VOID PhpBulkResolveSidsToCache(
+    _In_ PSID* Sids,
+    _In_ ULONG Count
+    )
+{
+    NTSTATUS status;
+    PPH_STRING* fullNames = NULL;
+
+    if (Count == 0)
+        return;
+
+    status = PhLookupSids(
+        Count,
+        Sids,
+        &fullNames
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        if (!PhpSidFullNameCacheHashtable)
+        {
+            PhpSidFullNameCacheHashtable = PhCreateHashtable(
+                sizeof(PH_SID_FULL_NAME_CACHE_ENTRY),
+                PhpSidFullNameCacheHashtableEqualFunction,
+                PhpSidFullNameCacheHashtableHashFunction,
+                128
+                );
+        }
+
+        for (ULONG i = 0; i < Count; i++)
+        {
+            if (fullNames[i])
+            {
+                PH_SID_FULL_NAME_CACHE_ENTRY newEntry;
+
+                newEntry.Sid = PhAllocateCopy(Sids[i], PhLengthSid(Sids[i]));
+                newEntry.FullName = fullNames[i];
+                PhAddEntryHashtable(PhpSidFullNameCacheHashtable, &newEntry);
+            }
+        }
+
+        PhFree(fullNames);
+    }
+}
+
+VOID PhpProcessBulkSidResolution(
+    VOID
+    )
+{
+    PH_HASHTABLE_ENUM_CONTEXT enumContext;
+    PPH_SID_RESOLVE_QUEUE_ENTRY entry;
+    PPH_LIST sidArray = NULL;
+    ULONG sidCount = 0;
+
+    PhAcquireQueuedLockExclusive(&PhpSidResolveQueueLock);
+
+    if (!PhpSidResolveQueue || PhpSidResolveQueue->Count == 0)
+    {
+        PhReleaseQueuedLockExclusive(&PhpSidResolveQueueLock);
+        return;
+    }
+
+    sidCount = PhpSidResolveQueue->Count;
+    sidArray = PhCreateList(sidCount);
+
+    PhBeginEnumHashtable(PhpSidResolveQueue, &enumContext);
+
+    while (entry = PhNextEnumHashtable(&enumContext))
+    {
+        PhAddItemList(sidArray, entry->Sid);
+    }
+
+    PhReleaseQueuedLockExclusive(&PhpSidResolveQueueLock);
+
+    PhpBulkResolveSidsToCache(sidArray->Items, sidCount);
+
+    PhAcquireQueuedLockExclusive(&PhpSidResolveQueueLock);
+
+    PhBeginEnumHashtable(PhpSidResolveQueue, &enumContext);
+
+    while (entry = PhNextEnumHashtable(&enumContext))
+    {
+        PhFree(entry->Sid);
+    }
+
+    PhClearHashtable(PhpSidResolveQueue);
+    PhReleaseQueuedLockExclusive(&PhpSidResolveQueueLock);
+
+    PhDereferenceObject(sidArray);
 }
 
 PPH_STRING PhpGetSidFullNameCachedSlow(
@@ -903,15 +1084,6 @@ VOID PhpProcessQueryStage1(
                 }
             }
         }
-    }
-
-    if (processItem->Sid && FlagOn(PhProcessProviderFlagsMask, PH_PROCESS_PROVIDER_FLAG_USERNAME))
-    {
-        // Note: We delay resolving the SID name because the local LSA cache might still be
-        // initializing for users on domain networks with slow links (e.g. VPNs). This can block
-        // for a very long time depending on server/network conditions. (dmex)
-        // TODO: This might need to be moved to Stage2...
-        PhMoveReference(&Data->UserName, PhpGetSidFullNameCachedSlow(processItem->Sid));
     }
 }
 
@@ -1222,33 +1394,36 @@ VOID PhpFillProcessItem(
     {
         if (PhSystemProcessorInformation.SingleProcessorGroup)
         {
-            ProcessItem->AffinityMasks = &PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[0];
-            ProcessItem->AffinityPopulationCount = PhCountBitsUlongPtr(ProcessItem->AffinityMasks[0]);
+            KAFFINITY affinityMask;
+
+            if (ProcessItem->QueryHandle && NT_SUCCESS(PhGetProcessAffinityMask(ProcessItem->QueryHandle, &affinityMask)))
+            {
+                ProcessItem->AffinityMaskSingle = affinityMask;
+                ProcessItem->AffinityPopulationCount = PhCountBitsUlongPtr(ProcessItem->AffinityMaskSingle);
+            }
+            else
+            {
+                ProcessItem->AffinityMaskSingle = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[0];
+                ProcessItem->AffinityPopulationCount = PhCountBitsUlongPtr(ProcessItem->AffinityMaskSingle);
+            }
         }
         else
         {
             GROUP_AFFINITY affinity;
 
-            ProcessItem->AffinityMasks = PhAllocateZero(sizeof(KAFFINITY) * PhSystemProcessorInformation.NumberOfProcessorGroups);
+            ProcessItem->AffinityMaskGroups = PhAllocateZero(sizeof(KAFFINITY) * PhSystemProcessorInformation.NumberOfProcessorGroups);
 
             for (USHORT i = 0; i < PhSystemProcessorInformation.NumberOfProcessorGroups; i++)
             {
                 RtlZeroMemory(&affinity, sizeof(GROUP_AFFINITY));
                 affinity.Group = i;
 
-                if (
-                    ProcessItem->QueryHandle &&
-                    NT_SUCCESS(PhGetProcessGroupAffinity(ProcessItem->QueryHandle, &affinity))
-                    )
-                {
-                    ProcessItem->AffinityMasks[i] = affinity.Mask;
-                }
+                if (ProcessItem->QueryHandle && NT_SUCCESS(PhGetProcessGroupAffinity(ProcessItem->QueryHandle, &affinity)))
+                    ProcessItem->AffinityMaskGroups[i] = affinity.Mask;
                 else
-                {
-                    ProcessItem->AffinityMasks[i] = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[i];
-                }
+                    ProcessItem->AffinityMaskGroups[i] = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[i];
 
-                ProcessItem->AffinityPopulationCount += PhCountBitsUlongPtr(ProcessItem->AffinityMasks[i]);
+                ProcessItem->AffinityPopulationCount += PhCountBitsUlongPtr(ProcessItem->AffinityMaskGroups[i]);
             }
         }
     }
@@ -1304,6 +1479,7 @@ VOID PhpFillProcessItem(
             BOOLEAN tokenIsUIAccessEnabled;
             PH_INTEGRITY_LEVEL integrityLevel;
             PPH_STRINGREF integrityString;
+            PPH_STRING packageFullName;
 
             // User
             if (NT_SUCCESS(PhGetTokenUser(tokenHandle, &tokenUser)))
@@ -1337,9 +1513,12 @@ VOID PhpFillProcessItem(
             }
 
             // Package name
-            if (WindowsVersion >= WINDOWS_8 && ProcessItem->IsPackagedProcess)
+            if (
+                WindowsVersion >= WINDOWS_8 && ProcessItem->IsPackagedProcess &&
+                NT_SUCCESS(PhGetTokenPackageFullName(tokenHandle, &packageFullName))
+                )
             {
-                ProcessItem->PackageFullName = PhGetTokenPackageFullName(tokenHandle);
+                ProcessItem->PackageFullName = packageFullName;
             }
 
             NtClose(tokenHandle);
@@ -1418,6 +1597,13 @@ VOID PhpFillProcessItem(
 
                 ProcessItem->CommandLine = PhCreateString2(&commandLine);
             }
+
+            PhFree(telemetryInfo);
+        }
+        else // N.B. Telemetry info does not succeed for all processes.
+        {
+            if (!NT_SUCCESS(PhGetProcessStartKey(ProcessItem->QueryHandle, &ProcessItem->ProcessStartKey)))
+                ProcessItem->ProcessStartKey = 0;
         }
     }
 
@@ -2360,6 +2546,7 @@ VOID PhProcessProviderUpdate(
 {
     static ULONG runCount = 0;
     static PSYSTEM_PROCESS_INFORMATION pidBuckets[PROCESS_ID_BUCKETS];
+    PH_PROVIDER_UPDATED_EVENT updatedEvent;
 
     // Note about locking:
     //
@@ -2382,6 +2569,11 @@ VOID PhProcessProviderUpdate(
     // Pre-update tasks
 
     PhTraceFuncEnter("Process provider run count: %lu", runCount);
+
+    if (runCount > 0)
+    {
+        PhpProcessBulkSidResolution();
+    }
 
     if (runCount % 512 == 0) // yes, a very long time
     {
@@ -2922,8 +3114,13 @@ VOID PhProcessProviderUpdate(
 
                     if (processItem->QueryHandle && NT_SUCCESS(PhGetProcessAffinityMask(processItem->QueryHandle, &affinityMask)))
                     {
-                        processItem->AffinityMasks = &affinityMask;
-                        affinityPopulationCount = PhCountBitsUlongPtr(processItem->AffinityMasks[0]);
+                        processItem->AffinityMaskSingle = affinityMask;
+                        affinityPopulationCount = PhCountBitsUlongPtr(processItem->AffinityMaskSingle);
+                    }
+                    else
+                    {
+                        processItem->AffinityMaskSingle = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[0];
+                        affinityPopulationCount = PhCountBitsUlongPtr(processItem->AffinityMaskSingle);
                     }
                 }
                 else
@@ -2932,19 +3129,15 @@ VOID PhProcessProviderUpdate(
                     {
                         GROUP_AFFINITY affinity;
 
+                        RtlZeroMemory(&affinity, sizeof(GROUP_AFFINITY));
                         affinity.Group = i;
 
-                        if (processItem->QueryHandle &&
-                            NT_SUCCESS(PhGetProcessGroupAffinity(processItem->QueryHandle, &affinity)))
-                        {
-                            processItem->AffinityMasks[i] = affinity.Mask;
-                        }
+                        if (processItem->QueryHandle && NT_SUCCESS(PhGetProcessGroupAffinity(processItem->QueryHandle, &affinity)))
+                            processItem->AffinityMaskGroups[i] = affinity.Mask;
                         else
-                        {
-                            processItem->AffinityMasks[i] = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[i];
-                        }
+                            processItem->AffinityMaskGroups[i] = PhSystemProcessorInformation.ActiveProcessorsAffinityMasks[i];
 
-                        affinityPopulationCount = PhCountBitsUlongPtr(processItem->AffinityMasks[i]);
+                        affinityPopulationCount += PhCountBitsUlongPtr(processItem->AffinityMaskGroups[i]);
                     }
                 }
 
@@ -3026,7 +3219,18 @@ VOID PhProcessProviderUpdate(
 
                                 if (processItem->Sid)
                                 {
-                                    PhMoveReference(&processItem->UserName, PhpGetSidFullNameCachedSlow(processItem->Sid));
+                                    PPH_STRING resolvedName;
+
+                                    // Try cache
+                                    if (resolvedName = PhpGetSidFullNameCached(processItem->Sid))
+                                    {
+                                        PhMoveReference(&processItem->UserName, resolvedName);
+                                    }
+                                    else
+                                    {
+                                        // Queue for bulk resolution
+                                        PhpQueueSidForBulkResolution(processItem->Sid);
+                                    }
                                 }
 
                                 modified = TRUE;
@@ -3035,8 +3239,19 @@ VOID PhProcessProviderUpdate(
                             {
                                 if (processItem->Sid && PhIsNullOrEmptyString(processItem->UserName))
                                 {
-                                    PhMoveReference(&processItem->UserName, PhpGetSidFullNameCachedSlow(processItem->Sid));
-                                    modified = TRUE;
+                                    PPH_STRING resolvedName;
+
+                                    // Try cache
+                                    if (resolvedName = PhpGetSidFullNameCached(processItem->Sid))
+                                    {
+                                        PhMoveReference(&processItem->UserName, resolvedName);
+                                        modified = TRUE;
+                                    }
+                                    else
+                                    {
+                                        // Queue for bulk resolution
+                                        PhpQueueSidForBulkResolution(processItem->Sid);
+                                    }
                                 }
                             }
                         }
@@ -3085,7 +3300,18 @@ VOID PhProcessProviderUpdate(
                     {
                         if (PhIsNullOrEmptyString(processItem->UserName))
                         {
-                            PhMoveReference(&processItem->UserName, PhpGetSidFullNameCachedSlow((PSID)&PhSeLocalSystemSid));
+                            PPH_STRING resolvedName;
+
+                            // Try cache or fallback to slow lookup
+                            if (resolvedName = PhpGetSidFullNameCached((PSID)&PhSeLocalSystemSid))
+                            {
+                                PhMoveReference(&processItem->UserName, resolvedName);
+                            }
+                            else
+                            {
+                                PhMoveReference(&processItem->UserName, PhpGetSidFullNameCachedSlow((PSID)&PhSeLocalSystemSid));
+                            }
+
                             modified = TRUE;
                         }
                     }
@@ -3439,7 +3665,10 @@ VOID PhProcessProviderUpdate(
         }
     }
 
-    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent), UlongToPtr(runCount));
+    updatedEvent.RunCount = runCount;
+    updatedEvent.UpdateInterval = PhCsUpdateInterval;
+
+    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent), &updatedEvent);
 
     PhTraceFuncExit("Process provider run count: %lu", runCount);
 
@@ -3559,7 +3788,7 @@ VOID PhpAddProcessRecord(
     else
     {
         // Link the process record with the existing one that we found.
-        InsertTailList(&processRecord->ListEntry, &ProcessRecord->ListEntry);
+        InsertTailListNoFence(&processRecord->ListEntry, &ProcessRecord->ListEntry);
     }
 
     PhReleaseQueuedLockExclusive(&PhProcessRecordListLock);
@@ -3578,7 +3807,7 @@ VOID PhpRemoveProcessRecord(
     assert(headProcessRecord);
 
     // Unlink the record from the list.
-    RemoveEntryList(&ProcessRecord->ListEntry);
+    RemoveEntryListNoFence(&ProcessRecord->ListEntry);
 
     if (ProcessRecord == headProcessRecord)
     {
@@ -4006,7 +4235,7 @@ VOID PhProcessImageListInitialization(
     //PhImageListSetBkColor(PhProcessLargeImageList, CLR_NONE);
     //PhImageListSetBkColor(PhProcessSmallImageList, CLR_NONE);
 
-    PhGetStockApplicationIcon(&iconSmall, &iconLarge);
+    PhGetStockApplicationIcon(&iconSmall, &iconLarge, PhProcessImageListWindowDpi);
     PhImageListAddIcon(PhProcessLargeImageList, iconLarge);
     PhImageListAddIcon(PhProcessSmallImageList, iconSmall);
 
@@ -4195,7 +4424,7 @@ PPH_IMAGELIST_ITEM PhImageListExtractIcon(
     if (smallIcon)
         DestroyIcon(smallIcon);
     if (largeIcon)
-        DestroyIcon(smallIcon);
+        DestroyIcon(largeIcon);
 
     return newentry;
 }
@@ -4461,6 +4690,8 @@ PPH_PROCESS_ITEM PhCreateProcessItemFromHandle(
             {
                 processItem->CommandLine = PhCreateStringEx(CommandLineBuffer, CommandLineLength - sizeof(UNICODE_NULL));
             }
+
+            PhFree(telemetryInfo);
         }
     }
 

@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *
  */
 
@@ -16,27 +16,25 @@
 
 static CONST PH_KEY_VALUE_PAIR FwEventTypePairs[] =
 {
-    SIP(SREF(L"IKEEXT_MM_FAILURE"), FWPM_NET_EVENT_TYPE_IKEEXT_MM_FAILURE),
-    SIP(SREF(L"IKEEXT_QM_FAILURE"), FWPM_NET_EVENT_TYPE_IKEEXT_QM_FAILURE),
-    SIP(SREF(L"IKEEXT_EM_FAILURE"), FWPM_NET_EVENT_TYPE_IKEEXT_EM_FAILURE),
-    SIP(SREF(L"CLASSIFY_DROP"), FWPM_NET_EVENT_TYPE_CLASSIFY_DROP),
-    SIP(SREF(L"IPSEC_KERNEL_DROP"), FWPM_NET_EVENT_TYPE_IPSEC_KERNEL_DROP),
-    SIP(SREF(L"IPSEC_DOSP_DROP"), FWPM_NET_EVENT_TYPE_IPSEC_DOSP_DROP),
-    SIP(SREF(L"CLASSIFY_ALLOW"), FWPM_NET_EVENT_TYPE_CLASSIFY_ALLOW),
-    SIP(SREF(L"CAPABILITY_DROP"), FWPM_NET_EVENT_TYPE_CAPABILITY_DROP),
-    SIP(SREF(L"CAPABILITY_ALLOW"), FWPM_NET_EVENT_TYPE_CAPABILITY_ALLOW),
-    SIP(SREF(L"CLASSIFY_DROP_MAC"), FWPM_NET_EVENT_TYPE_CLASSIFY_DROP_MAC),
-    SIP(SREF(L"LPM_PACKET_ARRIVAL"), FWPM_NET_EVENT_TYPE_LPM_PACKET_ARRIVAL),
+    SIP(SREF(L"VPN Failure (Phase 1)"), FWPM_NET_EVENT_TYPE_IKEEXT_MM_FAILURE),
+    SIP(SREF(L"VPN Failure (Phase 2)"), FWPM_NET_EVENT_TYPE_IKEEXT_QM_FAILURE),
+    SIP(SREF(L"VPN Auth Failure"), FWPM_NET_EVENT_TYPE_IKEEXT_EM_FAILURE),
+    SIP(SREF(L"DROP"), FWPM_NET_EVENT_TYPE_CLASSIFY_DROP),
+    SIP(SREF(L"IPsec Integrity Block"), FWPM_NET_EVENT_TYPE_IPSEC_KERNEL_DROP),
+    SIP(SREF(L"Flood Protection"), FWPM_NET_EVENT_TYPE_IPSEC_DOSP_DROP),
+    SIP(SREF(L"Allowed"), FWPM_NET_EVENT_TYPE_CLASSIFY_ALLOW),
+    SIP(SREF(L"DROP (AppContainer)"), FWPM_NET_EVENT_TYPE_CAPABILITY_DROP),
+    SIP(SREF(L"Allowed (AppContainer)"), FWPM_NET_EVENT_TYPE_CAPABILITY_ALLOW),
+    SIP(SREF(L"DROP (MAC)"), FWPM_NET_EVENT_TYPE_CLASSIFY_DROP_MAC),
+    SIP(SREF(L"QoS Policy Packet"), FWPM_NET_EVENT_TYPE_LPM_PACKET_ARRIVAL),
     SIP(SREF(L"未知"), FWPM_NET_EVENT_TYPE_MAX),
 };
-
-static_assert(FWPM_NET_EVENT_TYPE_MAX == 11 && RTL_NUMBER_OF(FwEventTypePairs) == FWPM_NET_EVENT_TYPE_MAX + 1, "FwEventTypePairs size mismatch - Add missing enums to the FwEventTypePairs array.");
 
 static CONST PH_KEY_VALUE_PAIR FwEventDirectionPairs[] =
 {
     SIP(SREF(L"未知"), FW_EVENT_DIRECTION_NONE),
-    SIP(SREF(L"IN"), FW_EVENT_DIRECTION_INBOUND),
-    SIP(SREF(L"OUT"), FW_EVENT_DIRECTION_OUTBOUND),
+    SIP(SREF(L"In"), FW_EVENT_DIRECTION_INBOUND),
+    SIP(SREF(L"Out"), FW_EVENT_DIRECTION_OUTBOUND),
     SIP(SREF(L"FWD"), FW_EVENT_DIRECTION_FORWARD),
     SIP(SREF(L"BI"), FW_EVENT_DIRECTION_BIDIRECTIONAL),
     SIP(SREF(L"未知"), FW_EVENT_DIRECTION_MAX),
@@ -63,6 +61,10 @@ PPH_STRING FwTreeErrorText = NULL;
 LONG FwTreeIconHeightPadding = 0;
 LONG FwTreeLeftMarginPadding = 0;
 LONG FwTreeRightMarginPadding = 0;
+BOOLEAN FwEnableStateHighlighting = TRUE;
+ULONG FwTreeHighlightingDuration = 1000;
+COLORREF FwTreeColorNew = 0;
+COLORREF FwTreeColorRemoved = 0;
 PPH_MAIN_TAB_PAGE EtFwAddedTabPage;
 PH_PROVIDER_EVENT_QUEUE FwNetworkEventQueue;
 PH_CALLBACK_REGISTRATION FwItemAddedRegistration;
@@ -74,9 +76,20 @@ PTOOLSTATUS_INTERFACE EtFwToolStatusInterface;
 PH_CALLBACK_REGISTRATION EtFwSearchChangedRegistration;
 BOOLEAN EtFwEnabled = FALSE;
 ULONG EtFwStatus = ERROR_SUCCESS;
+PPH_POINTER_LIST EtFwNodeStateList = NULL;
 PPH_STRING EtFwStatusText = NULL;
 PPH_LIST FwNodeList = NULL;
 
+/**
+ * Callback for the firewall tab page.
+ *
+ * \param Page The tab page.
+ * \param Message The message code.
+ * \param Parameter1 Message-specific parameter.
+ * \param Parameter2 Message-specific parameter.
+ * \return TRUE if the message was handled, FALSE otherwise.
+ */
+_Function_class_(PH_MAIN_TAB_PAGE_CALLBACK)
 BOOLEAN FwTabPageCallback(
     _In_ PPH_MAIN_TAB_PAGE Page,
     _In_ PH_MAIN_TAB_PAGE_MESSAGE Message,
@@ -91,6 +104,10 @@ BOOLEAN FwTabPageCallback(
             ULONG treelistBorder;
             ULONG treelistCustomColors;
             PH_TREENEW_CREATEPARAMS treelistCreateParams = { 0 };
+
+            FwTreeColorNew = PhGetIntegerSetting(L"ColorNew");
+            FwTreeColorRemoved = PhGetIntegerSetting(L"ColorRemoved");
+            FwTreeHighlightingDuration = PhGetIntegerSetting(L"HighlightingDuration");
 
             thinRows = PhGetIntegerSetting(SETTING_THIN_ROWS) ? TN_STYLE_THIN_ROWS : 0;
             treelistBorder = (PhGetIntegerSetting(SETTING_TREE_LIST_BORDER_ENABLE) && !PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT)) ? WS_BORDER : 0;
@@ -113,7 +130,7 @@ BOOLEAN FwTabPageCallback(
                 0,
                 Parameter2,
                 NULL,
-                PluginInstance->DllBase,
+                NULL,
                 &treelistCreateParams
                 );
 
@@ -261,6 +278,9 @@ BOOLEAN FwTabPageCallback(
     return FALSE;
 }
 
+/**
+ * Initializes the firewall tab.
+ */
 VOID EtInitializeFirewallTab(
     VOID
     )
@@ -282,6 +302,11 @@ VOID EtInitializeFirewallTab(
     }
 }
 
+/**
+ * Initializes the firewall tree list.
+ *
+ * \param TreeNewHandle Handle to the tree list window.
+ */
 VOID InitializeFwTreeList(
     _In_ HWND TreeNewHandle
     )
@@ -290,24 +315,26 @@ VOID InitializeFwTreeList(
 
     InitializeFwTreeListDpi(TreeNewHandle);
 
-    PhSetControlTheme(TreeNewHandle, !PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) ? L"explorer" : L"DarkMode_Explorer");
+    PhSetControlTheme(TreeNewHandle, L"explorer");
     TreeNew_SetRedraw(TreeNewHandle, FALSE);
     TreeNew_SetCallback(TreeNewHandle, FwTreeNewCallback, NULL);
 
     PhAddTreeNewColumnEx2(TreeNewHandle, FW_COLUMN_NAME, TRUE, L"名称", 140, PH_ALIGN_LEFT, FW_COLUMN_NAME, 0, TN_COLUMN_FLAG_CUSTOMDRAW);
-    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_ACTION, TRUE, L"动作", 70, PH_ALIGN_LEFT, FW_COLUMN_ACTION, 0);
+    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_PROCESSID, TRUE, L"PID", 50, PH_ALIGN_RIGHT, FW_COLUMN_PROCESSID, DT_RIGHT, TRUE);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_ACTION, TRUE, L"动作", 100, PH_ALIGN_LEFT, FW_COLUMN_ACTION, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_DIRECTION, TRUE, L"方向", 40, PH_ALIGN_LEFT, FW_COLUMN_DIRECTION, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_RULENAME, TRUE, L"规则", 240, PH_ALIGN_LEFT, FW_COLUMN_RULENAME, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_RULEDESCRIPTION, TRUE, L"描述", 180, PH_ALIGN_LEFT, FW_COLUMN_RULEDESCRIPTION, 0);
-    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_LOCALADDRESS, TRUE, L"本地地址", 220, PH_ALIGN_RIGHT, FW_COLUMN_LOCALADDRESS, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_LOCALPORT, TRUE, L"本地端口", 50, PH_ALIGN_LEFT, FW_COLUMN_LOCALPORT, DT_LEFT, TRUE);
-    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_LOCALHOSTNAME, TRUE, L"本地主机名", 70, PH_ALIGN_LEFT, FW_COLUMN_LOCALHOSTNAME, 0);
-    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_REMOTEADDRESS, TRUE, L"远程地址", 220, PH_ALIGN_RIGHT, FW_COLUMN_REMOTEADDRESS, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_REMOTEPORT, TRUE, L"远程端口", 50, PH_ALIGN_LEFT, FW_COLUMN_REMOTEPORT, DT_LEFT, TRUE);
-    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_REMOTEHOSTNAME, TRUE, L"远程主机名", 70, PH_ALIGN_LEFT, FW_COLUMN_REMOTEHOSTNAME, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_FILTER_ORIGIN, TRUE, L"Filter origin", 80, PH_ALIGN_LEFT, FW_COLUMN_FILTER_ORIGIN, 0);
+    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_LOCALADDRESS, TRUE, L"本地地址", 110, PH_ALIGN_RIGHT, FW_COLUMN_LOCALADDRESS, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_LOCALPORT, TRUE, L"本地端口", 30, PH_ALIGN_LEFT, FW_COLUMN_LOCALPORT, DT_LEFT, TRUE);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_LOCALHOSTNAME, TRUE, L"本地主机名", 100, PH_ALIGN_LEFT, FW_COLUMN_LOCALHOSTNAME, 0);
+    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_REMOTEADDRESS, TRUE, L"远程地址", 110, PH_ALIGN_RIGHT, FW_COLUMN_REMOTEADDRESS, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(TreeNewHandle, FW_COLUMN_REMOTEPORT, TRUE, L"远程端口", 30, PH_ALIGN_LEFT, FW_COLUMN_REMOTEPORT, DT_LEFT, TRUE);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_REMOTEHOSTNAME, TRUE, L"远程主机名", 100, PH_ALIGN_LEFT, FW_COLUMN_REMOTEHOSTNAME, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_PROTOCOL, TRUE, L"协议", 60, PH_ALIGN_LEFT, FW_COLUMN_PROTOCOL, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_TIMESTAMP, TRUE, L"时间戳", 60, PH_ALIGN_LEFT, FW_COLUMN_TIMESTAMP, 0);
-    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_PROCESSFILENAME, FALSE, L"文件地址", 100, PH_ALIGN_LEFT, FW_COLUMN_PROCESSFILENAME, DT_PATH_ELLIPSIS);
+   // PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_PROCESSFILENAME, FALSE, L"文件地址", 100, PH_ALIGN_LEFT, FW_COLUMN_PROCESSFILENAME, DT_PATH_ELLIPSIS);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_USER, FALSE, L"用户名", 100, PH_ALIGN_LEFT, FW_COLUMN_USER, 0);
     //PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_PACKAGE, FALSE, L"Package", 100, PH_ALIGN_LEFT, FW_COLUMN_PACKAGE, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, FW_COLUMN_COUNTRY, FALSE, L"国家", 80, PH_ALIGN_LEFT, FW_COLUMN_COUNTRY, 0, TN_COLUMN_FLAG_CUSTOMDRAW);
@@ -315,9 +342,14 @@ VOID InitializeFwTreeList(
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_REMOTEADDRESSCLASS, FALSE, L"远程地址类型", 80, PH_ALIGN_LEFT, FW_COLUMN_REMOTEADDRESSCLASS, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_LOCALADDRESSSSCOPE, FALSE, L"本地地址区域", 80, PH_ALIGN_LEFT, FW_COLUMN_LOCALADDRESSSSCOPE, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_REMOTEADDRESSSCOPE, FALSE, L"远程地址区域e", 80, PH_ALIGN_LEFT, FW_COLUMN_REMOTEADDRESSSCOPE, 0);
-    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_ORIGINALNAME, FALSE, L"原始名", 100, PH_ALIGN_LEFT, FW_COLUMN_ORIGINALNAME, DT_PATH_ELLIPSIS);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_ORIGINALNAME, FALSE, L"原名", 100, PH_ALIGN_LEFT, FW_COLUMN_ORIGINALNAME, DT_PATH_ELLIPSIS);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_LOCALSERVICENAME, FALSE, L"本地端口服务", 80, PH_ALIGN_LEFT, FW_COLUMN_LOCALSERVICENAME, 0);
     PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_REMOTESERVICENAME, FALSE, L"远程端口服务", 80, PH_ALIGN_LEFT, FW_COLUMN_REMOTESERVICENAME, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_INTERFACE_LUID, FALSE, L"Interface LUID", 80, PH_ALIGN_LEFT, FW_COLUMN_INTERFACE_LUID, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_COMPARTMENT_ID, FALSE, L"Compartment ID", 80, PH_ALIGN_LEFT, FW_COLUMN_COMPARTMENT_ID, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_POLICY_APP_ID, FALSE, L"Policy app ID", 100, PH_ALIGN_LEFT, FW_COLUMN_POLICY_APP_ID, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_SERVICE_SIDS, FALSE, L"Service SIDs", 100, PH_ALIGN_LEFT, FW_COLUMN_SERVICE_SIDS, 0);
+    PhAddTreeNewColumn(TreeNewHandle, FW_COLUMN_FQBN_NAME, FALSE, L"FQBN name", 100, PH_ALIGN_LEFT, FW_COLUMN_FQBN_NAME, 0);
 
     PhInitializeTreeNewFilterSupport(&EtFwFilterSupport, TreeNewHandle, FwNodeList);
 
@@ -327,6 +359,16 @@ VOID InitializeFwTreeList(
         PhAddTreeNewFilter(&EtFwFilterSupport, FwSearchFilterCallback, NULL);
     }
 
+    if (PhGetIntegerSetting(SETTING_TREE_LIST_CUSTOM_ROW_SIZE))
+    {
+        ULONG treelistCustomRowSize = PhGetIntegerSetting(SETTING_TREE_LIST_CUSTOM_ROW_SIZE);
+
+        if (treelistCustomRowSize < 15)
+            treelistCustomRowSize = 15;
+
+        TreeNew_SetRowHeight(TreeNewHandle, treelistCustomRowSize);
+    }
+
     TreeNew_SetSort(TreeNewHandle, FW_COLUMN_TIMESTAMP, NoSortOrder);
     TreeNew_SetTriState(TreeNewHandle, TRUE);
     TreeNew_SetRedraw(TreeNewHandle, TRUE);
@@ -334,6 +376,11 @@ VOID InitializeFwTreeList(
     LoadSettingsFwTreeList(TreeNewHandle);
 }
 
+/**
+ * Initializes the firewall tree list DPI-related settings.
+ *
+ * \param TreeNewHandle Handle to the tree list window.
+ */
 VOID InitializeFwTreeListDpi(
     _In_ HWND TreeNewHandle
     )
@@ -348,6 +395,11 @@ VOID InitializeFwTreeListDpi(
     FwTreeRightMarginPadding = PhGetSystemMetrics(SM_CXSMICON, dpiValue) + PhScaleToDisplay(TNP_ICON_RIGHT_PADDING, dpiValue);
 }
 
+/**
+ * Loads the firewall tree update mask from settings.
+ *
+ * \param TreeNewHandle Handle to the tree list window.
+ */
 VOID LoadSettingsFwTreeUpdateMask(
     _In_ HWND TreeNewHandle
     )
@@ -375,6 +427,11 @@ VOID LoadSettingsFwTreeUpdateMask(
     }
 }
 
+/**
+ * Loads the firewall tree list settings.
+ *
+ * \param TreeNewHandle Handle to the tree list window.
+ */
 VOID LoadSettingsFwTreeList(
     _In_ HWND TreeNewHandle
     )
@@ -389,20 +446,16 @@ VOID LoadSettingsFwTreeList(
     sortSettings = PhGetIntegerPairSetting(SETTING_NAME_FW_TREE_LIST_SORT);
     TreeNew_SetSort(TreeNewHandle, (ULONG)sortSettings.X, (PH_SORT_ORDER)sortSettings.Y);
 
-    if (PhGetIntegerSetting(SETTING_ENABLE_INSTANT_TOOLTIPS))
-    {
-        SendMessage(TreeNew_GetTooltips(TreeNewHandle), TTM_SETDELAYTIME, TTDT_INITIAL, 0);
-    }
-    else
-    {
-        SendMessage(TreeNew_GetTooltips(TreeNewHandle), TTM_SETDELAYTIME, TTDT_AUTOPOP, MAXSHORT);
-    }
-
     LoadSettingsFwTreeUpdateMask(TreeNewHandle);
 }
 
+/**
+ * Saves the firewall tree list settings.
+ *
+ * \param TreeNewHandle Handle to the tree list window.
+ */
 VOID SaveSettingsFwTreeList(
-     _In_ HWND TreeNewHandle
+    _In_ HWND TreeNewHandle
     )
 {
     PPH_STRING settings;
@@ -424,7 +477,8 @@ VOID SaveSettingsFwTreeList(
 }
 
 PFW_EVENT_ITEM AddFwNode(
-    _In_ PFW_EVENT_ITEM FwItem
+    _In_ PFW_EVENT_ITEM FwItem,
+    _In_ ULONG RunId
     )
 {
     PhInitializeTreeNewNode(&FwItem->Node);
@@ -435,16 +489,31 @@ PFW_EVENT_ITEM AddFwNode(
 
     PhInsertItemList(FwNodeList, 0, FwItem);
 
-    if (EtFwFilterSupport.NodeList)
-        FwItem->Node.Visible = PhApplyTreeNewFiltersToNode(&EtFwFilterSupport, &FwItem->Node);
+    if (FwEnableStateHighlighting && RunId != 0)
+    {
+        PhChangeShStateTn(
+            &FwItem->Node,
+            &FwItem->ShState,
+            &EtFwNodeStateList,
+            NewItemState,
+            FwTreeColorNew,
+            NULL
+            );
+    }
 
-    //TreeNew_NodesStructured(FwTreeNewHandle);
+    if (EtFwFilterSupport.NodeList)
+    {
+        FwItem->Node.Visible = PhApplyTreeNewFiltersToNode(&EtFwFilterSupport, &FwItem->Node);
+    }
+
+    TreeNew_NodesStructured(FwTreeNewHandle);
 
     return FwItem;
 }
 
-VOID RemoveFwNode(
-    _In_ PFW_EVENT_ITEM FwNode
+VOID FwRemoveTreeNode(
+    _In_ PFW_EVENT_ITEM FwNode,
+    _In_opt_ PVOID Context
     )
 {
     ULONG index;
@@ -454,7 +523,28 @@ VOID RemoveFwNode(
 
     PhDereferenceObject(FwNode);
 
-    //TreeNew_NodesStructured(FwTreeNewHandle);
+    TreeNew_NodesStructured(FwTreeNewHandle);
+}
+
+VOID RemoveFwNode(
+    _In_ PFW_EVENT_ITEM FwNode
+    )
+{
+    if (FwEnableStateHighlighting)
+    {
+        PhChangeShStateTn(
+            &FwNode->Node,
+            &FwNode->ShState,
+            &EtFwNodeStateList,
+            RemovingItemState,
+            FwTreeColorRemoved,
+            FwTreeNewHandle
+            );
+    }
+    else
+    {
+        FwRemoveTreeNode(FwNode, NULL);
+    }
 }
 
 VOID UpdateFwNode(
@@ -464,13 +554,15 @@ VOID UpdateFwNode(
     memset(FwNode->TextCache, 0, sizeof(PH_STRINGREF) * FW_COLUMN_MAXIMUM);
 
     PhInvalidateTreeNewNode(&FwNode->Node, TN_CACHE_ICON);
-    //TreeNew_NodesStructured(FwTreeNewHandle);
+    TreeNew_NodesStructured(FwTreeNewHandle);
 }
 
 VOID FwTickNodes(
     VOID
     )
 {
+    BOOLEAN fullyInvalidated = FALSE;
+
     // Reset list once in a while.
     {
         static ULONG64 lastTickCount = 0;
@@ -503,8 +595,28 @@ VOID FwTickNodes(
         PhSwapReference(&node->TooltipText, NULL);
     }
 
-    TreeNew_NodesStructured(FwTreeNewHandle);
-    InvalidateRect(FwTreeNewHandle, NULL, FALSE);
+    if (FwTreeNewSortOrder != NoSortOrder)
+    {
+        TreeNew_NodesStructured(FwTreeNewHandle);
+        fullyInvalidated = TRUE;
+    }
+
+    PH_TICK_SH_STATE_TN(
+        FW_EVENT_ITEM,
+        ShState,
+        EtFwNodeStateList,
+        FwRemoveTreeNode,
+        FwTreeHighlightingDuration,
+        FwTreeNewHandle,
+        TRUE,
+        &fullyInvalidated,
+        NULL
+        );
+
+    if (!fullyInvalidated)
+    {
+        InvalidateRect(FwTreeNewHandle, NULL, FALSE);
+    }
 }
 
 VOID FwUpdateNodeTimeStamp(
@@ -518,20 +630,6 @@ VOID FwUpdateNodeTimeStamp(
     PhMoveReference(&FwNode->TimeString, PhFormatDateTime(&systemTime));
 }
 
-VOID FwUpdateNodeUserSid(
-    _In_ PFW_EVENT_ITEM FwNode
-    )
-{
-    if (FwNode->UserSid)
-    {
-        PhMoveReference(&FwNode->UserName, EtFwGetSidFullNameCachedSlow(FwNode->UserSid));
-    }
-    else
-    {
-        PhClearReference(&FwNode->UserName);
-    }
-}
-
 VOID FwUpdateNodeLocalPortServiceName(
     _In_ PFW_EVENT_ITEM FwNode
     )
@@ -540,7 +638,7 @@ VOID FwUpdateNodeLocalPortServiceName(
     {
         PPH_STRINGREF string;
 
-        if (EtFwLookupPortServiceName(FwNode->LocalEndpoint.Port, &string))
+        if (EtFwLookupPortServiceName(FwNode->LocalEndpoint.Port, FwNode->IpProtocol, &string))
         {
             FwNode->LocalPortServiceName = string;
         }
@@ -557,7 +655,7 @@ VOID FwUpdateNodeRemotePortServiceName(
     {
         PPH_STRINGREF string;
 
-        if (EtFwLookupPortServiceName(FwNode->RemoteEndpoint.Port, &string))
+        if (EtFwLookupPortServiceName(FwNode->RemoteEndpoint.Port, FwNode->IpProtocol, &string))
         {
             FwNode->RemotePortServiceName = string;
         }
@@ -659,7 +757,7 @@ VOID FwUpdateNodeRemoteAddressString(
 
 VOID FwUpdateNodeRemotePortString(
     _In_ PFW_EVENT_ITEM FwNode
-)
+    )
 {
     if (!FwNode->RemotePortResolved)
     {
@@ -678,6 +776,71 @@ VOID FwUpdateNodeRemotePortString(
 
         FwNode->RemotePortResolved = TRUE;
     }
+}
+
+VOID FwUpdateNodeUserSid(
+    _In_ PFW_EVENT_ITEM FwNode
+    )
+{
+    if (FwNode->UserSid)
+    {
+        PhMoveReference(&FwNode->UserName, EtFwGetSidFullNameCachedSlow(FwNode->UserSid));
+    }
+    else
+    {
+        PhClearReference(&FwNode->UserName);
+    }
+}
+
+VOID FwUpdateServiceSid(
+    _In_ PFW_EVENT_ITEM FwNode
+    )
+{
+    //if (!FwNode->ServiceSidsResolved)
+    //{
+    //    if (!PhIsNullOrEmptyString(FwNode->ServiceSids))
+    //    {
+    //        PH_STRINGREF remaining;
+    //        PH_STRINGREF part;
+    //        PH_STRING_BUILDER stringBuilder;
+
+    //        remaining = FwNode->ServiceSids->sr;
+    //        PhInitializeStringBuilder(&stringBuilder, FwNode->ServiceSids->Length);
+
+    //        while (PhSplitStringRefAtChar(&remaining, L';', &part, &remaining))
+    //        {
+    //            PSID sid;
+    //            PPH_STRING name;
+
+    //            if (PhStringToSid(&part, &sid))
+    //            {
+    //                name = EtFwGetSidFullNameCachedSlow(sid);
+    //                PhFree(sid);
+
+    //                if (name)
+    //                {
+    //                    PhAppendStringBuilder(&stringBuilder, &name->sr);
+    //                    PhDereferenceObject(name);
+    //                }
+    //                else
+    //                {
+    //                    PhAppendStringBuilder(&stringBuilder, &part);
+    //                }
+    //            }
+    //            else
+    //            {
+    //                PhAppendStringBuilder(&stringBuilder, &part);
+    //            }
+
+    //            if (remaining.Length != 0)
+    //                PhAppendStringBuilderEx(&stringBuilder, L"; ", 1 * sizeof(WCHAR));
+    //        }
+
+    //        PhMoveReference(&FwNode->ServiceSids, PhFinalStringBuilderString(&stringBuilder));
+    //    }
+
+    //    FwNode->ServiceSidsResolved = TRUE;
+    //}
 }
 
 #define SORT_FUNCTION(Column) FwTreeNewCompare##Column
@@ -700,6 +863,12 @@ VOID FwUpdateNodeRemotePortString(
 BEGIN_SORT_FUNCTION(Name)
 {
     sortResult = PhCompareStringWithNullSortOrder(node1->ProcessBaseString, node2->ProcessBaseString, FwTreeNewSortOrder, FALSE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(ProcessId)
+{
+    sortResult = uint64cmp(node1->ProcessId, node2->ProcessId);
 }
 END_SORT_FUNCTION
 
@@ -915,6 +1084,42 @@ BEGIN_SORT_FUNCTION(RemotePortServiceName)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(FilterOrigin)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->FilterOrigin, node2->FilterOrigin, FwTreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(InterfaceLuid)
+{
+    sortResult = uint64cmp(node1->InterfaceLuid.Value, node2->InterfaceLuid.Value);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(CompartmentId)
+{
+    sortResult = uint64cmp(node1->CompartmentId, node2->CompartmentId);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(PolicyAppId)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->PolicyAppId, node2->PolicyAppId, FwTreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(ServiceSids)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->ServiceSids, node2->ServiceSids, FwTreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(FqbnName)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->FqbnName, node2->FqbnName, FwTreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
 int __cdecl EtFwNodeNoOrderSortFunction(
     _In_ void const* _elem1,
     _In_ void const* _elem2
@@ -928,6 +1133,18 @@ int __cdecl EtFwNodeNoOrderSortFunction(
 
     return PhModifySort(sortResult, DescendingSortOrder);
 }
+
+typedef enum _FW_ITEM_COMMAND_ID
+{
+    FW_ITEM_COMMAND_ID_PING = 1,
+    FW_ITEM_COMMAND_ID_TRACERT,
+    FW_ITEM_COMMAND_ID_WHOIS,
+    FW_ITEM_COMMAND_ID_GOTOPROCESS,
+    FW_ITEM_COMMAND_ID_OPENFILELOCATION,
+    FW_ITEM_COMMAND_ID_INSPECT,
+    FW_ITEM_COMMAND_ID_PROPERTIES,
+    FW_ITEM_COMMAND_ID_COPY,
+} FW_ITEM_COMMAND_ID;
 
 BOOLEAN NTAPI FwTreeNewCallback(
     _In_ HWND WindowHandle,
@@ -960,13 +1177,15 @@ BOOLEAN NTAPI FwTreeNewCallback(
             {
                 if (!getChildren->Node)
                 {
-                    static PVOID sortFunctions[] =
+                    static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                     {
                         SORT_FUNCTION(Name),
+                        SORT_FUNCTION(ProcessId),
                         SORT_FUNCTION(Action),
                         SORT_FUNCTION(Direction),
                         SORT_FUNCTION(RuleName),
                         SORT_FUNCTION(RuleDescription),
+                        SORT_FUNCTION(FilterOrigin),
                         SORT_FUNCTION(LocalAddress),
                         SORT_FUNCTION(LocalPort),
                         SORT_FUNCTION(LocalHostname),
@@ -975,7 +1194,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
                         SORT_FUNCTION(RemoteHostname),
                         SORT_FUNCTION(Protocol),
                         SORT_FUNCTION(Timestamp),
-                        SORT_FUNCTION(Filename),
+                        //SORT_FUNCTION(Filename),
                         SORT_FUNCTION(User),
                         SORT_FUNCTION(Package),
                         SORT_FUNCTION(Country),
@@ -986,8 +1205,13 @@ BOOLEAN NTAPI FwTreeNewCallback(
                         SORT_FUNCTION(Filename),
                         SORT_FUNCTION(LocalPortServiceName),
                         SORT_FUNCTION(RemotePortServiceName),
+                        SORT_FUNCTION(InterfaceLuid),
+                        SORT_FUNCTION(CompartmentId),
+                        SORT_FUNCTION(PolicyAppId),
+                        SORT_FUNCTION(ServiceSids),
+                        SORT_FUNCTION(FqbnName),
                     };
-                    int (__cdecl* sortFunction)(void const*, void const*);
+                    _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                     static_assert(RTL_NUMBER_OF(sortFunctions) == FW_COLUMN_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1024,6 +1248,11 @@ BOOLEAN NTAPI FwTreeNewCallback(
             case FW_COLUMN_NAME:
                 {
                     getCellText->Text = PhGetStringRef(node->ProcessBaseString);
+                }
+                break;
+            case FW_COLUMN_PROCESSID:
+                {
+                    getCellText->Text = PhGetStringRef(node->ProcessIdString);
                 }
                 break;
             case FW_COLUMN_ACTION:
@@ -1097,7 +1326,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
                     }
                     else
                     {
-                        PhInitializeStringRef(&getCellText->Text, L"解析中....");
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
                     }
                 }
                 break;
@@ -1127,7 +1356,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
                     }
                     else
                     {
-                        PhInitializeStringRef(&getCellText->Text, L"解析中....");
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
                     }
                 }
                 break;
@@ -1232,132 +1461,163 @@ BOOLEAN NTAPI FwTreeNewCallback(
                     }
                 }
                 break;
-           case FW_COLUMN_TIMESTAMP:
-               {
-                   FwUpdateNodeTimeStamp(node);
-                   getCellText->Text = PhGetStringRef(node->TimeString);
-               }
-               break;
-           case FW_COLUMN_PROCESSFILENAME:
-               {
-                   getCellText->Text = PhGetStringRef(node->ProcessFileNameWin32);
-               }
-               break;
-           case FW_COLUMN_USER:
-               {
-                   FwUpdateNodeUserSid(node);
-                   getCellText->Text = PhGetStringRef(node->UserName);
-               }
-               break;
-           //case FW_COLUMN_PACKAGE:
-           //    {
-           //        if (node->PackageSid)
-           //        {
-           //            PhMoveReference(&node->PackageName, EtFwGetSidFullNameCachedSlow(node->PackageSid));
-           //            getCellText->Text = PhGetStringRef(node->PackageName);
-           //        }
-           //    }
-           //    break;
-           case FW_COLUMN_COUNTRY:
-               {
-                   getCellText->Text = PhGetStringRef(node->RemoteCountryName);
-               }
-               break;
-           case FW_COLUMN_LOCALADDRESSCLASS:
-               {
-                   PH_STRINGREF string;
+            case FW_COLUMN_TIMESTAMP:
+                {
+                    FwUpdateNodeTimeStamp(node);
+                    getCellText->Text = PhGetStringRef(node->TimeString);
+                }
+                break;
+            //case FW_COLUMN_PROCESSFILENAME:
+            //{
+            //    getCellText->Text = PhGetStringRef(node->ProcessFileNameWin32);
+            //}
+            //break;
+            case FW_COLUMN_USER:
+                {
+                    FwUpdateNodeUserSid(node);
+                    getCellText->Text = PhGetStringRef(node->UserName);
+                }
+                break;
+            //case FW_COLUMN_PACKAGE:
+            //    {
+            //        if (node->PackageSid)
+            //        {
+            //            PhMoveReference(&node->PackageName, EtFwGetSidFullNameCachedSlow(node->PackageSid));
+            //            getCellText->Text = PhGetStringRef(node->PackageName);
+            //        }
+            //    }
+            //    break;
+            case FW_COLUMN_COUNTRY:
+                {
+                    getCellText->Text = PhGetStringRef(node->RemoteCountryName);
+                }
+                break;
+            case FW_COLUMN_LOCALADDRESSCLASS:
+                {
+                    PH_STRINGREF string;
 
-                   if (EtFwLookupAddressClass(&node->LocalEndpoint.Address, &string))
-                   {
-                       getCellText->Text.Buffer = string.Buffer;
-                       getCellText->Text.Length = string.Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
-           case FW_COLUMN_REMOTEADDRESSCLASS:
-               {
-                   PH_STRINGREF string;
+                    if (EtFwLookupAddressClass(&node->LocalEndpoint.Address, &string))
+                    {
+                        getCellText->Text.Buffer = string.Buffer;
+                        getCellText->Text.Length = string.Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_REMOTEADDRESSCLASS:
+                {
+                    PH_STRINGREF string;
 
-                   if (EtFwLookupAddressClass(&node->RemoteEndpoint.Address, &string))
-                   {
-                       getCellText->Text.Buffer = string.Buffer;
-                       getCellText->Text.Length = string.Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
-           case FW_COLUMN_LOCALADDRESSSSCOPE:
-               {
-                   PH_STRINGREF string;
+                    if (EtFwLookupAddressClass(&node->RemoteEndpoint.Address, &string))
+                    {
+                        getCellText->Text.Buffer = string.Buffer;
+                        getCellText->Text.Length = string.Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_LOCALADDRESSSSCOPE:
+                {
+                    PH_STRINGREF string;
 
-                   if (EtFwLookupAddressScope(&node->LocalEndpoint.Address, &string))
-                   {
-                       getCellText->Text.Buffer = string.Buffer;
-                       getCellText->Text.Length = string.Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
-           case FW_COLUMN_REMOTEADDRESSSCOPE:
-               {
-                   PH_STRINGREF string;
+                    if (EtFwLookupAddressScope(&node->LocalEndpoint.Address, &string))
+                    {
+                        getCellText->Text.Buffer = string.Buffer;
+                        getCellText->Text.Length = string.Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_REMOTEADDRESSSCOPE:
+                {
+                    PH_STRINGREF string;
 
-                   if (EtFwLookupAddressScope(&node->RemoteEndpoint.Address, &string))
-                   {
-                       getCellText->Text.Buffer = string.Buffer;
-                       getCellText->Text.Length = string.Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
-           case FW_COLUMN_ORIGINALNAME:
-               {
-                   getCellText->Text = PhGetStringRef(node->ProcessFileName);
-               }
-               break;
-           case FW_COLUMN_LOCALSERVICENAME:
-               {
-                   FwUpdateNodeLocalPortServiceName(node);
+                    if (EtFwLookupAddressScope(&node->RemoteEndpoint.Address, &string))
+                    {
+                        getCellText->Text.Buffer = string.Buffer;
+                        getCellText->Text.Length = string.Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_ORIGINALNAME:
+                {
+                    getCellText->Text = PhGetStringRef(node->ProcessFileName);
+                }
+                break;
+            case FW_COLUMN_LOCALSERVICENAME:
+                {
+                    FwUpdateNodeLocalPortServiceName(node);
 
-                   if (node->LocalPortServiceName && node->LocalPortServiceName->Length)
-                   {
-                       getCellText->Text.Buffer = node->LocalPortServiceName->Buffer;
-                       getCellText->Text.Length = node->LocalPortServiceName->Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
-           case FW_COLUMN_REMOTESERVICENAME:
-               {
-                   FwUpdateNodeRemotePortServiceName(node);
+                    if (node->LocalPortServiceName && node->LocalPortServiceName->Length)
+                    {
+                        getCellText->Text.Buffer = node->LocalPortServiceName->Buffer;
+                        getCellText->Text.Length = node->LocalPortServiceName->Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_REMOTESERVICENAME:
+                {
+                    FwUpdateNodeRemotePortServiceName(node);
 
-                   if (node->RemotePortServiceName && node->RemotePortServiceName->Length)
-                   {
-                       getCellText->Text.Buffer = node->RemotePortServiceName->Buffer;
-                       getCellText->Text.Length = node->RemotePortServiceName->Length;
-                   }
-                   else
-                   {
-                       PhInitializeEmptyStringRef(&getCellText->Text);
-                   }
-               }
-               break;
+                    if (node->RemotePortServiceName && node->RemotePortServiceName->Length)
+                    {
+                        getCellText->Text.Buffer = node->RemotePortServiceName->Buffer;
+                        getCellText->Text.Length = node->RemotePortServiceName->Length;
+                    }
+                    else
+                    {
+                        PhInitializeEmptyStringRef(&getCellText->Text);
+                    }
+                }
+                break;
+            case FW_COLUMN_FILTER_ORIGIN:
+                {
+                    getCellText->Text = PhGetStringRef(node->FilterOrigin);
+                }
+                break;
+            case FW_COLUMN_INTERFACE_LUID:
+                {
+                    getCellText->Text = PhGetStringRef(node->InterfaceLuidString);
+                }
+                break;
+            case FW_COLUMN_COMPARTMENT_ID:
+                {
+                    getCellText->Text = PhGetStringRef(node->CompartmentIdString);
+                }
+                break;
+            case FW_COLUMN_POLICY_APP_ID:
+                {
+                    getCellText->Text = PhGetStringRef(node->PolicyAppId);
+                }
+                break;
+            case FW_COLUMN_SERVICE_SIDS:
+                {
+                    FwUpdateServiceSid(node);
+                    getCellText->Text = PhGetStringRef(node->ServiceSids);
+                }
+                break;
+            case FW_COLUMN_FQBN_NAME:
+                {
+                    getCellText->Text = PhGetStringRef(node->FqbnName);
+                }
+                break;
             default:
                 return FALSE;
             }
@@ -1411,7 +1671,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
             {
             case 'C':
                 if (GetKeyState(VK_CONTROL) < 0)
-                    EtFwHandleFwCommand(WindowHandle, ID_DISK_COPY);
+                    EtFwHandleFwCommand(WindowHandle, FW_ITEM_COMMAND_ID_COPY);
                 break;
             }
         }
@@ -1450,7 +1710,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
         return TRUE;
     case TreeNewLeftDoubleClick:
         {
-            EtFwHandleFwCommand(WindowHandle, ID_DISK_INSPECT);
+            EtFwHandleFwCommand(WindowHandle, FW_ITEM_COMMAND_ID_PROPERTIES);
         }
         return TRUE;
     case TreeNewContextMenu:
@@ -1484,7 +1744,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
                     DrawText(
                         hdc,
                         node->RemoteCountryName->Buffer,
-                        (INT)node->RemoteCountryName->Length / sizeof(WCHAR),
+                        (LONG)node->RemoteCountryName->Length / sizeof(WCHAR),
                         &rect,
                         DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_SINGLELINE
                         );
@@ -1507,7 +1767,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
 
             PhImageListDrawIcon(
                 PhGetProcessSmallImageList(),
-                (ULONG)(ULONG_PTR)node->ProcessIconIndex, // HACK (dmex)
+                (ULONG)(ULONG_PTR)node->ProcessIconIndex,
                 hdc,
                 rect.left,
                 rect.top + ((rect.bottom - rect.top) - FwTreeIconHeightPadding) / 2,
@@ -1523,7 +1783,7 @@ BOOLEAN NTAPI FwTreeNewCallback(
                 DrawText(
                     hdc,
                     node->ProcessBaseString->Buffer,
-                    (UINT)node->ProcessBaseString->Length / sizeof(WCHAR),
+                    (ULONG)node->ProcessBaseString->Length / sizeof(WCHAR),
                     &rect,
                     DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_SINGLELINE
                     );
@@ -1557,7 +1817,7 @@ PFW_EVENT_ITEM EtFwGetSelectedFwItem(
 
 _Success_(return)
 BOOLEAN EtFwGetSelectedFwItems(
-    _Out_ PFW_EVENT_ITEM **FwItems,
+    _Out_ PFW_EVENT_ITEM * *FwItems,
     _Out_ PULONG NumberOfFwItems
     )
 {
@@ -1684,16 +1944,6 @@ VOID EtFwWriteFwList(
     PhDereferenceObject(lines);
 }
 
-typedef enum _FW_ITEM_COMMAND_ID
-{
-    FW_ITEM_COMMAND_ID_PING = 1,
-    FW_ITEM_COMMAND_ID_TRACERT,
-    FW_ITEM_COMMAND_ID_WHOIS,
-    FW_ITEM_COMMAND_ID_OPENFILELOCATION,
-    FW_ITEM_COMMAND_ID_INSPECT,
-    FW_ITEM_COMMAND_ID_COPY,
-} FW_ITEM_COMMAND_ID;
-
 VOID EtFwHandleFwCommand(
     _In_ HWND TreeWindowHandle,
     _In_ ULONG Id
@@ -1728,6 +1978,25 @@ VOID EtFwHandleFwCommand(
             if (entry = EtFwGetSelectedFwItem())
             {
                 EtFwShowWhoisWindow(GetParent(TreeWindowHandle), entry->RemoteEndpoint);
+            }
+        }
+        break;
+    case FW_ITEM_COMMAND_ID_GOTOPROCESS:
+        {
+            PFW_EVENT_ITEM entry;
+            PPH_PROCESS_NODE processNode;
+
+            if (entry = EtFwGetSelectedFwItem())
+            {
+                if (processNode = PhFindProcessNode(UlongToHandle(entry->ProcessId)))
+                {
+                    SystemInformer_SelectTabPage(0);
+                    SystemInformer_SelectProcessNode(processNode);
+                }
+                else
+                {
+                    PhShowStatus(TreeWindowHandle, L"The process does not exist.", STATUS_INVALID_CID, 0);
+                }
             }
         }
         break;
@@ -1768,6 +2037,17 @@ VOID EtFwHandleFwCommand(
             }
         }
         break;
+    case FW_ITEM_COMMAND_ID_PROPERTIES:
+        {
+            // TODO: re-enable once fwprp.c is committed
+            //PFW_EVENT_ITEM entry;
+            //
+            //if (entry = EtFwGetSelectedFwItem())
+            //{
+            //    EtFwShowEventProperties(GetParent(TreeWindowHandle), entry);
+            //}
+        }
+        break;
     case FW_ITEM_COMMAND_ID_COPY:
         {
             EtFwCopyFwList();
@@ -1778,7 +2058,7 @@ VOID EtFwHandleFwCommand(
 
 VOID InitializeFwMenu(
     _In_ PPH_EMENU Menu,
-    _In_ PFW_EVENT_ITEM *FwItems,
+    _In_ PFW_EVENT_ITEM* FwItems,
     _In_ ULONG NumberOfFwItems
     )
 {
@@ -1790,22 +2070,22 @@ VOID InitializeFwMenu(
     {
         if (PhIsNullOrEmptyString(FwItems[0]->ProcessFileName))
         {
-            PhEnableEMenuItem(Menu, ID_DISK_OPENFILELOCATION, FALSE);
-            PhEnableEMenuItem(Menu, ID_DISK_INSPECT, FALSE);
+            PhEnableEMenuItem(Menu, FW_ITEM_COMMAND_ID_OPENFILELOCATION, FALSE);
+            PhEnableEMenuItem(Menu, FW_ITEM_COMMAND_ID_INSPECT, FALSE);
         }
         else
         {
             if (!PhDoesFileExist(&FwItems[0]->ProcessFileName->sr))
             {
-                PhEnableEMenuItem(Menu, ID_DISK_OPENFILELOCATION, FALSE);
-                PhEnableEMenuItem(Menu, ID_DISK_INSPECT, FALSE);
+                PhEnableEMenuItem(Menu, FW_ITEM_COMMAND_ID_OPENFILELOCATION, FALSE);
+                PhEnableEMenuItem(Menu, FW_ITEM_COMMAND_ID_INSPECT, FALSE);
             }
         }
     }
     else
     {
         PhSetFlagsAllEMenuItems(Menu, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
-        PhEnableEMenuItem(Menu, ID_DISK_COPY, TRUE);
+        PhEnableEMenuItem(Menu, FW_ITEM_COMMAND_ID_COPY, TRUE);
     }
 }
 
@@ -1814,7 +2094,7 @@ VOID ShowFwContextMenu(
     _In_ PPH_TREENEW_CONTEXT_MENU ContextMenuEvent
     )
 {
-    PFW_EVENT_ITEM *fwItems;
+    PFW_EVENT_ITEM* fwItems;
     ULONG numberOfFwItems;
 
     if (!EtFwGetSelectedFwItems(&fwItems, &numberOfFwItems))
@@ -1833,14 +2113,17 @@ VOID ShowFwContextMenu(
         PhInsertEMenuItem(menu, traceMenu = PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_TRACERT, L"路由追踪(&T)", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, whoisMenu = PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_WHOIS, L"信息查询(&W)", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_GOTOPROCESS, L"跳转到进程(&G)", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_OPENFILELOCATION, L"打开文件位置(&f)\bEnter", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_INSPECT, L"检测(&I)", NULL, NULL), ULONG_MAX);
+        PhInsertEMenuItem(menu, PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_PROPERTIES, L"属性(&R)", NULL, NULL), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
         PhInsertEMenuItem(menu, PhCreateEMenuItem(0, FW_ITEM_COMMAND_ID_COPY, L"复制(&C)\bCtrl+C", NULL, NULL), ULONG_MAX);
         InitializeFwMenu(menu, fwItems, numberOfFwItems);
         PhInsertCopyCellEMenuItem(menu, FW_ITEM_COMMAND_ID_COPY, TreeWindowHandle, ContextMenuEvent->Column);
-        PhSetFlagsEMenuItem(menu, FW_ITEM_COMMAND_ID_OPENFILELOCATION, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
+        PhSetFlagsEMenuItem(menu, FW_ITEM_COMMAND_ID_GOTOPROCESS, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
 
         if (PhIsNullIpAddress(&fwItems[0]->RemoteEndpoint.Address))
         {
@@ -1878,17 +2161,21 @@ VOID ShowFwContextMenu(
             }
         }
 
-        if (item = PhShowEMenu(
+        item = PhShowEMenu(
             menu,
             TreeWindowHandle,
             PH_EMENU_SHOW_LEFTRIGHT,
             PH_ALIGN_LEFT | PH_ALIGN_TOP,
             ContextMenuEvent->Location.x,
             ContextMenuEvent->Location.y
-            ))
+            );
+
+        if (item)
         {
             if (!PhHandleCopyCellEMenuItem(item))
+            {
                 EtFwHandleFwCommand(TreeWindowHandle, item->Id);
+            }
         }
 
         PhDestroyEMenu(menu);
@@ -1958,7 +2245,7 @@ VOID NTAPI OnFwItemsUpdated(
             switch (type)
             {
             case ProviderAddedEvent:
-                AddFwNode(fwEventItem);
+                AddFwNode(fwEventItem, RunId);
                 PhDereferenceObject(fwEventItem);
                 break;
             case ProviderModifiedEvent:
@@ -2124,7 +2411,7 @@ BOOLEAN NTAPI FwSearchFilterCallback(
 
     // fwNode->IpProtocol
     {
-    #define FW_IPPROTO_CHECK(label, name) \
+#define FW_IPPROTO_CHECK(label, name) \
     case (label): \
         { \
             static const PH_STRINGREF stringSr = PH_STRINGREF_INIT(name); \
@@ -2169,7 +2456,7 @@ BOOLEAN NTAPI FwSearchFilterCallback(
             FW_IPPROTO_CHECK(IPPROTO_RESERVED_RAW, L"RAW");
         }
 
-    #undef FW_IPPROTO_CHECK
+#undef FW_IPPROTO_CHECK
     }
 
     return FALSE;

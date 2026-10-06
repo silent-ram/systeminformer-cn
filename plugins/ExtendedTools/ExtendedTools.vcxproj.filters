@@ -27,10 +27,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.c">
+    <ClCompile Include="cacheprp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="objprp.c">
+    <ClCompile Include="main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="thrdact.c">
@@ -141,9 +141,6 @@
     <ClCompile Include="firmware_editor.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="objmgr.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="pooldb.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -156,7 +153,13 @@
     <ClCompile Include="pooltree.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="pwrgrid.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="tpm.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="wbcl.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="npudetails.c">

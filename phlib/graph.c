@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -89,10 +89,10 @@ RTL_ATOM PhGraphControlInitialization(
 }
 
 FORCEINLINE VOID PhpGetGraphPoint(
-    _In_ PPH_GRAPH_DRAW_INFO DrawInfo,
+    _In_ PPH_GRAPH_DRAW_INFO PH_RESTRICT DrawInfo,
     _In_ ULONG Index,
-    _Out_ PULONG H1,
-    _Out_ PULONG H2
+    _Out_ PULONG PH_RESTRICT H1,
+    _Out_ PULONG PH_RESTRICT H2
     )
 {
     if (Index < DrawInfo->LineDataCount)
@@ -148,11 +148,11 @@ FORCEINLINE VOID PhpGetGraphPoint(
  */
 VOID PhDrawGraphDirect(
     _In_ HDC hdc,
-    _In_ PVOID Bits,
-    _In_ PPH_GRAPH_DRAW_INFO DrawInfo
+    _In_ PVOID PH_RESTRICT Bits,
+    _In_ PPH_GRAPH_DRAW_INFO PH_RESTRICT DrawInfo
     )
 {
-    PULONG bits = Bits;
+    PULONG PH_RESTRICT bits = Bits;
     LONG width = DrawInfo->Width;
     LONG height = DrawInfo->Height;
     LONG numberOfPixels = width * height;
@@ -546,6 +546,7 @@ VOID PhDrawGraphDirect(
     if (DrawInfo->Text.Buffer)
     {
         HFONT oldFont = NULL;
+        HBRUSH brush;
 
         if (DrawInfo->TextFont)
             oldFont = SelectFont(hdc, DrawInfo->TextFont);
@@ -553,8 +554,10 @@ VOID PhDrawGraphDirect(
         SetBkMode(hdc, TRANSPARENT);
 
         // Fill in the text box.
+        brush = PhGetStockBrush(DC_BRUSH);
+        SelectBrush(hdc, brush);
         SetDCBrushColor(hdc, DrawInfo->TextBoxColor);
-        FillRect(hdc, &DrawInfo->TextBoxRect, PhGetStockBrush(DC_BRUSH));
+        FillRect(hdc, &DrawInfo->TextBoxRect, brush);
 
         // Draw the text.
         SetTextColor(hdc, DrawInfo->TextColor);
@@ -571,7 +574,7 @@ VOID PhDrawGraphDirect(
         if (DrawInfo->TextFont)
             oldFont = SelectFont(hdc, DrawInfo->TextFont);
 
-        //SetBkMode(hdc, TRANSPARENT);
+        SetBkMode(hdc, TRANSPARENT);
 
         // Fill in the text box.
         SetDCBrushColor(hdc, DrawInfo->TextBoxColor);
@@ -579,7 +582,13 @@ VOID PhDrawGraphDirect(
 
         // Draw the text.
         SetTextColor(hdc, DrawInfo->TextColor);
-        DrawText(hdc, DrawInfo->Text2.Buffer, (ULONG)DrawInfo->Text2.Length / sizeof(WCHAR), &DrawInfo->TextRect2, DT_NOCLIP);
+        DrawText(
+            hdc,
+            DrawInfo->Text2.Buffer,
+            (ULONG)DrawInfo->Text2.Length / sizeof(WCHAR),
+            &DrawInfo->TextRect2,
+            DT_NOCLIP | DT_NOPREFIX | DT_WORDBREAK | DT_EDITCONTROL
+            );
 
         if (oldFont)
             SelectFont(hdc, oldFont);
@@ -630,14 +639,14 @@ VOID PhSetGraphText(
     else if (Align & PH_ALIGN_RIGHT)
         boxRectangle.Left = DrawInfo->Width - boxRectangle.Width - Margin->right;
     else
-        boxRectangle.Left = (DrawInfo->Width - boxRectangle.Width) / (LONG)sizeof(WCHAR);
+        boxRectangle.Left = (DrawInfo->Width - boxRectangle.Width) / 2;
 
     if (Align & PH_ALIGN_TOP)
         boxRectangle.Top = Margin->top;
     else if (Align & PH_ALIGN_BOTTOM)
         boxRectangle.Top = DrawInfo->Height - boxRectangle.Height - Margin->bottom;
     else
-        boxRectangle.Top = (DrawInfo->Height - boxRectangle.Height) / (LONG)sizeof(WCHAR);
+        boxRectangle.Top = (DrawInfo->Height - boxRectangle.Height) / 2;
 
     // Calculate the text rectangle.
 
@@ -661,46 +670,76 @@ VOID PhSetGraphText2(
     )
 {
     HFONT oldFont = NULL;
-    SIZE textSize;
+    RECT calcRect =
+    {
+        0,
+        0,
+        max(0L, DrawInfo->Width - Margin->left - Margin->right - Padding->left - Padding->right),
+        DrawInfo->Height
+    };
+    UINT flags = DT_NOPREFIX | DT_WORDBREAK | DT_EDITCONTROL;
     PH_RECTANGLE boxRectangle;
     PH_RECTANGLE textRectangle;
 
+    // Horizontal alignment
+    if (FlagOn(Align, PH_ALIGN_LEFT))
+        flags |= DT_LEFT;
+    else if (FlagOn(Align, PH_ALIGN_RIGHT))
+        flags |= DT_RIGHT;
+    else
+        flags |= DT_CENTER;
+
+    // Vertical alignment (handled manually after measuring)
+    // DT_TOP is default; DT_VCENTER/DT_BOTTOM don't work with CALCRECT
+    flags |= DT_TOP;
+
+    // Select font for measurement
     if (DrawInfo->TextFont)
         oldFont = SelectFont(hdc, DrawInfo->TextFont);
 
+    // Measure multi-line text
     DrawInfo->Text2 = *Text;
-    GetTextExtentPoint32(hdc, Text->Buffer, (ULONG)Text->Length / sizeof(WCHAR), &textSize);
+    DrawText(
+        hdc,
+        Text->Buffer,
+        (LONG)(Text->Length / sizeof(WCHAR)),
+        &calcRect,
+        flags | DT_CALCRECT
+        );
 
     if (oldFont)
         SelectFont(hdc, oldFont);
 
-    // Calculate the box rectangle.
+    // Compute box size
+    LONG textWidth = calcRect.right - calcRect.left;
+    LONG textHeight = calcRect.bottom - calcRect.top;
 
-    boxRectangle.Width = textSize.cx + Padding->left + Padding->right;
-    boxRectangle.Height = textSize.cy + Padding->top + Padding->bottom;
+    boxRectangle.Width = textWidth + Padding->left + Padding->right;
+    boxRectangle.Height = textHeight + Padding->top + Padding->bottom;
 
-    if (Align & PH_ALIGN_LEFT)
+    // Horizontal positioning
+    if (FlagOn(Align, PH_ALIGN_LEFT))
         boxRectangle.Left = Margin->left;
-    else if (Align & PH_ALIGN_RIGHT)
+    else if (FlagOn(Align, PH_ALIGN_RIGHT))
         boxRectangle.Left = DrawInfo->Width - boxRectangle.Width - Margin->right;
     else
-        boxRectangle.Left = (DrawInfo->Width - boxRectangle.Width) / (LONG)sizeof(WCHAR);
+        boxRectangle.Left = (DrawInfo->Width - boxRectangle.Width) / 2;
 
-    if (Align & PH_ALIGN_TOP)
-        boxRectangle.Top = DrawInfo->TextBoxRect.bottom + Margin->top;
-    else if (Align & PH_ALIGN_BOTTOM)
+    // Vertical positioning
+    if (FlagOn(Align, PH_ALIGN_TOP))
+        boxRectangle.Top = Margin->top;
+    else if (FlagOn(Align, PH_ALIGN_BOTTOM))
         boxRectangle.Top = DrawInfo->Height - boxRectangle.Height - Margin->bottom;
     else
-        boxRectangle.Top = (DrawInfo->Height - boxRectangle.Height) / (LONG)sizeof(WCHAR);
+        boxRectangle.Top = (DrawInfo->Height - boxRectangle.Height) / 2;
 
-    // Calculate the text rectangle.
-
+    // Compute final text rectangle
     textRectangle.Left = boxRectangle.Left + Padding->left;
     textRectangle.Top = boxRectangle.Top + Padding->top;
-    textRectangle.Width = textSize.cx;
-    textRectangle.Height = textSize.cy;
+    textRectangle.Width = textWidth;
+    textRectangle.Height = textHeight;
 
-    // Save the rectangles.
+    // Save rectangles
     PhRectangleToRect(&DrawInfo->TextRect2, &textRectangle);
     PhRectangleToRect(&DrawInfo->TextBoxRect2, &boxRectangle);
 }
@@ -829,6 +868,30 @@ static VOID PhpDeleteFadeOutContext(
     }
 
     Context->FadeOutBits = NULL;
+}
+
+static VOID PhpDeleteDrawInfoFonts(
+    _Inout_ PPH_GRAPH_DRAW_INFO DrawInfo
+    )
+{
+    HFONT textFont = DrawInfo->CachedTextFont;
+    HFONT labelYFont = DrawInfo->CachedLabelYFont;
+
+    if (DrawInfo->CachedTextFont)
+    {
+        DeleteFont(textFont);
+        DrawInfo->CachedTextFont = NULL;
+    }
+
+    if (DrawInfo->CachedLabelYFont)
+    {
+        if (labelYFont != textFont)
+            DeleteFont(labelYFont);
+
+        DrawInfo->CachedLabelYFont = NULL;
+    }
+
+    DrawInfo->CachedFontDpi = 0;
 }
 
 static VOID PhpCreateFadeOutContext(
@@ -1043,6 +1106,7 @@ LRESULT CALLBACK PhpGraphWndProc(
                 DestroyWindow(context->TooltipHandle);
 
             PhpDeleteFadeOutContext(context);
+            PhpDeleteDrawInfoFonts(&context->DrawInfo);
             PhpDeleteBufferedContext(context);
             PhpFreeGraphContext(context);
         }
@@ -1343,7 +1407,8 @@ LRESULT CALLBACK PhpGraphWndProc(
         {
             PPH_GRAPH_DRAW_INFO drawInfo = (PPH_GRAPH_DRAW_INFO)lParam;
 
-            memcpy(drawInfo, &context->DrawInfo, sizeof(PH_GRAPH_DRAW_INFO));
+            // Copy only the public draw-info fields; the trailing cache fields are not copied.
+            memcpy(drawInfo, &context->DrawInfo, FIELD_OFFSET(PH_GRAPH_DRAW_INFO, CachedFontDpi));
         }
         return TRUE;
     case GCM_SETDRAWINFO:
@@ -1354,7 +1419,8 @@ LRESULT CALLBACK PhpGraphWndProc(
 
             width = context->DrawInfo.Width;
             height = context->DrawInfo.Height;
-            memcpy(&context->DrawInfo, drawInfo, sizeof(PH_GRAPH_DRAW_INFO));
+            // Copy only the public draw-info fields; the trailing cache fields are not copied.
+            memcpy(&context->DrawInfo, drawInfo, FIELD_OFFSET(PH_GRAPH_DRAW_INFO, CachedFontDpi));
             context->DrawInfo.Width = width;
             context->DrawInfo.Height = height;
         }
@@ -1379,6 +1445,12 @@ LRESULT CALLBACK PhpGraphWndProc(
             if (wParam)
             {
                 TOOLINFO toolInfo;
+
+                if (context->TooltipHandle)
+                {
+                    DestroyWindow(context->TooltipHandle);
+                    context->TooltipHandle = NULL;
+                }
 
                 context->TooltipHandle = PhCreateWindowEx(
                     TOOLTIPS_CLASS,

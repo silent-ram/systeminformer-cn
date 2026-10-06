@@ -6,20 +6,13 @@
  * Authors:
  *
  *     wj32    2015
- *     dmex    2019-2024
+ *     dmex    2019-2026
  *
  */
 
 #include <ph.h>
-
-#include <mapldr.h>
-#include <sddl.h>
-#include <shlwapi.h>
-#include <userenv.h>
-#include <ntuser.h>
-#include <xmllite.h>
-
 #include <apiimport.h>
+#include <mapldr.h>
 
 /**
  * Imports a procedure from a specified module.
@@ -160,16 +153,22 @@ PH_DEFINE_IMPORT(L"ntdll.dll", NtQueryInformationEnlistment);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtQueryInformationResourceManager);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtQueryInformationTransaction);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtQueryInformationTransactionManager);
+PH_DEFINE_IMPORT(L"ntdll.dll", NtAllocateVirtualMemoryEx);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtCreateProcessStateChange);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtChangeProcessState);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtCreateThreadStateChange);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtChangeThreadState);
+PH_DEFINE_IMPORT(L"ntdll.dll", NtCreateSectionEx);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtCopyFileChunk);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtCompareObjects);
+PH_DEFINE_IMPORT(L"ntdll.dll", NtCreateTimer2);
+PH_DEFINE_IMPORT(L"ntdll.dll", NtMapViewOfSectionEx);
+PH_DEFINE_IMPORT(L"ntdll.dll", NtSetTimer2);
 
 PH_DEFINE_IMPORT_NATIVE(L"ntdll.dll", NtSetInformationVirtualMemory);
 PH_DEFINE_IMPORT(L"ntdll.dll", LdrSystemDllInitBlock);
 PH_DEFINE_IMPORT(L"ntdll.dll", LdrResFindResource);
+PH_DEFINE_IMPORT(L"ntdll.dll", LdrResSearchResource);
 
 PH_DEFINE_IMPORT(L"ntdll.dll", RtlDefaultNpAcl);
 PH_DEFINE_IMPORT(L"ntdll.dll", RtlDelayExecution);
@@ -179,12 +178,15 @@ PH_DEFINE_IMPORT(L"ntdll.dll", RtlGetTokenNamedObjectPath);
 PH_DEFINE_IMPORT(L"ntdll.dll", RtlGetAppContainerNamedObjectPath);
 PH_DEFINE_IMPORT(L"ntdll.dll", RtlGetAppContainerSidType);
 PH_DEFINE_IMPORT(L"ntdll.dll", RtlGetAppContainerParent);
+PH_DEFINE_IMPORT(L"ntdll.dll", RtlStringFromGUIDEx);
+
 
 PH_DEFINE_IMPORT(L"ntdll.dll", PssNtCaptureSnapshot);
 PH_DEFINE_IMPORT(L"ntdll.dll", PssNtQuerySnapshot);
 PH_DEFINE_IMPORT(L"ntdll.dll", PssNtFreeSnapshot);
 PH_DEFINE_IMPORT(L"ntdll.dll", PssNtFreeRemoteSnapshot);
 PH_DEFINE_IMPORT(L"ntdll.dll", NtPssCaptureVaSpaceBulk);
+PH_DEFINE_IMPORT(L"ntdll.dll", PssNtValidateDescriptor);
 PH_DEFINE_IMPORT(L"ntdll.dll", TpSetPoolThreadBasePriority);
 
 PH_DEFINE_IMPORT(L"advapi32.dll", ConvertSecurityDescriptorToStringSecurityDescriptorW);
@@ -208,6 +210,9 @@ PH_DEFINE_IMPORT(L"userenv.dll", GetAppContainerFolderPath);
 PH_DEFINE_IMPORT(L"user32.dll", ConsoleControl);
 PH_DEFINE_IMPORT(L"user32.dll", GetCurrentInputMessageSource);
 PH_DEFINE_IMPORT(L"user32.dll", GetCIMSSM);
+PH_DEFINE_IMPORT(L"user32.dll", SetCoalescableTimer);
+PH_DEFINE_IMPORT(L"win32u.dll", NtGdiGetEntry);
+PH_DEFINE_IMPORT(L"win32u.dll", NtUserBuildHwndList);
 
 PH_DEFINE_IMPORT(L"xmllite.dll", CreateXmlReader);
 PH_DEFINE_IMPORT(L"xmllite.dll", CreateXmlWriter);

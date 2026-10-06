@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     jxy-s   2022-2024
+ *     jxy-s   2022-2026
  *
  */
 
@@ -27,6 +27,7 @@
  *
  * \return Pointer to the found element, NULL if not found.
  */
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 _Success_(return != NULL)
 PVOID KphBinarySearch(
@@ -38,6 +39,8 @@ PVOID KphBinarySearch(
     _In_opt_ PVOID Context
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
     return bsearch_s(Key,
                      Base,
                      NumberOfElements,
@@ -55,6 +58,7 @@ PVOID KphBinarySearch(
  * \param[in] Callback Comparison callback.
  * \param[in] Context Optional context for the callback.
  */
+_IRQL_requires_max_(HIGH_LEVEL)
 VOID KphQuickSort(
     _Inout_updates_bytes_(NumberOfElements * SizeOfElement) PVOID Base,
     _In_ ULONG NumberOfElements,
@@ -63,6 +67,8 @@ VOID KphQuickSort(
     _In_opt_ PVOID Context
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
     qsort_s(Base, NumberOfElements, SizeOfElement, Callback, Context);
 }
 
@@ -77,6 +83,7 @@ VOID KphQuickSort(
  * \return Pointer to the beginning of the first found pattern, NULL if the
  * pattern is not found.
  */
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 _Success_(return != NULL)
 PVOID KphSearchMemory(
@@ -88,6 +95,8 @@ PVOID KphSearchMemory(
 {
     PBYTE buffer;
     PBYTE end;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
 
     if (!BufferLength || !PatternLength)
     {
@@ -147,6 +156,256 @@ PVOID KphSearchMemory(
 }
 
 /**
+ * \brief Retrieves the process sequence number for a given process.
+ *
+ * \param[in] Process The process to get the sequence number of.
+ *
+ * \return The sequence number key.
+ */
+_IRQL_requires_max_(HIGH_LEVEL)
+ULONG64 KphGetProcessSequenceNumber(
+    _In_ PEPROCESS Process
+    )
+{
+    ULONG64 sequence;
+    PKPH_PROCESS_CONTEXT process;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (KphDynPsGetProcessSequenceNumber)
+    {
+        return KphDynPsGetProcessSequenceNumber(Process);
+    }
+
+    process = KphGetEProcessContext(Process);
+    if (!process)
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      UTIL,
+                      "Failed to get process sequence number for PID %lu",
+                      HandleToULong(PsGetProcessId(Process)));
+
+        return 0;
+    }
+
+    sequence = process->SequenceNumber;
+
+    KphDereferenceObjectDeferDelete(process);
+
+    return sequence;
+}
+
+/**
+ * \brief Retrieves the process start key for a given process.
+ *
+ * \param[in] Process The process to get the start key of.
+ *
+ * \return The process start key.
+ */
+_IRQL_requires_max_(HIGH_LEVEL)
+ULONG64 KphGetProcessStartKey(
+    _In_ PEPROCESS Process
+    )
+{
+    ULONG64 key;
+    PKPH_PROCESS_CONTEXT process;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (KphDynPsGetProcessStartKey)
+    {
+        return KphDynPsGetProcessStartKey(Process);
+    }
+
+    process = KphGetEProcessContext(Process);
+    if (!process)
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      UTIL,
+                      "Failed to get process start key for PID %lu",
+                      HandleToULong(PsGetProcessId(Process)));
+
+        return 0;
+    }
+
+    if (process->ProcessStartKey)
+    {
+        key = process->ProcessStartKey;
+    }
+    else
+    {
+        key = (process->SequenceNumber | ((ULONG64)SharedUserData->BootId << 48));
+    }
+
+    KphDereferenceObjectDeferDelete(process);
+
+    return key;
+}
+
+/**
+ * \brief Retrieves the current thread's sub-process tag.
+ *
+ * \return The current thread's sub-process tag.
+ */
+_IRQL_requires_max_(HIGH_LEVEL)
+PVOID KphGetCurrentThreadSubProcessTag(
+    VOID
+    )
+{
+    PKPH_THREAD_CONTEXT thread;
+    PVOID subProcessTag;
+    PTEB teb;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (PsIsSystemThread(PsGetCurrentThread()))
+    {
+        return NULL;
+    }
+
+    //
+    // We support lookups at any IRQL. To achieve this we cache the last lookup
+    // in the thread context. Above APC_LEVEL use the cache. Otherwise go do
+    // the lookup and cache the result in the thread context.
+    //
+
+    if (KeGetCurrentIrql() > APC_LEVEL)
+    {
+        subProcessTag = NULL;
+
+        thread = KphGetCurrentThreadContext();
+        if (thread)
+        {
+            subProcessTag = thread->SubProcessTag;
+
+            KphDereferenceObjectDeferDelete(thread);
+        }
+
+        return subProcessTag;
+    }
+
+    teb = PsGetCurrentThreadTeb();
+    if (!teb)
+    {
+        return NULL;
+    }
+
+    __try
+    {
+        subProcessTag = ReadPointerFromUser(&teb->SubProcessTag);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return NULL;
+    }
+
+    thread = KphGetCurrentThreadContext();
+    if (thread)
+    {
+        thread->SubProcessTag = subProcessTag;
+
+        KphDereferenceObject(thread);
+    }
+
+    return subProcessTag;
+}
+
+/**
+ * \brief Retrieves a thread's sub-process tag.
+ *
+ * \param[in] Thread The thread to get the sub-process tag of.
+ * \param[in] CacheOnly If TRUE, only the cached value is returned. This is
+ * useful when the caller knows that touching the TEB is not safe.
+ *
+ * \return The thread's sub-process tag.
+ */
+_IRQL_requires_max_(HIGH_LEVEL)
+PVOID KphGetThreadSubProcessTagEx(
+    _In_ PETHREAD Thread,
+    _In_ BOOLEAN CacheOnly
+    )
+{
+    PKPH_THREAD_CONTEXT thread;
+    PVOID subProcessTag;
+    PTEB teb;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (PsIsSystemThread(Thread))
+    {
+        return NULL;
+    }
+
+    //
+    // We support lookups at any IRQL and across process boundaries. To achieve
+    // this we cache the last lookup in the thread context. When CacheOnly is
+    // set, above APC_LEVEL, or across process boundaries use the cache.
+    // Otherwise go do the lookup and cache the result in the thread context.
+    // We choose not to attach to a process to retrieve the information to avoid
+    // performance penalties.
+    //
+
+    if (CacheOnly ||
+        (KeGetCurrentIrql() > APC_LEVEL) ||
+        (PsGetThreadProcess(Thread) != PsGetCurrentProcess()))
+    {
+        subProcessTag = NULL;
+
+        thread = KphGetEThreadContext(Thread);
+        if (thread)
+        {
+            subProcessTag = thread->SubProcessTag;
+
+            KphDereferenceObjectDeferDelete(thread);
+        }
+
+        return subProcessTag;
+    }
+
+    teb = PsGetThreadTeb(Thread);
+    if (!teb)
+    {
+        return NULL;
+    }
+
+    __try
+    {
+        subProcessTag = ReadPointerFromUser(&teb->SubProcessTag);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return NULL;
+    }
+
+    thread = KphGetEThreadContext(Thread);
+    if (thread)
+    {
+        thread->SubProcessTag = subProcessTag;
+
+        KphDereferenceObject(thread);
+    }
+
+    return subProcessTag;
+}
+
+/**
+ * \brief Retrieves a thread's sub-process tag.
+ *
+ * \param[in] Thread The thread to get the sub-process tag of.
+ *
+ * \return The thread's sub-process tag.
+ */
+_IRQL_requires_max_(HIGH_LEVEL)
+PVOID KphGetThreadSubProcessTag(
+    _In_ PETHREAD Thread
+    )
+{
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    return KphGetThreadSubProcessTagEx(Thread, FALSE);
+}
+
+/**
  * \brief Acquires rundown. On successful return the caller should release
  * the rundown using KphReleaseRundown.
  *
@@ -178,255 +437,6 @@ VOID KphReleaseRundown(
     KPH_NPAGED_CODE_DISPATCH_MAX();
 
     ExReleaseRundownProtection(Rundown);
-}
-
-/**
- * \brief Retrieves the process sequence number for a given process.
- *
- * \param[in] Process The process to get the sequence number of.
- *
- * \return The sequence number key.
- */
-_IRQL_requires_max_(DISPATCH_LEVEL)
-ULONG64 KphGetProcessSequenceNumber(
-    _In_ PEPROCESS Process
-    )
-{
-    ULONG64 sequence;
-    PKPH_PROCESS_CONTEXT process;
-
-    KPH_NPAGED_CODE_DISPATCH_MAX();
-
-    if (KphDynPsGetProcessSequenceNumber)
-    {
-        return KphDynPsGetProcessSequenceNumber(Process);
-    }
-
-    process = KphGetEProcessContext(Process);
-    if (!process)
-    {
-        KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      GENERAL,
-                      "Failed to get process sequence number for PID %lu",
-                      HandleToULong(PsGetProcessId(Process)));
-
-        return 0;
-    }
-
-    sequence = process->SequenceNumber;
-
-    KphDereferenceObject(process);
-
-    return sequence;
-}
-
-/**
- * \brief Retrieves the process start key for a given process.
- *
- * \param[in] Process The process to get the start key of.
- *
- * \return The process start key.
- */
-_IRQL_requires_max_(DISPATCH_LEVEL)
-ULONG64 KphGetProcessStartKey(
-    _In_ PEPROCESS Process
-    )
-{
-    ULONG64 key;
-    PKPH_PROCESS_CONTEXT process;
-
-    KPH_NPAGED_CODE_DISPATCH_MAX();
-
-    if (KphDynPsGetProcessStartKey)
-    {
-        return KphDynPsGetProcessStartKey(Process);
-    }
-
-    process = KphGetEProcessContext(Process);
-    if (!process)
-    {
-        KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      GENERAL,
-                      "Failed to get process start key for PID %lu",
-                      HandleToULong(PsGetProcessId(Process)));
-
-        return 0;
-    }
-
-    if (process->ProcessStartKey)
-    {
-        key = process->ProcessStartKey;
-    }
-    else
-    {
-        key = (process->SequenceNumber | ((ULONG64)SharedUserData->BootId << 48));
-    }
-
-    KphDereferenceObject(process);
-
-    return key;
-}
-
-/**
- * \brief Retrieves the current thread's sub-process tag.
- *
- * \return The current thread's sub-process tag.
- */
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PVOID KphGetCurrentThreadSubProcessTag(
-    VOID
-    )
-{
-    PKPH_THREAD_CONTEXT thread;
-    PVOID subProcessTag;
-    PTEB teb;
-
-    KPH_NPAGED_CODE_DISPATCH_MAX();
-
-    if (PsIsSystemThread(PsGetCurrentThread()))
-    {
-        return NULL;
-    }
-
-    //
-    // We support lookups at dispatch. To achieve this we cache the last lookup
-    // in the thread context. If we're at dispatch use the cache. Otherwise go
-    // do the lookup and cache the result in the thread context.
-    //
-
-    if (KeGetCurrentIrql() > APC_LEVEL)
-    {
-        subProcessTag = NULL;
-
-        thread = KphGetCurrentThreadContext();
-        if (thread)
-        {
-            subProcessTag = thread->SubProcessTag;
-
-            KphDereferenceObject(thread);
-        }
-
-        return subProcessTag;
-    }
-
-    teb = PsGetCurrentThreadTeb();
-    if (!teb)
-    {
-        return NULL;
-    }
-
-    __try
-    {
-        subProcessTag = teb->SubProcessTag;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return NULL;
-    }
-
-    thread = KphGetCurrentThreadContext();
-    if (thread)
-    {
-        thread->SubProcessTag = subProcessTag;
-
-        KphDereferenceObject(thread);
-    }
-
-    return subProcessTag;
-}
-
-/**
- * \brief Retrieves a thread's sub-process tag.
- *
- * \param[in] Thread The thread to get the sub-process tag of.
- * \param[in] CacheOnly If TRUE, only the cached value is returned. This is
- * useful when the caller knows that touching the TEB is not safe.
- *
- * \return The thread's sub-process tag.
- */
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PVOID KphGetThreadSubProcessTagEx(
-    _In_ PETHREAD Thread,
-    _In_ BOOLEAN CacheOnly
-    )
-{
-    PKPH_THREAD_CONTEXT thread;
-    PVOID subProcessTag;
-    PTEB teb;
-
-    KPH_NPAGED_CODE_DISPATCH_MAX();
-
-    if (PsIsSystemThread(Thread))
-    {
-        return NULL;
-    }
-
-    //
-    // We support lookups at dispatch and across process boundaries. To achieve
-    // this we cache the last lookup in the thread context. If we're at dispatch
-    // or across process boundaries use the cache. Otherwise go do the lookup
-    // and cache the result in the thread context. We choose not to attach to
-    // a process to retrieve the information to avoid performance penalties.
-    //
-
-    if (CacheOnly ||
-        (KeGetCurrentIrql() > APC_LEVEL) ||
-        (PsGetThreadProcess(Thread) != PsGetCurrentProcess()))
-    {
-        subProcessTag = NULL;
-
-        thread = KphGetEThreadContext(Thread);
-        if (thread)
-        {
-            subProcessTag = thread->SubProcessTag;
-
-            KphDereferenceObject(thread);
-        }
-
-        return subProcessTag;
-    }
-
-    teb = PsGetThreadTeb(Thread);
-    if (!teb)
-    {
-        return NULL;
-    }
-
-    __try
-    {
-        subProcessTag = teb->SubProcessTag;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return NULL;
-    }
-
-    thread = KphGetEThreadContext(Thread);
-    if (thread)
-    {
-        thread->SubProcessTag = subProcessTag;
-
-        KphDereferenceObject(thread);
-    }
-
-    return subProcessTag;
-}
-
-/**
- * \brief Retrieves a thread's sub-process tag.
- *
- * \param[in] Thread The thread to get the sub-process tag of.
- *
- * \return The thread's sub-process tag.
- */
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PVOID KphGetThreadSubProcessTag(
-    _In_ PETHREAD Thread
-    )
-{
-    KPH_NPAGED_CODE_DISPATCH_MAX();
-
-    return KphGetThreadSubProcessTagEx(Thread, FALSE);
 }
 
 /**
@@ -561,14 +571,21 @@ BOOLEAN KphIsSameFile(
     first = FirstFileObject->SectionObjectPointer;
     second = SecondFileObject->SectionObjectPointer;
 
-    if (first != second)
+    if (!first || !second)
     {
         return FALSE;
     }
 
-    if (!first)
+    if (first == second)
     {
         return TRUE;
+    }
+
+    if (!first->DataSectionObject &&
+        !first->SharedCacheMap &&
+        !first->ImageSectionObject)
+    {
+        return FALSE;
     }
 
     if ((first->DataSectionObject != second->DataSectionObject) ||
@@ -602,13 +619,15 @@ NTSTATUS KphAcquireReference(
     _Out_opt_ PLONG PreviousCount
     )
 {
+    LONG count;
+
     KPH_PAGED_CODE();
+
+    count = ReadAcquire(&Reference->Count);
 
     for (;;)
     {
-        LONG count;
-
-        count = ReadAcquire(&Reference->Count);
+        LONG expected;
 
         if (count == LONG_MAX)
         {
@@ -620,19 +639,20 @@ NTSTATUS KphAcquireReference(
             return STATUS_INTEGER_OVERFLOW;
         }
 
-        if (InterlockedCompareExchange(&Reference->Count,
-                                       count + 1,
-                                       count) != count)
-        {
-            continue;
-        }
+        expected = count;
 
-        if (PreviousCount)
+        count = InterlockedCompareExchange(&Reference->Count,
+                                           count + 1,
+                                           expected);
+        if (count == expected)
         {
-            *PreviousCount = count;
-        }
+            if (PreviousCount)
+            {
+                *PreviousCount = count;
+            }
 
-        return STATUS_SUCCESS;
+            return STATUS_SUCCESS;
+        }
     }
 }
 
@@ -655,13 +675,15 @@ NTSTATUS KphReleaseReference(
     _Out_opt_ PLONG PreviousCount
     )
 {
+    LONG count;
+
     KPH_PAGED_CODE();
+
+    count = ReadAcquire(&Reference->Count);
 
     for (;;)
     {
-        LONG count;
-
-        count = ReadAcquire(&Reference->Count);
+        LONG expected;
 
         if (count == 0)
         {
@@ -673,19 +695,20 @@ NTSTATUS KphReleaseReference(
             return STATUS_INTEGER_OVERFLOW;
         }
 
-        if (InterlockedCompareExchange(&Reference->Count,
-                                       count - 1,
-                                       count) != count)
-        {
-            continue;
-        }
+        expected = count;
 
-        if (PreviousCount)
+        count = InterlockedCompareExchange(&Reference->Count,
+                                           count - 1,
+                                           count);
+        if (count == expected)
         {
-            *PreviousCount = count;
-        }
+            if (PreviousCount)
+            {
+                *PreviousCount = count;
+            }
 
-        return STATUS_SUCCESS;
+            return STATUS_SUCCESS;
+        }
     }
 }
 
@@ -824,6 +847,12 @@ NTSTATUS KphQueryRegistryString(
         goto Exit;
     }
 
+    if (resultLength < sizeof(KEY_VALUE_PARTIAL_INFORMATION))
+    {
+        status = STATUS_INFO_LENGTH_MISMATCH;
+        goto Exit;
+    }
+
     status = RtlULongAdd(info->DataLength, sizeof(WCHAR), &length);
     if (!NT_SUCCESS(status))
     {
@@ -863,7 +892,7 @@ NTSTATUS KphQueryRegistryString(
 
         NT_ASSERT(info->DataLength >= sizeof(WCHAR));
 
-        if (sz[(info->DataLength / sizeof(WCHAR)) - 1] == L'\0')
+        if (sz[(info->DataLength / sizeof(WCHAR)) - 1] == UNICODE_NULL)
         {
             string->Length -= sizeof(WCHAR);
         }
@@ -965,6 +994,12 @@ NTSTATUS KphQueryRegistryBinary(
         goto Exit;
     }
 
+    if (resultLength < sizeof(KEY_VALUE_PARTIAL_INFORMATION))
+    {
+        status = STATUS_INFO_LENGTH_MISMATCH;
+        goto Exit;
+    }
+
     info = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
 
     if (info->Type != REG_BINARY)
@@ -1022,7 +1057,7 @@ NTSTATUS KphQueryRegistryULong(
     )
 {
     NTSTATUS status;
-    BYTE buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONGLONG)];
+    BYTE buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG64)];
     ULONG resultLength;
     PKEY_VALUE_PARTIAL_INFORMATION info;
 
@@ -1041,8 +1076,14 @@ NTSTATUS KphQueryRegistryULong(
         return status;
     }
 
+    if (resultLength < sizeof(KEY_VALUE_PARTIAL_INFORMATION))
+    {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
     info = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
 
+#pragma prefast(suppress: 28199) // possibly uninitialized
     if (info->Type != REG_DWORD)
     {
         return STATUS_OBJECT_TYPE_MISMATCH;
@@ -1108,7 +1149,7 @@ NTSTATUS KphMapViewInSystem(
         status = ZwQueryInformationFile(FileHandle,
                                         &ioStatusBlock,
                                         &fileInfo,
-                                        sizeof(fileInfo),
+                                        sizeof(FILE_STANDARD_INFORMATION),
                                         FileStandardInformation);
         if (!NT_SUCCESS(status))
         {
@@ -1323,7 +1364,7 @@ VOID KphFreeNameFileObject(
  *
  * \return TRUE if the subject has the desired privilege, FALSE otherwise.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 BOOLEAN KphSinglePrivilegeCheckEx(
     _In_ LUID PrivilegeValue,
     _In_ PSECURITY_SUBJECT_CONTEXT SubjectSecurityContext,
@@ -1332,7 +1373,7 @@ BOOLEAN KphSinglePrivilegeCheckEx(
 {
     PRIVILEGE_SET requiredPrivileges;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     requiredPrivileges.PrivilegeCount = 1;
     requiredPrivileges.Control = PRIVILEGE_SET_ALL_NECESSARY;
@@ -1352,7 +1393,7 @@ BOOLEAN KphSinglePrivilegeCheckEx(
  *
  * \return TRUE if the subject has the desired privilege, FALSE otherwise.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 BOOLEAN KphSinglePrivilegeCheck(
     _In_ LUID PrivilegeValue,
     _In_ KPROCESSOR_MODE AccessMode
@@ -1361,7 +1402,7 @@ BOOLEAN KphSinglePrivilegeCheck(
     BOOLEAN accessGranted;
     SECURITY_SUBJECT_CONTEXT subjectContext;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     SeCaptureSubjectContext(&subjectContext);
 
@@ -1385,8 +1426,7 @@ BOOLEAN KphSinglePrivilegeCheck(
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Must_inspect_result_
 NTSTATUS KphpGetKernelFileName(
-    _Out_ _At_(FileName->Buffer, __drv_allocatesMem(Mem))
-    PUNICODE_STRING FileName
+    _Out_allocatesMem_ PUNICODE_STRING FileName
     )
 {
     NTSTATUS status;
@@ -1397,12 +1437,12 @@ NTSTATUS KphpGetKernelFileName(
 
     RtlZeroMemory(FileName, sizeof(UNICODE_STRING));
 
-    RtlZeroMemory(&info, sizeof(info));
+    RtlZeroMemory(&info, sizeof(SYSTEM_SINGLE_MODULE_INFORMATION));
 
     info.TargetModuleAddress = (PVOID)ObCloseHandle;
     status = ZwQuerySystemInformation(SystemSingleModuleInformation,
                                       &info,
-                                      sizeof(info),
+                                      sizeof(SYSTEM_SINGLE_MODULE_INFORMATION),
                                       NULL);
     if (!NT_SUCCESS(status))
     {
@@ -1469,31 +1509,30 @@ Exit:
 }
 
 /**
- * \brief Retrieves the file version from a file.
+ * \brief Retrieves the file version from a mapped file.
  *
- * \param[in] FileName The name of the file to get the version from.
+ * \param[in] ImageBase The base address of the mapped file.
+ * \param[in] ViewSize The size of the mapped file.
+ * \param[in] ResourceLanguage The language of the resource to locate.
  * \param[out] Version Set to the file version.
  *
  * \return Successful or errant status.
  */
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Must_inspect_result_
-NTSTATUS KphGetFileVersion(
-    _In_ PCUNICODE_STRING FileName,
+NTSTATUS KphpParseFileVersion(
+    _In_ PVOID ImageBase,
+    _In_ SIZE_T ViewSize,
+    _In_ ULONG_PTR ResourceLanguage,
     _Out_ PKPH_FILE_VERSION Version
     )
 {
     NTSTATUS status;
-    OBJECT_ATTRIBUTES objectAttributes;
-    HANDLE fileHandle;
-    IO_STATUS_BLOCK ioStatusBlock;
-    PVOID imageBase;
-    SIZE_T imageSize;
-    PVOID imageEnd;
     LDR_RESOURCE_INFO resourceInfo;
     PIMAGE_RESOURCE_DATA_ENTRY resourceData;
     PVOID resourceBuffer;
     ULONG resourceLength;
+    PVOID imageEnd;
     PVS_VERSION_INFO_STRUCT versionInfo;
     UNICODE_STRING keyName;
     PVS_FIXEDFILEINFO fileInfo;
@@ -1502,64 +1541,13 @@ NTSTATUS KphGetFileVersion(
 
     RtlZeroMemory(Version, sizeof(KPH_FILE_VERSION));
 
-    imageBase = NULL;
-    fileHandle = NULL;
-
-    InitializeObjectAttributes(&objectAttributes,
-                               (PUNICODE_STRING)FileName,
-                               OBJ_KERNEL_HANDLE,
-                               NULL,
-                               NULL);
-
-    status = KphCreateFile(&fileHandle,
-                           FILE_READ_ACCESS | SYNCHRONIZE,
-                           &objectAttributes,
-                           &ioStatusBlock,
-                           NULL,
-                           FILE_ATTRIBUTE_NORMAL,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           FILE_OPEN,
-                           FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-                           NULL,
-                           0,
-                           IO_IGNORE_SHARE_ACCESS_CHECK,
-                           KernelMode);
-    if (!NT_SUCCESS(status))
-    {
-        KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      UTIL,
-                      "KphCreateFile failed: %!STATUS!",
-                      status);
-
-        fileHandle = NULL;
-        goto Exit;
-    }
-
-    imageSize = 0;
-    status = KphMapViewInSystem(fileHandle,
-                                KPH_MAP_IMAGE,
-                                &imageBase,
-                                &imageSize);
-    if (!NT_SUCCESS(status))
-    {
-        KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      UTIL,
-                      "KphMapViewInSystem failed: %!STATUS!",
-                      status);
-
-        imageBase = NULL;
-        goto Exit;
-    }
-
-    imageEnd = Add2Ptr(imageBase, imageSize);
-
     resourceInfo.Type = (ULONG_PTR)VS_FILE_INFO;
     resourceInfo.Name = (ULONG_PTR)MAKEINTRESOURCEW(VS_VERSION_INFO);
-    resourceInfo.Language = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+    resourceInfo.Language = ResourceLanguage;
 
     __try
     {
-        status = LdrFindResource_U(imageBase,
+        status = LdrFindResource_U(ImageBase,
                                    &resourceInfo,
                                    RESOURCE_DATA_LEVEL,
                                    &resourceData);
@@ -1573,7 +1561,7 @@ NTSTATUS KphGetFileVersion(
             goto Exit;
         }
 
-        status = LdrAccessResource(imageBase,
+        status = LdrAccessResource(ImageBase,
                                    resourceData,
                                    &resourceBuffer,
                                    &resourceLength);
@@ -1586,6 +1574,8 @@ NTSTATUS KphGetFileVersion(
 
             goto Exit;
         }
+
+        imageEnd = Add2Ptr(ImageBase, ViewSize);
 
         if (Add2Ptr(resourceBuffer, resourceLength) >= imageEnd)
         {
@@ -1683,8 +1673,139 @@ NTSTATUS KphGetFileVersion(
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        RtlZeroMemory(Version, sizeof(KPH_FILE_VERSION));
         status = GetExceptionCode();
     }
+
+Exit:
+
+    return status;
+}
+
+/**
+ * \brief Retrieves the file version from a file.
+ *
+ * \param[in] FileName The name of the file to get the version from.
+ * \param[out] Version Set to the file version.
+ *
+ * \return Successful or errant status.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS KphGetFileVersion(
+    _In_ PCUNICODE_STRING FileName,
+    _Out_ PKPH_FILE_VERSION Version
+    )
+{
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objectAttributes;
+    HANDLE fileHandle;
+    IO_STATUS_BLOCK ioStatusBlock;
+    PVOID imageBase;
+    SIZE_T imageSize;
+
+    KPH_PAGED_CODE_PASSIVE();
+
+    RtlZeroMemory(Version, sizeof(KPH_FILE_VERSION));
+
+    imageBase = NULL;
+    fileHandle = NULL;
+
+    InitializeObjectAttributes(&objectAttributes,
+                               (PUNICODE_STRING)FileName,
+                               OBJ_KERNEL_HANDLE,
+                               NULL,
+                               NULL);
+
+    status = KphCreateFile(&fileHandle,
+                           FILE_READ_ACCESS | SYNCHRONIZE,
+                           &objectAttributes,
+                           &ioStatusBlock,
+                           NULL,
+                           FILE_ATTRIBUTE_NORMAL,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           FILE_OPEN,
+                           FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                           NULL,
+                           0,
+                           IO_IGNORE_SHARE_ACCESS_CHECK,
+                           KernelMode);
+    if (!NT_SUCCESS(status))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      UTIL,
+                      "KphCreateFile failed: %!STATUS!",
+                      status);
+
+        fileHandle = NULL;
+        goto Exit;
+    }
+
+    imageSize = 0;
+    status = KphMapViewInSystem(fileHandle,
+                                KPH_MAP_IMAGE,
+                                &imageBase,
+                                &imageSize);
+    if (!NT_SUCCESS(status))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      UTIL,
+                      "KphMapViewInSystem failed: %!STATUS!",
+                      status);
+
+        imageBase = NULL;
+        goto Exit;
+    }
+
+    status = KphpParseFileVersion(imageBase,
+                                  imageSize,
+                                  MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                                  Version);
+    if (NT_SUCCESS(status))
+    {
+        goto Exit;
+    }
+
+    KphTracePrint(TRACE_LEVEL_VERBOSE,
+                  UTIL,
+                  "KphpParseFileVersion failed: %!STATUS!",
+                  status);
+
+    //
+    // Try again with a neutral sub language.
+    //
+
+    status = KphpParseFileVersion(imageBase,
+                                  imageSize,
+                                  MAKELANGID(LANG_ENGLISH, SUBLANG_NEUTRAL),
+                                  Version);
+    if (NT_SUCCESS(status))
+    {
+        goto Exit;
+    }
+
+    KphTracePrint(TRACE_LEVEL_VERBOSE,
+                  UTIL,
+                  "KphpParseFileVersion failed: %!STATUS!",
+                  status);
+
+    //
+    // Try again with neutral language and sub language.
+    //
+
+    status = KphpParseFileVersion(imageBase,
+                                  imageSize,
+                                  MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL),
+                                  Version);
+    if (NT_SUCCESS(status))
+    {
+        goto Exit;
+    }
+
+    KphTracePrint(TRACE_LEVEL_VERBOSE,
+                  UTIL,
+                  "KphpParseFileVersion failed: %!STATUS!",
+                  status);
 
 Exit:
 
@@ -1725,6 +1846,11 @@ NTSTATUS KphpSetCfgCallTargetInformation(
 
     KPH_PAGED_CODE_PASSIVE();
 
+#ifdef _WIN64
+    C_ASSERT(sizeof(CFG_CALL_TARGET_INFO) == 16);
+    C_ASSERT(sizeof(CFG_CALL_TARGET_LIST_INFORMATION) == 40);
+#endif
+
     memoryRange.VirtualAddress = PAGE_ALIGN(VirtualAddress);
     memoryRange.NumberOfBytes = PAGE_SIZE;
 
@@ -1733,7 +1859,7 @@ NTSTATUS KphpSetCfgCallTargetInformation(
 
     numberOfEntriesProcessed = 0;
 
-    RtlZeroMemory(&targetListInfo, sizeof(targetListInfo));
+    RtlZeroMemory(&targetListInfo, sizeof(CFG_CALL_TARGET_LIST_INFORMATION));
     targetListInfo.NumberOfEntries = 1;
     targetListInfo.NumberOfEntriesProcessed = &numberOfEntriesProcessed;
     targetListInfo.CallTargetInfo = &targetInfo;
@@ -1743,7 +1869,7 @@ NTSTATUS KphpSetCfgCallTargetInformation(
                                          1,
                                          &memoryRange,
                                          &targetListInfo,
-                                         sizeof(targetListInfo));
+                                         sizeof(CFG_CALL_TARGET_LIST_INFORMATION));
 }
 
 /**
@@ -1823,16 +1949,14 @@ NTSTATUS KphGetFileNameFinalComponent(
 
     for (USHORT i = (FileName->Length / sizeof(WCHAR)); i > 0; i--)
     {
-        if (FileName->Buffer[i - 1] != L'\\')
+        if (FileName->Buffer[i - 1] == OBJ_NAME_PATH_SEPARATOR)
         {
-            continue;
+            FinalComponent->Buffer = &FileName->Buffer[i];
+            FinalComponent->Length = FileName->Length - (i * sizeof(WCHAR));
+            FinalComponent->MaximumLength = FinalComponent->Length;
+
+            return STATUS_SUCCESS;
         }
-
-        FinalComponent->Buffer = &FileName->Buffer[i];
-        FinalComponent->Length = FileName->Length - (i * sizeof(WCHAR));
-        FinalComponent->MaximumLength = FinalComponent->Length;
-
-        return STATUS_SUCCESS;
     }
 
     RtlZeroMemory(FinalComponent, sizeof(*FinalComponent));
@@ -1865,6 +1989,12 @@ NTSTATUS KphGetProcessImageName(
     fileName = PsGetProcessImageFileName(Process);
 
     status = RtlStringCbLengthA((STRSAFE_PCNZCH)fileName, 15, &len);
+    if (status == STATUS_INVALID_PARAMETER)
+    {
+        len = 15;
+        status = STATUS_SUCCESS;
+    }
+
     if (NT_SUCCESS(status))
     {
         ANSI_STRING string;
@@ -1943,7 +2073,7 @@ NTSTATUS KphOpenParametersKey(
 
     InitializeObjectAttributes(&objectAttributes,
                                &parametersKeyName,
-                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               OBJ_KERNEL_HANDLE | OBJ_DONT_REPARSE,
                                NULL,
                                NULL);
 
@@ -1951,7 +2081,7 @@ NTSTATUS KphOpenParametersKey(
     if (!NT_SUCCESS(status))
     {
         KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      GENERAL,
+                      UTIL,
                       "Unable to open Parameters key: %!STATUS!",
                       status);
 
@@ -2137,8 +2267,8 @@ NTSTATUS KphGetSigningLevel(
         return STATUS_NOINTERFACE;
     }
 
-    RtlZeroMemory(&policyInfo, sizeof(policyInfo));
-    RtlZeroMemory(&timeStampPolicyInfo, sizeof(timeStampPolicyInfo));
+    RtlZeroMemory(&policyInfo, sizeof(MINCRYPT_POLICY_INFO));
+    RtlZeroMemory(&timeStampPolicyInfo, sizeof(MINCRYPT_POLICY_INFO));
     thumbprintSize = sizeof(thumbprint);
     thumbprintAlgorithm = 0;
 
@@ -2167,8 +2297,8 @@ NTSTATUS KphGetSigningLevel(
     }
     else
     {
-        RtlZeroMemory(&issuer, sizeof(issuer));
-        RtlZeroMemory(&subject, sizeof(subject));
+        RtlZeroMemory(&issuer, sizeof(ANSI_STRING));
+        RtlZeroMemory(&subject, sizeof(ANSI_STRING));
     }
 
     if (!NT_SUCCESS(status) ||
@@ -2187,7 +2317,7 @@ NTSTATUS KphGetSigningLevel(
     }
 
     KphTracePrint(TRACE_LEVEL_VERBOSE,
-                  PROTECTION,
+                  UTIL,
                   "CiValidateFileObject: \"%wZ\" 0x%08lx \"%Z\" \"%Z\" "
                   "%!STATUS! %!STATUS!",
                   &FileObject->FileName,
@@ -2273,97 +2403,4 @@ NTSTATUS KphImageNtHeader(
     }
 
     return STATUS_SUCCESS;
-}
-
-/**
- * \brief Captures a Unicode string from user mode.
- *
- * \param[in] UnicodeString Unicode string to capture from user mode.
- * \param[out] CapturedUnicodeString Receives the captured Unicode string, the
- * captured buffer must be freed using KphReleaseUnicodeString.
- *
- * \return Successful or errant status.
- */
-_IRQL_requires_max_(PASSIVE_LEVEL)
-_Must_inspect_result_
-NTSTATUS KphCaptureUnicodeString(
-    _In_ PUNICODE_STRING UnicodeString,
-    _Out_ PUNICODE_STRING* CapturedUnicodeString
-    )
-{
-    NTSTATUS status;
-    UNICODE_STRING inputString;
-    PUNICODE_STRING outputString;
-
-    KPH_PAGED_CODE_PASSIVE();
-
-    outputString = NULL;
-
-    __try
-    {
-        ProbeInputType(UnicodeString, UNICODE_STRING);
-        RtlCopyVolatileMemory(&inputString,
-                              UnicodeString,
-                              sizeof(UNICODE_STRING));
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        status = GetExceptionCode();
-        goto Exit;
-    }
-
-    outputString = KphAllocatePaged(sizeof(UNICODE_STRING) + inputString.Length,
-                                    KPH_TAG_CAPTURED_UNICODE_STRING);
-    if (!outputString)
-    {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Exit;
-    }
-
-    outputString->Buffer = Add2Ptr(outputString, sizeof(UNICODE_STRING));
-    outputString->Length = 0;
-    outputString->MaximumLength = inputString.Length;
-
-    __try
-    {
-        ProbeInputBytes(inputString.Buffer, inputString.Length);
-        RtlCopyVolatileMemory(outputString->Buffer,
-                              inputString.Buffer,
-                              inputString.Length);
-        outputString->Length = inputString.Length;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        status = GetExceptionCode();
-        goto Exit;
-    }
-
-    *CapturedUnicodeString = outputString;
-    outputString = NULL;
-
-    status = STATUS_SUCCESS;
-
-Exit:
-
-    if (outputString)
-    {
-        KphFree(outputString, KPH_TAG_CAPTURED_UNICODE_STRING);
-    }
-
-    return status;
-}
-
-/**
- * \brief Releases a previously captured Unicode string.
- *
- * \param[in] UnicodeString Unicode string to release.
- */
-_IRQL_requires_max_(PASSIVE_LEVEL)
-VOID KphReleaseUnicodeString(
-    _In_ PUNICODE_STRING CaputredUnicodeString
-    )
-{
-    KPH_PAGED_CODE_PASSIVE();
-
-    KphFree(CaputredUnicodeString, KPH_TAG_CAPTURED_UNICODE_STRING);
 }

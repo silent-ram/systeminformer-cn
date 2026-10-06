@@ -55,11 +55,18 @@
 #define PHNT_WINDOWS_11_22H2 115 // September, 2022  // Build 22621
 #define PHNT_WINDOWS_11_23H2 116 // October, 2023    // Build 22631
 #define PHNT_WINDOWS_11_24H2 117 // October, 2024    // Build 26100
-#define PHNT_WINDOWS_11_25H2 117 // October, 2025    // Build 26200
+#define PHNT_WINDOWS_11_25H2 118 // October, 2025    // Build 26200
+#define PHNT_WINDOWS_11_26H1 119                     // Build 28000
+#define PHNT_WINDOWS_11_27H2 120                     // Build 29500
 #define PHNT_WINDOWS_NEW ULONG_MAX
 
 #ifndef PHNT_MODE
-#define PHNT_MODE PHNT_MODE_USER
+// Auto-detect kernel mode when building with WDK or kernel headers.
+#if defined(_NTDDK_) || defined(_NTIFS_) || defined(_NTDRIVER_)
+    #define PHNT_MODE PHNT_MODE_KERNEL
+#else
+    #define PHNT_MODE PHNT_MODE_USER
+#endif
 #endif
 
 #ifndef PHNT_VERSION
@@ -79,16 +86,23 @@
 #endif // !PHNT_INLINE_TYPEDEFS
 #endif // (PHNT_MODE != PHNT_MODE_KERNEL)
 
+//
+// Headers
+//
+
 EXTERN_C_START
 
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 #include <phnt_ntdef.h>
 #include <ntnls.h>
+#include <ntintsafe.h>
+#include <nttypesafe.h>
 #endif // (PHNT_MODE != PHNT_MODE_KERNEL)
 
 #include <ntkeapi.h>
 #include <ntldr.h>
 #include <ntexapi.h>
+#include <ntpebteb.h>
 
 #include <ntmmapi.h>
 #include <ntobapi.h>
@@ -97,17 +111,16 @@ EXTERN_C_START
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 #include <ntbcd.h>
 #include <ntdbg.h>
-#include <ntintsafe.h>
 #include <ntimage.h>
 #include <ntioapi.h>
 #include <ntlsa.h>
 #include <ntlpcapi.h>
-#include <ntmisc.h>
 #include <ntpfapi.h>
 #include <ntpnpapi.h>
 #include <ntpoapi.h>
 #include <ntregapi.h>
 #include <ntrtl.h>
+#include <ntmisc.h>
 #include <ntsam.h>
 #include <ntseapi.h>
 #include <nttmapi.h>

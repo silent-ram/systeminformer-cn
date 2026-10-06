@@ -5,15 +5,24 @@
  *
  * Authors:
  *
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
 #include "updater.h"
 
+/**
+ * \brief Callback procedure for the final state task dialog pages (Install, Latest, Error).
+ * \param WindowHandle Handle to the dialog window.
+ * \param WindowMessage The window message.
+ * \param wParam Additional message-specific information.
+ * \param lParam Additional message-specific information.
+ * \param dwRefData The updater context.
+ * \return HRESULT Successful or errant status.
+ */
 HRESULT CALLBACK FinalTaskDialogCallbackProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -21,14 +30,14 @@ HRESULT CALLBACK FinalTaskDialogCallbackProc(
 {
     PPH_UPDATER_CONTEXT context = (PPH_UPDATER_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_NAVIGATED:
         {
 #ifndef FORCE_NO_STATUS_TIMER
             if (context->ProgressTimer)
             {
-                PhKillTimer(hwndDlg, 9000);
+                PhKillTimer(WindowHandle, 9000);
                 context->ProgressTimer = FALSE;
             }
 #endif
@@ -40,7 +49,7 @@ HRESULT CALLBACK FinalTaskDialogCallbackProc(
 
             if (context->ElevationRequired)
             {
-                SendMessage(hwndDlg, TDM_SET_BUTTON_ELEVATION_REQUIRED_STATE, IDYES, TRUE);
+                SendMessage(WindowHandle, TDM_SET_BUTTON_ELEVATION_REQUIRED_STATE, IDYES, TRUE);
             }
         }
         break;
@@ -50,15 +59,22 @@ HRESULT CALLBACK FinalTaskDialogCallbackProc(
 
             if (buttonId == IDRETRY)
             {
+                if (context->CryptoBackend == UpdaterCryptoBackendSymCrypt)
+                    context->CryptoBackend = UpdaterCryptoBackendBCrypt;
                 ShowCheckForUpdatesDialog(context);
                 return S_FALSE;
             }
             else if (buttonId == IDYES)
             {
-                if (!NT_SUCCESS(UpdateShellExecute(context, hwndDlg)))
+#if defined(PH_BUILD_MSIX)
+                // MSIX: the platform already downloaded and installed the update.
+                // Nothing to ShellExecute; let the dialog close.
+#else
+                if (!NT_SUCCESS(UpdateShellExecute(context, WindowHandle)))
                 {
                     return S_FALSE;
                 }
+#endif
             }
         }
         break;
@@ -73,6 +89,10 @@ HRESULT CALLBACK FinalTaskDialogCallbackProc(
     return S_OK;
 }
 
+/**
+ * \brief Shows the Ready to Install dialog page.
+ * \param Context The updater context.
+ */
 VOID ShowUpdateInstallDialog(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -87,7 +107,7 @@ VOID ShowUpdateInstallDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
     config.cxWidth = 200;
     config.pfCallback = FinalTaskDialogCallbackProc;
     config.lpCallbackData = (LONG_PTR)Context;
@@ -120,13 +140,23 @@ VOID ShowUpdateInstallDialog(
     }
     else
     {
+#if defined(PH_BUILD_MSIX)
+        config.pszMainInstruction = L"Update installed.";
+        config.pszContent = L"The update has been downloaded and installed.\r\n\r\nRestart System Informer to apply the update.";
+#else
         config.pszMainInstruction = L"Ready to install update?";
         config.pszContent = L"The update has been successfully downloaded and verified.\r\n\r\nClick Install to continue.";
+#endif
     }
 
     PhTaskDialogNavigatePage(Context->DialogHandle, &config);
 }
 
+/**
+ * \brief Generates the text describing the current latest version.
+ * \param Context The updater context.
+ * \return A string containing the formatted version text.
+ */
 PPH_STRING UpdaterGetLatestVersionText(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -138,8 +168,8 @@ PPH_STRING UpdaterGetLatestVersionText(
     ULONG buildVersion;
     ULONG revisionVersion;
 
-    PhGetPhVersionNumbers(&majorVersion, &minorVersion, &buildVersion, &revisionVersion);
-    commit = PhGetPhVersionHash();
+    PhGetBuildVersionNumbers(&majorVersion, &minorVersion, &buildVersion, &revisionVersion);
+    commit = PhGetBuildCommit();
 
     if (commit && commit->Length > 4)
     {
@@ -179,6 +209,10 @@ PPH_STRING UpdaterGetLatestVersionText(
     return version;
 }
 
+/**
+ * \brief Shows the Latest Version dialog page.
+ * \param Context The updater context.
+ */
 VOID ShowLatestVersionDialog(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -189,7 +223,7 @@ VOID ShowLatestVersionDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
     config.cxWidth = 200;
     config.pfCallback = FinalTaskDialogCallbackProc;
     config.lpCallbackData = (LONG_PTR)Context;
@@ -201,6 +235,10 @@ VOID ShowLatestVersionDialog(
     PhTaskDialogNavigatePage(Context->DialogHandle, &config);
 }
 
+/**
+ * \brief Shows the Newer Version dialog page (e.g., when running a pre-release).
+ * \param Context The updater context.
+ */
 VOID ShowNewerVersionDialog(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -211,7 +249,7 @@ VOID ShowNewerVersionDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
     config.cxWidth = 200;
     config.pfCallback = FinalTaskDialogCallbackProc;
     config.lpCallbackData = (LONG_PTR)Context;
@@ -223,6 +261,12 @@ VOID ShowNewerVersionDialog(
     PhTaskDialogNavigatePage(Context->DialogHandle, &config);
 }
 
+/**
+ * \brief Shows the Update Failed dialog page.
+ * \param Context The updater context.
+ * \param HashFailed TRUE if the hash verification failed.
+ * \param SignatureFailed TRUE if the signature verification failed.
+ */
 VOID ShowUpdateFailedDialog(
     _In_ PPH_UPDATER_CONTEXT Context,
     _In_ BOOLEAN HashFailed,
@@ -236,7 +280,7 @@ VOID ShowUpdateFailedDialog(
     //config.pszMainIcon = MAKEINTRESOURCE(65529);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON | TDCBF_RETRY_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
 
     config.pszWindowTitle = L"System Informer - 更新工具";
     if (Context->SwitchingChannel)

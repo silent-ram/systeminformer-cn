@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2008-2016
- *     dmex    2017-2022
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_PROCPRP_H
 #define PH_PROCPRP_H
+
+#define PH_PROPSHEET_NEW 1
 
 typedef struct _PH_PROCESS_WAITPROPCONTEXT
 {
@@ -22,31 +24,36 @@ typedef struct _PH_PROCESS_WAITPROPCONTEXT
     PPH_PROCESS_ITEM ProcessItem;
 } PH_PROCESS_WAITPROPCONTEXT, *PPH_PROCESS_WAITPROPCONTEXT;
 
-#define PH_PROCESS_PROPCONTEXT_MAXPAGES 20
+#define PH_PROCESS_PROPCONTEXT_MAXPAGES 32
 
 typedef struct _PH_PROCESS_PROPCONTEXT
 {
     PPH_PROCESS_ITEM ProcessItem;
     PPH_STRING Title;
+#ifdef PH_PROPSHEET_NEW
+    HWND ParentWindowHandle;
+#else
     PROPSHEETHEADER PropSheetHeader;
     HPROPSHEETPAGE* PropSheetPages;
+#endif
 
     HANDLE SelectThreadId;
 
     PPH_PROCESS_WAITPROPCONTEXT ProcessWaitContext;
     BOOLEAN WaitInitialized;
+
+#ifdef PH_PROPSHEET_NEW
+    // Parallel page arrays for the PhPropSheetNew host. PropSheetNewPages is
+    // a PH_PROPSHEETNEW_PAGE[PH_PROCESS_PROPCONTEXT_MAXPAGES], typed as PVOID
+    // here so graphprp.h doesn't have to be pulled into this header.
+    // PropSheetNewPageContexts holds the matching PPH_PROCESS_PROPPAGECONTEXT
+    // refs so they can be released when the context is freed.
+    PVOID PropSheetNewPages;
+    PVOID PropSheetNewPageContexts;
+    PVOID PropSheetNewPageTitles;   // PPH_STRING[MAXPAGES], owns Name strings
+    ULONG PropSheetNewPageCount;
+#endif
 } PH_PROCESS_PROPCONTEXT, *PPH_PROCESS_PROPCONTEXT;
-
-// begin_phapppub
-typedef struct _PH_PROCESS_PROPPAGECONTEXT
-{
-    PPH_PROCESS_PROPCONTEXT PropContext;
-    PVOID Context;
-    PROPSHEETPAGE PropSheetPage;
-
-    BOOLEAN LayoutInitialized;
-} PH_PROCESS_PROPPAGECONTEXT, *PPH_PROCESS_PROPPAGECONTEXT;
-// end_phapppub
 
 // begin_phapppub
 PHAPPAPI
@@ -125,7 +132,7 @@ PHAPPAPI
 PPH_LAYOUT_ITEM
 NTAPI
 PhAddPropPageLayoutItem(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ HWND Handle,
     _In_ PPH_LAYOUT_ITEM ParentItem,
     _In_ ULONG Anchor
@@ -135,7 +142,7 @@ PHAPPAPI
 VOID
 NTAPI
 PhDoPropPageLayout(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     );
 
 FORCEINLINE
@@ -147,8 +154,14 @@ PhBeginPropPageLayout(
 {
     if (!PropPageContext->LayoutInitialized)
     {
-        return PhAddPropPageLayoutItem(hwndDlg, hwndDlg,
-            PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL);
+        PhSetWindowStyle(hwndDlg, WS_CLIPCHILDREN | WS_CLIPSIBLINGS, WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+
+        return PhAddPropPageLayoutItem(
+            hwndDlg,
+            hwndDlg,
+            PH_PROP_PAGE_TAB_CONTROL_PARENT,
+            PH_ANCHOR_ALL | PH_LAYOUT_FORCE_INVALIDATE
+            );
     }
     else
     {

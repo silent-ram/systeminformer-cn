@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -23,21 +23,27 @@
 #include <procprv.h>
 #include <srvprv.h>
 
+#define PH_SERVICE_PROP_OLD_WNDPROC_CONTEXT 0xF
+#define PH_SERVICE_PROP_CONTEXT 0xE
+
 typedef struct _SERVICE_PROPERTIES_CONTEXT
 {
     PPH_SERVICE_ITEM ServiceItem;
 
     union
     {
-        BOOLEAN Flags;
+        ULONG Flags;
         struct
         {
-            BOOLEAN Ready : 1;
-            BOOLEAN Dirty : 1;
-            BOOLEAN OldDelayedStart : 1;
-            BOOLEAN Spare : 5;
+            ULONG Ready : 1;
+            ULONG Dirty : 1;
+            ULONG OldDelayedStart : 1;
+            ULONG GeneralPageInitialized : 1;
+            ULONG LayoutInitialized : 1;
+            ULONG SpareFlags : 27;
         };
     };
+    ULONG Spare;
 
     HWND WindowHandle;
     HWND TypeWindowHandle;
@@ -51,6 +57,11 @@ typedef struct _SERVICE_PROPERTIES_CONTEXT
     HWND PassBoxWindowHandle;
     HWND PassCheckBoxWindowHandle;
     HWND ServiceDllWindowHandle;
+    HFONT WindowFont;
+    LONG WindowDpi;
+
+    PH_LAYOUT_MANAGER LayoutManager;
+    PPH_LAYOUT_ITEM TabPageItem;
 } SERVICE_PROPERTIES_CONTEXT, *PSERVICE_PROPERTIES_CONTEXT;
 
 INT_PTR CALLBACK PhpServiceGeneralDlgProc(
@@ -60,8 +71,16 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
     _In_ LPARAM lParam
     );
 
+/**
+ * Callback function to open a service object.
+ *
+ * \param Handle A variable which receives the handle.
+ * \param DesiredAccess The desired access to the service.
+ * \param Context The callback context.
+ * \return STATUS_SUCCESS if successful, otherwise an NTSTATUS error code.
+ */
 _Function_class_(PH_OPEN_OBJECT)
-static NTSTATUS PhpOpenServiceCallback(
+NTSTATUS PhpOpenServiceCallback(
     _Out_ PHANDLE Handle,
     _In_ ACCESS_MASK DesiredAccess,
     _In_ PVOID Context
@@ -87,6 +106,14 @@ static NTSTATUS PhpOpenServiceCallback(
     return status;
 }
 
+/**
+ * Callback function to close a service object.
+ *
+ * \param Handle The handle to close.
+ * \param Release Whether to release the context.
+ * \param Context The callback context.
+ * \return STATUS_SUCCESS.
+ */
 _Function_class_(PH_CLOSE_OBJECT)
 NTSTATUS PhpCloseServiceCallback(
     _In_opt_ HANDLE Handle,
@@ -107,6 +134,14 @@ NTSTATUS PhpCloseServiceCallback(
     return STATUS_SUCCESS;
 }
 
+/**
+ * Callback function to set service security.
+ *
+ * \param SecurityDescriptor The security descriptor.
+ * \param SecurityInformation The security information.
+ * \param Context The callback context.
+ * \return STATUS_SUCCESS if successful, otherwise an NTSTATUS error code.
+ */
 _Function_class_(PH_SET_OBJECT_SECURITY)
 static _Callback_ NTSTATUS PhpSetServiceSecurityCallback(
     _In_ PSECURITY_DESCRIPTOR SecurityDescriptor,
@@ -141,6 +176,15 @@ static _Callback_ NTSTATUS PhpSetServiceSecurityCallback(
     return status;
 }
 
+/**
+ * Window procedure for the service property sheet.
+ *
+ * \param hwnd The handle to the window.
+ * \param uMsg The message being processed.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return The result of the message processing.
+ */
 LRESULT CALLBACK PhpPropSheetSrvWndProc(
     _In_ HWND hwnd,
     _In_ UINT uMsg,
@@ -149,8 +193,10 @@ LRESULT CALLBACK PhpPropSheetSrvWndProc(
     )
 {
     WNDPROC oldWndProc;
+    PSERVICE_PROPERTIES_CONTEXT context;
 
-    oldWndProc = PhGetWindowContext(hwnd, 0xF);
+    oldWndProc = PhGetWindowContext(hwnd, PH_SERVICE_PROP_OLD_WNDPROC_CONTEXT);
+    context = PhGetWindowContext(hwnd, PH_SERVICE_PROP_CONTEXT);
 
     if (!oldWndProc)
         return 0;
@@ -160,7 +206,23 @@ LRESULT CALLBACK PhpPropSheetSrvWndProc(
     case WM_NCDESTROY:
         {
             PhSetWindowProcedure(hwnd, oldWndProc);
-            PhRemoveWindowContext(hwnd, 0xF);
+            PhRemoveWindowContext(hwnd, PH_SERVICE_PROP_OLD_WNDPROC_CONTEXT);
+            PhRemoveWindowContext(hwnd, PH_SERVICE_PROP_CONTEXT);
+
+            if (context)
+            {
+                if (context->LayoutInitialized)
+                {
+                    PhDeleteLayoutManager(&context->LayoutManager);
+                    context->LayoutInitialized = FALSE;
+                }
+
+                if (context->WindowFont)
+                {
+                    DeleteFont(context->WindowFont);
+                    context->WindowFont = NULL;
+                }
+            }
         }
         break;
     case WM_SYSCOMMAND:
@@ -191,12 +253,56 @@ LRESULT CALLBACK PhpPropSheetSrvWndProc(
             }
         }
         break;
+    case WM_SIZE:
+        {
+            if (context && context->LayoutInitialized && !IsMinimized(hwnd))
+            {
+                PhLayoutManagerLayout(&context->LayoutManager);
+            }
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            PRECT CONST newRect = (PRECT)lParam;
+
+            CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
+
+            // The default property sheet handler is busted on systems with +2 displays (144/96)
+            // and the 96 DPI is default. The tab control and buttons end up with a huge size and
+            // incorrect position when DPI is handled by comctl32's internal math. We override it with
+            // our own layout pass but there might be ~2px of rounding drift per edge. Only update the
+            // manager's DPI so future layout calls (if any) use the correct scale. (dmex)
+            if (context && context->LayoutInitialized)
+            {
+                PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            }
+
+            SetWindowPos(
+                hwnd,
+                NULL,
+                newRect->left,
+                newRect->top,
+                newRect->right - newRect->left,
+                newRect->bottom - newRect->top,
+                SWP_NOZORDER | SWP_NOACTIVATE
+                );
+
+            return 0;
+        }
     }
 
     return CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
 }
 
-LONG CALLBACK PhpPropSheetSrvProc(
+/**
+ * Property sheet procedure for the service properties.
+ *
+ * \param hwndDlg The handle to the property sheet.
+ * \param uMsg The message being processed.
+ * \param lParam Message-specific parameter.
+ * \return The result of the message processing.
+ */
+INT CALLBACK PhpPropSheetSrvProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
     _In_ LPARAM lParam
@@ -206,7 +312,7 @@ LONG CALLBACK PhpPropSheetSrvProc(
     {
     case PSCB_INITIALIZED:
         {
-            PhSetWindowContext(hwndDlg, 0xF, (PVOID)PhGetWindowProcedure(hwndDlg));
+            PhSetWindowContext(hwndDlg, PH_SERVICE_PROP_OLD_WNDPROC_CONTEXT, PhGetWindowProcedure(hwndDlg));
             PhSetWindowProcedure(hwndDlg, PhpPropSheetSrvWndProc);
         }
         break;
@@ -215,6 +321,12 @@ LONG CALLBACK PhpPropSheetSrvProc(
     return 0;
 }
 
+/**
+ * Thread function for showing service properties.
+ *
+ * \param Context The thread context.
+ * \return STATUS_SUCCESS.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhpShowServicePropertiesThread(
     _In_ PVOID Context
@@ -277,6 +389,12 @@ NTSTATUS PhpShowServicePropertiesThread(
     return STATUS_SUCCESS;
 }
 
+/**
+ * Shows the service properties.
+ *
+ * \param ParentWindowHandle The parent window handle.
+ * \param ServiceItem The service item.
+ */
 VOID PhShowServiceProperties(
     _In_ HWND ParentWindowHandle,
     _In_ PPH_SERVICE_ITEM ServiceItem
@@ -286,6 +404,11 @@ VOID PhShowServiceProperties(
     PhCreateThread2(PhpShowServicePropertiesThread, ServiceItem);
 }
 
+/**
+ * Refreshes the icon of the service properties dialog.
+ *
+ * \param Context The service properties context.
+ */
 static VOID PhServicePropertiesRefreshIcon(
     _In_ PSERVICE_PROPERTIES_CONTEXT Context
     )
@@ -308,6 +431,11 @@ static VOID PhServicePropertiesRefreshIcon(
     }
 }
 
+/**
+ * Refreshes the state of the controls in the service properties dialog.
+ *
+ * \param Context The service properties context.
+ */
 static VOID PhServicePropertiesRefreshControls(
     _In_ PSERVICE_PROPERTIES_CONTEXT Context
     )
@@ -340,6 +468,15 @@ static VOID PhServicePropertiesRefreshControls(
     }
 }
 
+/**
+ * Dialog procedure for the general service properties tab.
+ *
+ * \param hwndDlg The handle to the dialog.
+ * \param uMsg The message being processed.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return TRUE if the message was handled, otherwise FALSE.
+ */
 INT_PTR CALLBACK PhpServiceGeneralDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -386,12 +523,8 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
             context->PassBoxWindowHandle = GetDlgItem(hwndDlg, IDC_PASSWORD);
             context->PassCheckBoxWindowHandle = GetDlgItem(hwndDlg, IDC_PASSWORDCHECK);
             context->ServiceDllWindowHandle = GetDlgItem(hwndDlg, IDC_SERVICEDLL);
-
-            // HACK
-            if (PhValidWindowPlacementFromSetting(SETTING_SERVICE_WINDOW_POSITION))
-                PhCenterWindow(GetParent(hwndDlg), PhMainWndHandle);
-            else
-                PhLoadWindowPlacementFromSetting(SETTING_SERVICE_WINDOW_POSITION, NULL, GetParent(hwndDlg));
+            context->WindowDpi = PhGetWindowDpi(GetParent(hwndDlg));
+            PhSetWindowContext(GetParent(hwndDlg), PH_SERVICE_PROP_CONTEXT, context);
 
             PhAddComboBoxStringRefs(context->TypeWindowHandle, PhServiceTypeStrings, RTL_NUMBER_OF(PhServiceTypeStrings));
             PhAddComboBoxStringRefs(context->StartTypeWindowHandle, PhServiceStartTypeStrings, RTL_NUMBER_OF(PhServiceStartTypeStrings));
@@ -467,12 +600,34 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
                 PhInitializeWindowTheme(GetParent(hwndDlg), PhEnableThemeSupport);  // HACK (GetParent)
             else
                 PhInitializeWindowTheme(hwndDlg, FALSE);
+
+            context->GeneralPageInitialized = TRUE;
         }
         break;
     case WM_DESTROY:
         {
             PhSaveWindowPlacementToSetting(SETTING_SERVICE_WINDOW_POSITION, NULL, GetParent(hwndDlg));
             PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        }
+        break;
+    case WM_SHOWWINDOW:
+        {
+            if (!context->LayoutInitialized)
+            {
+                HWND parentHandle = GetParent(hwndDlg);
+                HWND tabControlHandle = PropSheet_GetTabControl(parentHandle);
+
+                PhInitializeLayoutManager(&context->LayoutManager, parentHandle);
+                PhAddTabControlLayoutItem(&context->LayoutManager, tabControlHandle, NULL, &context->TabPageItem);
+                PhAddLayoutItem(&context->LayoutManager, GetDlgItem(parentHandle, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+                PhAddLayoutItem(&context->LayoutManager, GetDlgItem(parentHandle, IDCANCEL), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+                context->LayoutInitialized = TRUE;
+
+                if (PhValidWindowPlacementFromSetting(SETTING_SERVICE_WINDOW_POSITION))
+                    PhLoadWindowPlacementFromSetting(SETTING_SERVICE_WINDOW_POSITION, NULL, GetParent(hwndDlg));
+                else
+                    PhCenterWindow(GetParent(hwndDlg), PhMainWndHandle);
+            }
         }
         break;
     case WM_COMMAND:

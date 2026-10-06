@@ -6,7 +6,7 @@
  * Authors:
  *
  *     jxy-s   2022
- *     dmex    2022
+ *     dmex    2022-2026
  *
  */
 
@@ -127,6 +127,8 @@ typedef struct _POOLTAG_CONTEXT
     HWND ParentWindowHandle;
     HWND SearchboxHandle;
     HWND TreeNewHandle;
+    HFONT WindowFont;
+
     PH_LAYOUT_MANAGER LayoutManager;
     PH_CALLBACK_REGISTRATION ProcessesUpdatedCallbackRegistration;
 

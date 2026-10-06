@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -18,8 +18,10 @@
 #include <cpysave.h>
 #include <settings.h>
 #include <emenu.h>
+#include <json.h>
 
 #include <mainwnd.h>
+#include <mainwndp.h>
 #include <notifico.h>
 #include <proctree.h>
 #include <phplug.h>
@@ -42,6 +44,20 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
     );
 
 INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    );
+
+INT_PTR CALLBACK PhpOptionsTrayIconDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    );
+
+INT_PTR CALLBACK PhpOptionsThemesDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
@@ -125,12 +141,15 @@ static PPH_LIST SectionList = NULL;
 static PPH_OPTIONS_SECTION CurrentSection = NULL;
 static HWND OptionsTreeControl = NULL;
 static HWND ContainerControl = NULL;
+static RECT MinimumSize;
+static PCWSTR OptionsInitialSectionName = NULL;
 
 // All
 static BOOLEAN RestartRequired = FALSE;
 
 // General
 static BOOLEAN GeneralListViewStateInitializing = FALSE;
+static BOOLEAN ThemeListViewStateInitializing = FALSE;
 static CONST PH_STRINGREF CurrentUserRunKeyName = PH_STRINGREF_INIT(L"Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 static BOOLEAN CurrentUserRunPresent = FALSE;
 static HFONT CurrentFontInstance = NULL;
@@ -147,7 +166,8 @@ static HWND WindowHandleForElevate = NULL;
 static HWND HighlightingListViewHandle = NULL;
 
 VOID PhShowOptionsDialog(
-    _In_ HWND ParentWindowHandle
+    _In_ HWND ParentWindowHandle,
+    _In_opt_ PCWSTR SectionName
     )
 {
     if (PhStartupParameters.ShowOptions)
@@ -158,6 +178,7 @@ VOID PhShowOptionsDialog(
     {
         if (!PhOptionsWindowHandle)
         {
+            OptionsInitialSectionName = SectionName;
             PhOptionsWindowHandle = PhCreateDialog(
                 PhInstanceHandle,
                 MAKEINTRESOURCE(IDD_OPTIONS),
@@ -165,9 +186,20 @@ VOID PhShowOptionsDialog(
                 PhOptionsDialogProc,
                 NULL
                 );
+            OptionsInitialSectionName = NULL;
 
             PhRegisterDialog(PhOptionsWindowHandle);
             ShowWindow(PhOptionsWindowHandle, SW_SHOW);
+        }
+        else if (SectionName)
+        {
+            PH_STRINGREF sectionNameSr;
+            PPH_OPTIONS_SECTION section;
+
+            PhInitializeStringRef(&sectionNameSr, SectionName);
+
+            if (section = PhOptionsFindSection(&sectionNameSr))
+                TreeView_SelectItem(OptionsTreeControl, section->TreeItemHandle);
         }
 
         if (IsMinimized(PhOptionsWindowHandle))
@@ -239,6 +271,10 @@ VOID PhpAdvancedPageSave(
     _In_ HWND hwndDlg
     );
 
+static VOID PhpOptionsNotifyChangeCallback(
+    _In_ PVOID Context
+    );
+
 VOID PhpAdvancedPageLoad(
     _In_ HWND hwndDlg,
     _In_ BOOLEAN ReloadOnly
@@ -253,6 +289,73 @@ static VOID PhReloadGeneralSection(
     GeneralListViewStateInitializing = TRUE;
     PhpAdvancedPageLoad(PhOptionsFindSection(&generalName)->DialogHandle, TRUE);
     GeneralListViewStateInitializing = FALSE;
+}
+
+static VOID PhReloadThemesSection(
+    VOID
+    )
+{
+    static PH_STRINGREF themesName = PH_STRINGREF_INIT(L"Themes");
+    PPH_OPTIONS_SECTION section;
+
+    section = PhOptionsFindSection(&themesName);
+    if (!section || !section->DialogHandle)
+        return;
+
+    ThemeListViewStateInitializing = TRUE;
+    Button_SetCheck(GetDlgItem(section->DialogHandle, IDC_ENABLETHEME), PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) ? BST_CHECKED : BST_UNCHECKED);
+    ComboBox_SetCurSel(GetDlgItem(section->DialogHandle, IDC_THEMEMODE), PhGetIntegerSetting(SETTING_THEME_MODE));
+    EnableWindow(GetDlgItem(section->DialogHandle, IDC_THEMEMODE), PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) != 0);
+    ThemeListViewStateInitializing = FALSE;
+}
+
+static VOID PhpApplyThemeSupportSetting(
+    _In_ HWND hwndDlg
+    )
+{
+    BOOLEAN enableThemeSupport;
+
+    enableThemeSupport = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLETHEME)) == BST_CHECKED;
+    PhSetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT, enableThemeSupport);
+    PhUpdateCachedSettings();
+
+    // The theme mode combo is only meaningful while theme support is enabled.
+    EnableWindow(GetDlgItem(hwndDlg, IDC_THEMEMODE), enableThemeSupport);
+
+    // Control superclasses (statusbar, menus, dialogs) are only registered during
+    // startup while theme support is enabled, so the toggle cannot be applied to
+    // windows that already exist. PhEnableThemeSupport keeps the startup state and
+    // the new setting takes effect after a restart.
+    if (enableThemeSupport != PhEnableThemeSupport)
+        PhShowOptionsRestartRequired(hwndDlg);
+}
+
+static VOID PhpApplyThemeModeSetting(
+    _In_ HWND hwndDlg
+    )
+{
+    INT mode;
+
+    mode = ComboBox_GetCurSel(GetDlgItem(hwndDlg, IDC_THEMEMODE));
+
+    if (mode == CB_ERR)
+        return;
+
+    PhSetIntegerSetting(SETTING_THEME_MODE, mode);
+
+    // Graph drawing keys off GraphColorMode rather than the window palette;
+    // pair a dark palette with dark graph backgrounds (same override the
+    // advanced options page applies).
+    if (PhEnableThemeSupport && PhIsThemeModeDark(mode))
+        PhSetIntegerSetting(SETTING_GRAPH_COLOR_MODE, 1);
+
+    PhUpdateCachedSettings();
+
+    if (PhEnableThemeSupport)
+    {
+        PhApplyThemeModeWithColors(mode, PhMainWndHandle);
+        PhMwpInitializeMainMenu(PhMainWndHandle);
+    }
 }
 
 static VOID PhpOptionsSetImageList(
@@ -270,7 +373,7 @@ static VOID PhpOptionsSetImageList(
 
     if (imageListHandle)
     {
-        PhImageListSetIconSize(imageListHandle, 2, PhGetDpi(24, dpiValue));
+        PhImageListSetIconSize(imageListHandle, 2, PhScaleToDisplay(24, dpiValue));
 
         if (Treeview)
             TreeView_SetImageList(WindowHandle, imageListHandle, TVSIL_NORMAL);
@@ -279,7 +382,7 @@ static VOID PhpOptionsSetImageList(
     }
     else
     {
-        if (imageListHandle = PhImageListCreate(2, PhGetDpi(24, dpiValue), ILC_MASK | ILC_COLOR32, 1, 1))
+        if (imageListHandle = PhImageListCreate(2, PhScaleToDisplay(24, dpiValue), ILC_MASK | ILC_COLOR32, 1, 1))
         {
             if (Treeview)
                 TreeView_SetImageList(WindowHandle, imageListHandle, TVSIL_NORMAL);
@@ -312,6 +415,12 @@ INT_PTR CALLBACK PhOptionsDialogProc(
             TreeView_SetExtendedStyle(OptionsTreeControl, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
             TreeView_SetBkColor(OptionsTreeControl, GetSysColor(COLOR_3DFACE));
 
+            MinimumSize.left = 0;
+            MinimumSize.top = 0;
+            MinimumSize.right = 423;
+            MinimumSize.bottom = 247;
+            MapDialogRect(hwndDlg, &MinimumSize);
+
             PhInitializeLayoutManager(&WindowLayoutManager, hwndDlg);
             PhAddLayoutItem(&WindowLayoutManager, OptionsTreeControl, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_BOTTOM);
             //PhAddLayoutItem(&WindowLayoutManager, GetDlgItem(hwndDlg, IDC_SEPARATOR), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_BOTTOM);
@@ -335,6 +444,7 @@ INT_PTR CALLBACK PhOptionsDialogProc(
                 section = PhOptionsCreateSection(L"常规", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTGENERAL), PhpOptionsGeneralDlgProc, NULL);
                 PhOptionsCreateSectionAdvanced(L"高级", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTADVANCED), PhpOptionsAdvancedDlgProc, NULL);
                 PhOptionsCreateSection(L"高亮", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTHIGHLIGHTING), PhpOptionsHighlightingDlgProc, NULL);
+                PhOptionsCreateSection(L"Tray Icon", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTTRAYICON), PhpOptionsTrayIconDlgProc, NULL);
                 PhOptionsCreateSection(L"图像", PhInstanceHandle, MAKEINTRESOURCE(IDD_OPTGRAPHS), PhpOptionsGraphsDlgProc, NULL);
                 PhOptionsCreateSection(L"插件", PhInstanceHandle, MAKEINTRESOURCE(IDD_PLUGINS), PhPluginsDlgProc, NULL);
 
@@ -348,6 +458,17 @@ INT_PTR CALLBACK PhOptionsDialogProc(
                     pointers.EnterSectionView = PhOptionsEnterSectionView;
 
                     PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackOptionsWindowInitializing), &pointers);
+                }
+
+                if (OptionsInitialSectionName)
+                {
+                    PH_STRINGREF sectionNameSr;
+                    PPH_OPTIONS_SECTION initialSection;
+
+                    PhInitializeStringRef(&sectionNameSr, OptionsInitialSectionName);
+
+                    if (initialSection = PhOptionsFindSection(&sectionNameSr))
+                        section = initialSection;
                 }
 
                 TreeView_SelectItem(OptionsTreeControl, section->TreeItemHandle);
@@ -375,13 +496,15 @@ INT_PTR CALLBACK PhOptionsDialogProc(
             {
                 section = SectionList->Items[i];
 
-                if (PhEqualStringRef2(&section->Name, L"General", TRUE))
-                {
-                    PhpAdvancedPageSave(section->DialogHandle);
-                }
-
-                PhOptionsDestroySection(section);
+            if (PhEqualStringRef2(&section->Name, L"General", TRUE))
+            {
+                PhpAdvancedPageSave(section->DialogHandle);
             }
+
+            PhOptionsDestroySection(section);
+        }
+
+            SystemInformer_Invoke(PhpOptionsNotifyChangeCallback, NULL);
 
             PhDereferenceObject(SectionList);
             SectionList = NULL;
@@ -402,6 +525,11 @@ INT_PTR CALLBACK PhOptionsDialogProc(
     case WM_SIZE:
         {
             PhOptionsOnSize();
+        }
+        break;
+    case WM_SIZING:
+        {
+            PhResizingMinimumSize((PRECT)lParam, wParam, MinimumSize.right, MinimumSize.bottom);
         }
         break;
     case WM_COMMAND:
@@ -933,21 +1061,21 @@ static BOOLEAN PathMatchesPh(
     if (!(fileName = PhGetApplicationFileNameWin32()))
         return FALSE;
 
-    if (PhEqualString(OldTaskMgrDebugger, fileName, TRUE))
+    if (PhEqualString(Path, fileName, TRUE))
     {
         match = TRUE;
     }
     // Allow for a quoted value.
     else if (
-        OldTaskMgrDebugger->Length == fileName->Length + 4 &&
-        OldTaskMgrDebugger->Buffer[0] == L'"' &&
-        OldTaskMgrDebugger->Buffer[OldTaskMgrDebugger->Length / sizeof(WCHAR) - 1] == L'"'
+        Path->Length == fileName->Length + 4 &&
+        Path->Buffer[0] == L'"' &&
+        Path->Buffer[Path->Length / sizeof(WCHAR) - 1] == L'"'
         )
     {
         PH_STRINGREF partInside;
 
-        partInside.Buffer = &OldTaskMgrDebugger->Buffer[1];
-        partInside.Length = OldTaskMgrDebugger->Length - 2 * sizeof(WCHAR);
+        partInside.Buffer = &Path->Buffer[1];
+        partInside.Length = Path->Length - 2 * sizeof(WCHAR);
 
         if (PhEqualStringRef(&partInside, &fileName->sr, TRUE))
             match = TRUE;
@@ -1415,6 +1543,7 @@ typedef enum _PHP_OPTIONS_INDEX
     PHP_OPTIONS_INDEX_ENABLE_UNDECORATE_SYMBOLS,
     PHP_OPTIONS_INDEX_ENABLE_COLUMN_HEADER_TOTALS,
     PHP_OPTIONS_INDEX_ENABLE_CYCLE_CPU_USAGE,
+    PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE,
     PHP_OPTIONS_INDEX_ENABLE_GRAPH_SCALING,
     PHP_OPTIONS_INDEX_ENABLE_MINIINFO_WINDOW,
     PHP_OPTIONS_INDEX_ENABLE_MEMSTRINGS_TREE,
@@ -1431,6 +1560,7 @@ typedef enum _PHP_OPTIONS_INDEX
     PHP_OPTIONS_INDEX_ICON_SINGLE_CLICK,
     PHP_OPTIONS_INDEX_ICON_TOGGLE_VISIBILITY,
     PHP_OPTIONS_INDEX_PROPAGATE_CPU_USAGE,
+    PHP_OPTIONS_INDEX_PROCESS_MONITOR,
     PHP_OPTIONS_INDEX_SHOW_ADVANCED_OPTIONS
 } PHP_OPTIONS_GENERAL_INDEX;
 
@@ -1464,6 +1594,7 @@ static VOID PhpAdvancedPageLoad(
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_AVX_EXTENSIONS, L"启用AVX拓展(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_COLUMN_HEADER_TOTALS, L"启用列标题总计(试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_CYCLE_CPU_USAGE, L"启用基于周期的 CPU 使用率(试验)", NULL);
+        PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE, L"Enable low-latency mode (experimental)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_GRAPH_SCALING, L"启用固定图形缩放 (试验)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_MINIINFO_WINDOW, L"启用托盘信息窗口", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_MEMSTRINGS_TREE, L"使用新的内存字符串对话框", NULL);
@@ -1481,6 +1612,8 @@ static VOID PhpAdvancedPageLoad(
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ICON_SINGLE_CLICK, L"托盘图标单击触发", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_ICON_TOGGLE_VISIBILITY, L"单击图标可切换可见性", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_PROPAGATE_CPU_USAGE, L"使用率统计包括折叠进程", NULL);
+        if (WindowsVersion >= WINDOWS_10)
+            PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_PROCESS_MONITOR, L"Enable process monitor (experimental)", NULL);
         PhAddListViewItem(listViewHandle, PHP_OPTIONS_INDEX_SHOW_ADVANCED_OPTIONS, L"显示高级选项", NULL);
     }
 
@@ -1499,6 +1632,7 @@ static VOID PhpAdvancedPageLoad(
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_COLUMN_HEADER_TOTALS, SETTING_TREE_LIST_ENABLE_HEADER_TOTALS);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_GRAPH_SCALING, SETTING_ENABLE_GRAPH_MAX_SCALE);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_CYCLE_CPU_USAGE, SETTING_ENABLE_CYCLE_CPU_USAGE);
+    SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE, SETTING_ENABLE_HIGH_RESOLUTION);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_THEME_SUPPORT, SETTING_ENABLE_THEME_SUPPORT);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_START_ASADMIN, SETTING_ENABLE_START_AS_ADMIN);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_STREAM_MODE, SETTING_ENABLE_STREAMER_MODE);
@@ -1514,6 +1648,8 @@ static VOID PhpAdvancedPageLoad(
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_ICON_TOGGLE_VISIBILITY, SETTING_ICON_TOGGLES_VISIBILITY);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_PROPAGATE_CPU_USAGE, SETTING_PROPAGATE_CPU_USAGE);
     SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_SHOW_ADVANCED_OPTIONS, SETTING_ENABLE_ADVANCED_OPTIONS);
+    if (WindowsVersion >= WINDOWS_10)
+        SetLvItemCheckForSetting(listViewHandle, PHP_OPTIONS_INDEX_PROCESS_MONITOR, SETTING_ENABLE_PROCESS_MONITOR);
 
     if (CurrentUserRunPresent)
         ListView_SetCheckState(listViewHandle, PHP_OPTIONS_INDEX_START_ATLOGON, TRUE);
@@ -1533,7 +1669,7 @@ static VOID PhpOptionsNotifyChangeCallback(
 
     //PhReInitializeWindowTheme(PhMainWndHandle);
 
-    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackSettingsUpdated), NULL);
+    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackSettingsUpdated), &RestartRequired);
 
     if (RestartRequired)
     {
@@ -1571,8 +1707,12 @@ VOID PhShowOptionsRestartRequired(
     _In_ HWND WindowHandle
     )
 {
+    HWND ownerWindowHandle;
+
+    ownerWindowHandle = WindowHandle && IsWindow(WindowHandle) ? WindowHandle : PhMainWndHandle;
+
     if (PhShowMessage2(
-        PhMainWndHandle,
+        ownerWindowHandle,
         TD_YES_BUTTON | TD_NO_BUTTON,
         TD_INFORMATION_ICON,
         L"修改的选项需要重启程序才能生效。",
@@ -1582,7 +1722,7 @@ VOID PhShowOptionsRestartRequired(
         SystemInformer_PrepareForEarlyShutdown();
 
         if (NT_SUCCESS(PhShellProcessHacker(
-            WindowHandle,
+            ownerWindowHandle,
             L"-v -newinstance",
             SW_SHOW,
             PH_SHELL_EXECUTE_DEFAULT,
@@ -1651,6 +1791,9 @@ static VOID PhpAdvancedPageSave(
     HWND listViewHandle;
     ULONG sampleCount;
 
+    if (!hwndDlg)
+        return;
+
     listViewHandle = GetDlgItem(hwndDlg, IDC_SETTINGS);
     sampleCount = PhGetDialogItemValue(hwndDlg, IDC_SAMPLECOUNT);
 
@@ -1700,6 +1843,7 @@ static VOID PhpAdvancedPageSave(
     SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_COLUMN_HEADER_TOTALS, SETTING_TREE_LIST_ENABLE_HEADER_TOTALS);
     SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_GRAPH_SCALING, SETTING_ENABLE_GRAPH_MAX_SCALE);
     SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_CYCLE_CPU_USAGE, SETTING_ENABLE_CYCLE_CPU_USAGE);
+    SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_LOW_LATENCY_MODE, SETTING_ENABLE_HIGH_RESOLUTION);
     SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_THEME_SUPPORT, SETTING_ENABLE_THEME_SUPPORT);
     SetSettingForLvItemCheck(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_START_ASADMIN, SETTING_ENABLE_START_AS_ADMIN);
     SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_ENABLE_STREAM_MODE, SETTING_ENABLE_STREAMER_MODE);
@@ -1715,6 +1859,8 @@ static VOID PhpAdvancedPageSave(
     SetSettingForLvItemCheck(listViewHandle, PHP_OPTIONS_INDEX_ICON_TOGGLE_VISIBILITY, SETTING_ICON_TOGGLES_VISIBILITY);
     SetSettingForLvItemCheck(listViewHandle, PHP_OPTIONS_INDEX_PROPAGATE_CPU_USAGE, SETTING_PROPAGATE_CPU_USAGE);
     SetSettingForLvItemCheck(listViewHandle, PHP_OPTIONS_INDEX_SHOW_ADVANCED_OPTIONS, SETTING_ENABLE_ADVANCED_OPTIONS);
+    if (WindowsVersion >= WINDOWS_10)
+        SetSettingForLvItemCheckRestartRequired(listViewHandle, PHP_OPTIONS_INDEX_PROCESS_MONITOR, SETTING_ENABLE_PROCESS_MONITOR);
 
     if (PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT)) // PhGetIntegerSetting required (dmex)
     {
@@ -1725,8 +1871,6 @@ static VOID PhpAdvancedPageSave(
         ListView_GetCheckState(listViewHandle, PHP_OPTIONS_INDEX_START_ATLOGON) == BST_CHECKED,
         ListView_GetCheckState(listViewHandle, PHP_OPTIONS_INDEX_START_HIDDEN) == BST_CHECKED
         );
-
-    SystemInformer_Invoke(PhpOptionsNotifyChangeCallback, NULL);
 }
 
 _Function_class_(USER_THREAD_START_ROUTINE)
@@ -1891,6 +2035,23 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
+            LOGFONT font;
+            HFONT fontHandle;
+
+            if (GetCurrentFont(&font) && (fontHandle = CreateFontIndirect(&font)))
+            {
+                PhSwapReferenceFont(&CurrentFontInstance, NULL, fontHandle, FALSE);
+                SetWindowFont(OptionsTreeControl, CurrentFontInstance, TRUE); // HACK
+                SetWindowFont(ListViewHandle, CurrentFontInstance, TRUE);
+                SetWindowFont(GetDlgItem(hwndDlg, IDC_FONT), CurrentFontInstance, TRUE);
+            }
+
+            if (GetCurrentFontMonospace(&font) && (fontHandle = CreateFontIndirect(&font)))
+            {
+                PhSwapReferenceFont(&CurrentFontMonospaceInstance, NULL, fontHandle, FALSE);
+                SetWindowFont(GetDlgItem(hwndDlg, IDC_FONTMONOSPACE), CurrentFontMonospaceInstance, TRUE);
+            }
+
             PhLayoutManagerUpdate(&LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&LayoutManager);
 
@@ -2226,6 +2387,28 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
     return FALSE;
 }
 
+// Editor parameters passed to PhpOptionsAdvancedEditDlgProc. SettingSchema (when present) is owned
+// by the advanced context's schema object and remains valid for the lifetime of the modal dialog.
+typedef struct _PH_OPTIONS_ADVANCED_EDIT_CONTEXT
+{
+    PPH_SETTING Setting;
+    PPH_STRING Description;
+    PVOID SettingSchema;
+} PH_OPTIONS_ADVANCED_EDIT_CONTEXT, *PPH_OPTIONS_ADVANCED_EDIT_CONTEXT;
+
+static PPH_STRING OptionsAdvancedFormatSupportedValues(
+    _In_ PVOID SettingSchema,
+    _In_ PH_SETTING_TYPE Type
+    );
+
+_Success_(return)
+static BOOLEAN OptionsAdvancedValidateAgainstSchema(
+    _In_ PVOID SettingSchema,
+    _In_ PH_SETTING_TYPE Type,
+    _In_ PPH_STRING Value,
+    _Out_ PPH_STRING* Warning
+    );
+
 static INT_PTR CALLBACK PhpOptionsAdvancedEditDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -2239,23 +2422,59 @@ static INT_PTR CALLBACK PhpOptionsAdvancedEditDlgProc(
     {
     case WM_INITDIALOG:
         {
-            PPH_SETTING setting = (PPH_SETTING)lParam;
+            PPH_OPTIONS_ADVANCED_EDIT_CONTEXT editContext = (PPH_OPTIONS_ADVANCED_EDIT_CONTEXT)lParam;
+            PPH_SETTING setting = editContext->Setting;
 
             PhSetApplicationWindowIcon(hwndDlg);
 
             PhSetWindowText(hwndDlg, L"Setting Editor");
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
-            PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, setting);
+            PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, editContext);
 
             PhInitializeLayoutManager(&LayoutManager, hwndDlg);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_NAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_DESCRIPTION), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_SUPPORTED), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_VALUE), NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDCANCEL), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
             PhSetDialogItemText(hwndDlg, IDC_NAME, setting->Name.Buffer);
             PhSetDialogItemText(hwndDlg, IDC_VALUE, PH_AUTO_T(PH_STRING, PhSettingToString(setting->Type, setting))->Buffer);
+
+            if (editContext->Description)
+            {
+                // Schema descriptions use lone '\n'; convert to '\r\n' for the multiline edit control.
+                PH_STRING_BUILDER stringBuilder;
+                SIZE_T length = editContext->Description->Length / sizeof(WCHAR);
+
+                PhInitializeStringBuilder(&stringBuilder, editContext->Description->Length + 16);
+
+                for (SIZE_T i = 0; i < length; i++)
+                {
+                    WCHAR character = editContext->Description->Buffer[i];
+
+                    if (character == L'\n' && (i == 0 || editContext->Description->Buffer[i - 1] != L'\r'))
+                        PhAppendStringBuilder2(&stringBuilder, L"\r\n");
+                    else
+                        PhAppendCharStringBuilder(&stringBuilder, character);
+                }
+
+                PhSetDialogItemText(hwndDlg, IDC_DESCRIPTION, stringBuilder.String->Buffer);
+                PhDeleteStringBuilder(&stringBuilder);
+            }
+            else
+            {
+                PhSetDialogItemText(hwndDlg, IDC_DESCRIPTION, L"No schema description available.");
+            }
+
+            if (editContext->SettingSchema)
+            {
+                PPH_STRING supported = OptionsAdvancedFormatSupportedValues(editContext->SettingSchema, setting->Type);
+                PhSetDialogItemText(hwndDlg, IDC_SUPPORTED, supported->Buffer);
+                PhDereferenceObject(supported);
+            }
 
             EnableWindow(GetDlgItem(hwndDlg, IDC_NAME), FALSE);
 
@@ -2273,7 +2492,7 @@ static INT_PTR CALLBACK PhpOptionsAdvancedEditDlgProc(
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
-            PhLayoutManagerUpdate(&LayoutManager, LOWORD(wParam));
+            PhLayoutManagerUpdate(&LayoutManager, PhGetWindowDpi(hwndDlg));
             PhLayoutManagerLayout(&LayoutManager);
         }
         break;
@@ -2291,8 +2510,27 @@ static INT_PTR CALLBACK PhpOptionsAdvancedEditDlgProc(
                 break;
             case IDOK:
                 {
-                    PPH_SETTING setting = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+                    PPH_OPTIONS_ADVANCED_EDIT_CONTEXT editContext = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+                    PPH_SETTING setting = editContext->Setting;
                     PPH_STRING settingValue = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_VALUE)));
+
+                    // Schema validation is advisory: warn on a constraint violation but still apply the value.
+                    if (editContext->SettingSchema)
+                    {
+                        PPH_STRING warning;
+
+                        if (!OptionsAdvancedValidateAgainstSchema(editContext->SettingSchema, setting->Type, settingValue, &warning))
+                        {
+                            PhShowWarning2(
+                                hwndDlg,
+                                L"The value is outside the schema's supported values.",
+                                L"\"%s\" is not one of the supported values (%s).\r\nThe value was applied anyway.",
+                                settingValue->Buffer,
+                                PhGetString(warning)
+                                );
+                            PhClearReference(&warning);
+                        }
+                    }
 
                     if (!PhSettingFromString(
                         setting->Type,
@@ -2360,6 +2598,9 @@ typedef struct _PH_OPTIONS_ADVANCED_CONTEXT
     PPH_HASHTABLE NodeHashtable;
     PPH_LIST NodeList;
     ULONG_PTR SearchMatchHandle;
+
+    PVOID SchemaObject;     // Root settings.schema.json object (owns the tree, freed on delete).
+    PVOID SchemaProperties; // The "properties" object inside SchemaObject (not owned).
 } PH_OPTIONS_ADVANCED_CONTEXT, *PPH_OPTIONS_ADVANCED_CONTEXT;
 
 typedef enum _PH_OPTIONS_ADVANCED_TREE_ITEM_MENU
@@ -2376,6 +2617,7 @@ typedef enum _PH_OPTIONS_ADVANCED_COLUMN_ITEM
     PH_OPTIONS_ADVANCED_COLUMN_ITEM_TYPE,
     PH_OPTIONS_ADVANCED_COLUMN_ITEM_VALUE,
     PH_OPTIONS_ADVANCED_COLUMN_ITEM_DEFAULT,
+    PH_OPTIONS_ADVANCED_COLUMN_ITEM_DESCRIPTION,
     PH_OPTIONS_ADVANCED_COLUMN_ITEM_MAXIMUM
 } PH_OPTIONS_ADVANCED_COLUMN_ITEM;
 
@@ -2388,6 +2630,8 @@ typedef struct _PH_OPTIONS_ADVANCED_ROOT_NODE
     PPH_STRING Name;
     PPH_STRING ValueString;
     PPH_STRING DefaultString;
+    PPH_STRING Description;     // Schema description, or NULL when no schema is loaded.
+    PVOID SettingSchema;       // Per-setting schema object (owned by Context->SchemaObject).
 
     PH_STRINGREF TextCache[PH_OPTIONS_ADVANCED_COLUMN_ITEM_MAXIMUM];
 } PH_OPTIONS_ADVANCED_ROOT_NODE, *PPH_OPTIONS_ADVANCED_ROOT_NODE;
@@ -2434,6 +2678,266 @@ BEGIN_SORT_FUNCTION(Default)
     sortResult = PhCompareString(node1->DefaultString, node2->DefaultString, TRUE);
 }
 END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(Description)
+{
+    sortResult = PhCompareStringWithNull(node1->Description, node2->Description, TRUE);
+}
+END_SORT_FUNCTION
+
+// settings.schema.json support: load the schema describing every setting and use it to surface
+// descriptions, supported values and value validation in the advanced options editor.
+
+static VOID OptionsAdvancedLoadSchema(
+    _Inout_ PPH_OPTIONS_ADVANCED_CONTEXT Context
+    )
+{
+    PPH_STRING fileName;
+    PVOID object;
+
+    if (fileName = PhGetApplicationDirectoryFileNameZ(L"settings.schema.json", TRUE))
+    {
+        if (NT_SUCCESS(PhLoadJsonObjectFromFile(&object, &fileName->sr)))
+        {
+            Context->SchemaObject = object;
+            Context->SchemaProperties = PhGetJsonObject(object, "properties");
+        }
+
+        PhDereferenceObject(fileName);
+    }
+}
+
+static VOID OptionsAdvancedFreeSchema(
+    _Inout_ PPH_OPTIONS_ADVANCED_CONTEXT Context
+    )
+{
+    if (Context->SchemaObject)
+    {
+        PhFreeJsonObject(Context->SchemaObject);
+        Context->SchemaObject = NULL;
+        Context->SchemaProperties = NULL;
+    }
+}
+
+// Returns the per-setting schema object (owned by Context->SchemaObject), or NULL.
+static PVOID OptionsAdvancedGetSettingSchema(
+    _In_ PPH_OPTIONS_ADVANCED_CONTEXT Context,
+    _In_ PCPH_STRINGREF Name
+    )
+{
+    PVOID object;
+    PPH_BYTES name;
+
+    if (!Context->SchemaProperties)
+        return NULL;
+
+    name = PhConvertUtf16ToUtf8Ex(Name->Buffer, Name->Length);
+    object = PhGetJsonObject(Context->SchemaProperties, name->Buffer);
+    PhDereferenceObject(name);
+
+    return object;
+}
+
+// Finds a constraint node (e.g. "enum", "minimum", "maximum") either at the top level of the
+// setting schema or inside one of its "anyOf" branches.
+static PVOID OptionsAdvancedFindSchemaNode(
+    _In_ PVOID SettingSchema,
+    _In_ PCSTR Key
+    )
+{
+    PVOID node;
+    PVOID anyOf;
+
+    if (node = PhGetJsonObject(SettingSchema, Key))
+        return node;
+
+    if (anyOf = PhGetJsonObject(SettingSchema, "anyOf"))
+    {
+        ULONG count = PhGetJsonArrayLength(anyOf);
+
+        for (ULONG i = 0; i < count; i++)
+        {
+            PVOID entry;
+
+            if ((entry = PhGetJsonArrayIndexObject(anyOf, i)) && (node = PhGetJsonObject(entry, Key)))
+                return node;
+        }
+    }
+
+    return NULL;
+}
+
+// Builds a human-readable supported-values hint. Schema constraints are expressed in decimal;
+// integer settings are entered/displayed in hexadecimal, so integer constraints are converted.
+static PPH_STRING OptionsAdvancedFormatSupportedValues(
+    _In_ PVOID SettingSchema,
+    _In_ PH_SETTING_TYPE Type
+    )
+{
+    PH_STRING_BUILDER stringBuilder;
+    PVOID enumObject;
+    PVOID minimumNode;
+    PVOID maximumNode;
+
+    PhInitializeStringBuilder(&stringBuilder, 64);
+
+    enumObject = OptionsAdvancedFindSchemaNode(SettingSchema, "enum");
+    minimumNode = OptionsAdvancedFindSchemaNode(SettingSchema, "minimum");
+    maximumNode = OptionsAdvancedFindSchemaNode(SettingSchema, "maximum");
+
+    if (enumObject && PhGetJsonObjectType(enumObject) == PH_JSON_OBJECT_TYPE_ARRAY)
+    {
+        ULONG count = PhGetJsonArrayLength(enumObject);
+        BOOLEAN first = TRUE;
+
+        if (Type == IntegerSettingType)
+            PhAppendStringBuilder2(&stringBuilder, L"(hex) ");
+
+        for (ULONG i = 0; i < count; i++)
+        {
+            PVOID element;
+            PPH_STRING value;
+
+            if (!(element = PhGetJsonArrayIndexObject(enumObject, i)))
+                continue;
+
+            value = PhGetJsonObjectString(element);
+
+            if (!first)
+                PhAppendStringBuilder2(&stringBuilder, L", ");
+            first = FALSE;
+
+            if (Type == IntegerSettingType)
+            {
+                ULONG64 integer;
+
+                if (PhStringToInteger64(&value->sr, 10, &integer))
+                    PhAppendFormatStringBuilder(&stringBuilder, L"%I64x", integer);
+                else
+                    PhAppendStringBuilder(&stringBuilder, &value->sr);
+            }
+            else
+            {
+                PhAppendStringBuilder(&stringBuilder, &value->sr);
+            }
+
+            PhDereferenceObject(value);
+        }
+    }
+    else if (minimumNode || maximumNode)
+    {
+        ULONG64 minimum = minimumNode ? (ULONG64)PhGetJsonInt64Object(minimumNode) : 0;
+        ULONG64 maximum = maximumNode ? (ULONG64)PhGetJsonInt64Object(maximumNode) : 0;
+
+        if (Type == IntegerSettingType)
+            PhAppendFormatStringBuilder(&stringBuilder, L"(hex) %I64x - %I64x", minimum, maximum);
+        else
+            PhAppendFormatStringBuilder(&stringBuilder, L"%I64u - %I64u", minimum, maximum);
+    }
+    else
+    {
+        switch (Type)
+        {
+        case StringSettingType:
+            PhAppendStringBuilder2(&stringBuilder, L"String");
+            break;
+        case IntegerSettingType:
+            PhAppendStringBuilder2(&stringBuilder, L"Integer (hex)");
+            break;
+        case IntegerPairSettingType:
+            PhAppendStringBuilder2(&stringBuilder, L"x,y");
+            break;
+        case ScalableIntegerPairSettingType:
+            PhAppendStringBuilder2(&stringBuilder, L"@dpi|x,y");
+            break;
+        }
+    }
+
+    return PhFinalStringBuilderString(&stringBuilder);
+}
+
+// Validates Value against the schema's enum/range constraints. Returns TRUE when the value is
+// acceptable (or unconstrained); on FALSE, Warning receives the supported-values hint. Comparisons
+// are numeric so that hexadecimal entry never clashes with the schema's decimal constraints.
+_Success_(return)
+static BOOLEAN OptionsAdvancedValidateAgainstSchema(
+    _In_ PVOID SettingSchema,
+    _In_ PH_SETTING_TYPE Type,
+    _In_ PPH_STRING Value,
+    _Out_ PPH_STRING* Warning
+    )
+{
+    PVOID enumObject;
+    PVOID minimumNode;
+    PVOID maximumNode;
+
+    *Warning = NULL;
+
+    enumObject = OptionsAdvancedFindSchemaNode(SettingSchema, "enum");
+
+    if (enumObject && PhGetJsonObjectType(enumObject) == PH_JSON_OBJECT_TYPE_ARRAY)
+    {
+        ULONG count = PhGetJsonArrayLength(enumObject);
+        ULONG64 value64 = 0;
+        BOOLEAN valueIsInteger;
+
+        valueIsInteger = (Type == IntegerSettingType) && PhStringToInteger64(&Value->sr, 16, &value64);
+
+        for (ULONG i = 0; i < count; i++)
+        {
+            PVOID element;
+            PPH_STRING member;
+            BOOLEAN match = FALSE;
+
+            if (!(element = PhGetJsonArrayIndexObject(enumObject, i)))
+                continue;
+
+            member = PhGetJsonObjectString(element);
+
+            if (valueIsInteger)
+            {
+                ULONG64 member64;
+
+                if (PhStringToInteger64(&member->sr, 10, &member64) && member64 == value64)
+                    match = TRUE;
+            }
+            else if (PhEqualString(member, Value, FALSE))
+            {
+                match = TRUE;
+            }
+
+            PhDereferenceObject(member);
+
+            if (match)
+                return TRUE;
+        }
+
+        *Warning = OptionsAdvancedFormatSupportedValues(SettingSchema, Type);
+        return FALSE;
+    }
+
+    minimumNode = OptionsAdvancedFindSchemaNode(SettingSchema, "minimum");
+    maximumNode = OptionsAdvancedFindSchemaNode(SettingSchema, "maximum");
+
+    if ((minimumNode || maximumNode) && Type == IntegerSettingType)
+    {
+        ULONG64 value64;
+
+        if (PhStringToInteger64(&Value->sr, 16, &value64))
+        {
+            ULONG64 minimum = minimumNode ? (ULONG64)PhGetJsonInt64Object(minimumNode) : 0;
+            ULONG64 maximum = maximumNode ? (ULONG64)PhGetJsonInt64Object(maximumNode) : MAXULONG64;
+
+            if (value64 < minimum || value64 > maximum)
+            {
+                *Warning = OptionsAdvancedFormatSupportedValues(SettingSchema, Type);
+                return FALSE;
+            }
+        }
+    }
+
+    return TRUE;
+}
 
 VOID OptionsAdvancedLoadSettingsTreeList(
     _Inout_ PPH_OPTIONS_ADVANCED_CONTEXT Context
@@ -2508,6 +3012,7 @@ VOID DestroyOptionsAdvancedNode(
     PhClearReference(&Node->Name);
     PhClearReference(&Node->ValueString);
     PhClearReference(&Node->DefaultString);
+    PhClearReference(&Node->Description);
 
     PhFree(Node);
 }
@@ -2533,6 +3038,10 @@ PPH_OPTIONS_ADVANCED_ROOT_NODE AddOptionsAdvancedNode(
     node->Name = PhCreateString2(&Setting->Name);
     node->ValueString = PhSettingToString(Setting->Type, Setting);
     node->DefaultString = PhCreateString2(&Setting->DefaultValue);
+    node->SettingSchema = OptionsAdvancedGetSettingSchema(Context, &Setting->Name);
+
+    if (node->SettingSchema)
+        node->Description = PhGetJsonValueAsString(node->SettingSchema, "description");
 
     PhAddEntryHashtable(Context->NodeHashtable, &node);
     PhAddItemList(Context->NodeList, node);
@@ -2548,19 +3057,19 @@ PPH_OPTIONS_ADVANCED_ROOT_NODE FindOptionsAdvancedNode(
     _In_ PPH_STRING Name
     )
 {
-    PH_OPTIONS_ADVANCED_ROOT_NODE lookupPluginsNode;
-    PPH_OPTIONS_ADVANCED_ROOT_NODE lookupPluginsNodePtr = &lookupPluginsNode;
-    PPH_OPTIONS_ADVANCED_ROOT_NODE* pluginsNode;
+    PH_OPTIONS_ADVANCED_ROOT_NODE lookupNode;
+    PPH_OPTIONS_ADVANCED_ROOT_NODE lookupNodePtr = &lookupNode;
+    PPH_OPTIONS_ADVANCED_ROOT_NODE* foundNode;
 
-    lookupPluginsNode.Name = Name;
+    lookupNode.Name = Name;
 
-    pluginsNode = (PPH_OPTIONS_ADVANCED_ROOT_NODE*)PhFindEntryHashtable(
+    foundNode = (PPH_OPTIONS_ADVANCED_ROOT_NODE*)PhFindEntryHashtable(
         Context->NodeHashtable,
-        &lookupPluginsNodePtr
+        &lookupNodePtr
         );
 
-    if (pluginsNode)
-        return *pluginsNode;
+    if (foundNode)
+        return *foundNode;
     else
         return NULL;
 }
@@ -2614,14 +3123,15 @@ BOOLEAN NTAPI OptionsAdvancedTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     SORT_FUNCTION(Type),
                     SORT_FUNCTION(Value),
                     SORT_FUNCTION(Default),
+                    SORT_FUNCTION(Description),
                 };
-                long (__cdecl* sortFunction)(void*, const void*, const void*);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 if (context->TreeNewSortColumn < PH_OPTIONS_ADVANCED_COLUMN_ITEM_MAXIMUM)
                     sortFunction = sortFunctions[context->TreeNewSortColumn];
@@ -2680,6 +3190,9 @@ BOOLEAN NTAPI OptionsAdvancedTreeNewCallback(
                 break;
             case PH_OPTIONS_ADVANCED_COLUMN_ITEM_DEFAULT:
                 getCellText->Text = PhGetStringRef(node->DefaultString);
+                break;
+            case PH_OPTIONS_ADVANCED_COLUMN_ITEM_DESCRIPTION:
+                getCellText->Text = PhGetStringRef(node->Description);
                 break;
             default:
                 return FALSE;
@@ -2884,6 +3397,9 @@ VOID InitializeOptionsAdvancedTree(
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_TYPE, TRUE, L"Type", 100, PH_ALIGN_LEFT, 1, 0, TRUE);
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_VALUE, TRUE, L"值", 200, PH_ALIGN_LEFT, 2, 0, TRUE);
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DEFAULT, TRUE, L"Default", 200, PH_ALIGN_LEFT, 3, 0, TRUE);
+    PhAddTreeNewColumnEx(Context->TreeNewHandle, PH_OPTIONS_ADVANCED_COLUMN_ITEM_DESCRIPTION, TRUE, L"Description", 300, PH_ALIGN_LEFT, 4, 0, FALSE);
+
+    OptionsAdvancedLoadSchema(Context);
 
     PhInitializeTreeNewFilterSupport(&Context->TreeFilterSupport, Context->TreeNewHandle, Context->NodeList);
 
@@ -2906,10 +3422,13 @@ VOID DeleteOptionsAdvancedTree(
 
     PhDereferenceObject(Context->NodeHashtable);
     PhDereferenceObject(Context->NodeList);
+
+    OptionsAdvancedFreeSchema(Context);
 }
 
 #pragma endregion
 
+_Function_class_(PH_SETTINGS_ENUM_CALLBACK)
 static BOOLEAN PhpOptionsSettingsCallback(
     _In_ PPH_SETTING Setting,
     _In_ PVOID Context
@@ -2921,6 +3440,7 @@ static BOOLEAN PhpOptionsSettingsCallback(
     return TRUE;
 }
 
+_Function_class_(PH_TN_FILTER_FUNCTION)
 BOOLEAN PhpOptionsAdvancedTreeFilterCallback(
     _In_ PPH_TREENEW_NODE Node,
     _In_ PVOID Context
@@ -2929,57 +3449,7 @@ BOOLEAN PhpOptionsAdvancedTreeFilterCallback(
     PPH_OPTIONS_ADVANCED_ROOT_NODE node = (PPH_OPTIONS_ADVANCED_ROOT_NODE)Node;
     PPH_OPTIONS_ADVANCED_CONTEXT context = Context;
 
-    if (context->HideModified)
-    {
-        switch (node->Type)
-        {
-        case StringSettingType:
-        case IntegerPairSettingType:
-        case ScalableIntegerPairSettingType:
-            {
-                if (PhEqualString(node->DefaultString, node->ValueString, TRUE))
-                {
-                    if (context->HideDefault)
-                    {
-                        return FALSE;
-                    }
-                }
-                else
-                {
-                    if (context->HideModified)
-                    {
-                        return FALSE;
-                    }
-                }
-            }
-            break;
-        case IntegerSettingType:
-            {
-                ULONG64 integer;
-
-                if (PhStringToInteger64(&node->DefaultString->sr, 16, &integer))
-                {
-                    if (node->Setting->u.Integer == (ULONG)integer)
-                    {
-                        if (context->HideDefault)
-                        {
-                            return FALSE;
-                        }
-                    }
-                    else
-                    {
-                        if (context->HideModified)
-                        {
-                            return FALSE;
-                        }
-                    }
-                }
-            }
-            break;
-        }
-    }
-
-    if (context->HideDefault)
+    if (context->HideModified || context->HideDefault)
     {
         switch (node->Type)
         {
@@ -3042,6 +3512,7 @@ BOOLEAN PhpOptionsAdvancedTreeFilterCallback(
     return FALSE;
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PhpOptionsAdvancedSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -3115,25 +3586,25 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
             PhDeleteLayoutManager(&context->LayoutManager);
 
             PhRemoveTreeNewFilter(&context->TreeFilterSupport, context->TreeFilterEntry);
-            DeleteOptionsAdvancedTree(context);
+             DeleteOptionsAdvancedTree(context);
 
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
-        }
-        break;
-    case WM_DPICHANGED_AFTERPARENT:
-        {
-            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
-            PhLayoutManagerLayout(&context->LayoutManager);
-        }
-        break;
-    case WM_SIZE:
-        {
-            PhLayoutManagerLayout(&context->LayoutManager);
-        }
-        break;
-    case WM_COMMAND:
-        {
-            switch (GET_WM_COMMAND_ID(wParam, lParam))
+             PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+         }
+         break;
+     case WM_DPICHANGED_AFTERPARENT:
+         {
+             PhLayoutManagerUpdate(&context->LayoutManager, PhGetWindowDpi(hwndDlg));
+             PhLayoutManagerLayout(&context->LayoutManager);
+         }
+         break;
+     case WM_SIZE:
+         {
+             PhLayoutManagerLayout(&context->LayoutManager);
+         }
+         break;
+     case WM_COMMAND:
+         {
+             switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDOK:
             case IDCANCEL:
@@ -3151,7 +3622,8 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
                     PPH_EMENU_ITEM highlightdefaultMenuItem;
                     PPH_EMENU_ITEM selectedItem;
 
-                    GetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect);
+                    if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_FILTEROPTIONS), &rect))
+                        break;
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, hidemodifiedMenuItem = PhCreateEMenuItem(0, PH_OPTIONS_ADVANCED_TREE_ITEM_MENU_HIDE_MODIFIED, L"Hide modified", NULL, NULL), ULONG_MAX);
@@ -3192,7 +3664,6 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
                 {
                     ClearOptionsAdvancedTree(context);
                     PhEnumSettings(PhpOptionsSettingsCallback, context);
-                    TreeNew_NodesStructured(context->TreeNewHandle);
 
                     PhApplyTreeNewFilters(&context->TreeFilterSupport);
                 }
@@ -3203,12 +3674,18 @@ INT_PTR CALLBACK PhpOptionsAdvancedDlgProc(
 
                     if (node = GetSelectedOptionsAdvancedNode(context))
                     {
+                        PH_OPTIONS_ADVANCED_EDIT_CONTEXT editContext;
+
+                        editContext.Setting = node->Setting;
+                        editContext.Description = node->Description;
+                        editContext.SettingSchema = node->SettingSchema;
+
                         PhDialogBox(
                             PhInstanceHandle,
-                            MAKEINTRESOURCE(IDD_EDITENV),
+                            MAKEINTRESOURCE(IDD_OPTADVEDIT),
                             hwndDlg,
                             PhpOptionsAdvancedEditDlgProc,
-                            node->Setting
+                            &editContext
                             );
 
                         PhMoveReference(
@@ -3323,6 +3800,7 @@ typedef struct _COLOR_ITEM
 {
     PCWSTR SettingName;
     PCWSTR UseSettingName;
+    ULONG GroupId;
     PCWSTR Name;
     PCWSTR Description;
 
@@ -3330,38 +3808,87 @@ typedef struct _COLOR_ITEM
     COLORREF CurrentColor;
 } COLOR_ITEM, *PCOLOR_ITEM;
 
-#define COLOR_ITEM(SettingName, Name, Description) { SettingName, L"Use" SettingName, Name, Description }
+typedef enum _PH_OPTIONS_HIGHLIGHTING_GROUP
+{
+    PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_NETWORK,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_WMI,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_HANDLES,
+    PH_OPTIONS_HIGHLIGHTING_GROUP_SERVICES
+} PH_OPTIONS_HIGHLIGHTING_GROUP;
+
+#define COLOR_ITEM(SettingName, GroupId, Name, Description) { SettingName, L"Use" SettingName, GroupId, Name, Description }
+#define COLOR_ITEM_USE(SettingName, UseSettingName, GroupId, Name, Description) { SettingName, UseSettingName, GroupId, Name, Description }
 
 static COLOR_ITEM ColorItems[] =
 {
-    COLOR_ITEM(SETTING_COLOR_OWN_PROCESSES, L"Own processes", L"Processes running under the same user account as System Informer."),
-    COLOR_ITEM(SETTING_COLOR_SYSTEM_PROCESSES, L"System processes", L"Processes running under the NT AUTHORITY\\SYSTEM user account."),
-    COLOR_ITEM(SETTING_COLOR_SERVICE_PROCESSES, L"Service processes", L"Processes which host one or more services."),
-    COLOR_ITEM(SETTING_COLOR_BACKGROUND_PROCESSES, L"Background processes", L"Processes with a background scheduling priority."),
-    COLOR_ITEM(SETTING_COLOR_JOB_PROCESSES, L"Job processes", L"Processes associated with a job."),
+    COLOR_ITEM(SETTING_COLOR_OWN_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Own processes", L"Processes running under the same user account as System Informer."),
+    COLOR_ITEM(SETTING_COLOR_SYSTEM_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"System processes", L"Processes running under the NT AUTHORITY\\SYSTEM user account."),
+    COLOR_ITEM(SETTING_COLOR_SERVICE_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Service processes", L"Processes which host one or more services."),
+    COLOR_ITEM(SETTING_COLOR_BACKGROUND_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Background processes", L"Processes with a background scheduling priority."),
+    COLOR_ITEM(SETTING_COLOR_JOB_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Job processes", L"Processes associated with a job."),
 #ifdef _WIN64
-    COLOR_ITEM(SETTING_COLOR_WOW64_PROCESSES, L"32-bit processes", L"Processes running under WOW64, i.e. 32-bit."),
+    COLOR_ITEM(SETTING_COLOR_WOW64_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"32-bit processes", L"Processes running under WOW64, i.e. 32-bit."),
 #endif
-    COLOR_ITEM(SETTING_COLOR_DEBUGGED_PROCESSES, L"Debugged processes", L"Processes that are currently being debugged."),
-    COLOR_ITEM(SETTING_COLOR_ELEVATED_PROCESSES, L"Elevated processes", L"Processes with full privileges on a system with UAC enabled."),
-    COLOR_ITEM(SETTING_COLOR_UI_ACCESS_PROCESSES, L"UIAccess processes", L"Processes with UIAccess privileges."),
-    COLOR_ITEM(SETTING_COLOR_PICO_PROCESSES, L"Pico processes", L"Processes that belong to the Windows subsystem for Linux."),
-    COLOR_ITEM(SETTING_COLOR_IMMERSIVE_PROCESSES, L"Immersive processes and DLLs", L"Processes and DLLs that belong to a Modern UI app."),
-    COLOR_ITEM(SETTING_COLOR_SUSPENDED, L"Suspended processes and threads", L"Processes and threads that are suspended from execution."),
-    COLOR_ITEM(SETTING_COLOR_PARTIALLY_SUSPENDED, L"Partially suspended processes and threads", L"Processes and threads that are partially suspended from execution."),
-    COLOR_ITEM(SETTING_COLOR_DOT_NET, L".NET processes and DLLs", L".NET (i.e. managed) processes and DLLs."),
-    COLOR_ITEM(SETTING_COLOR_PACKED, L"Packed processes", L"Executables are sometimes \"packed\" to reduce their size."),
-    COLOR_ITEM(SETTING_COLOR_LOW_IMAGE_COHERENCY, L"Low process image coherency", L"The image file backing the process has low coherency when compared to the mapped image."),
-    COLOR_ITEM(SETTING_COLOR_GUI_THREADS, L"GUI threads", L"Threads that have made at least one GUI-related system call."),
-    COLOR_ITEM(SETTING_COLOR_RELOCATED_MODULES, L"Relocated DLLs", L"DLLs that were not loaded at their preferred image bases."),
-    COLOR_ITEM(SETTING_COLOR_PROTECTED_HANDLES, L"Protected handles", L"Handles that are protected from being closed."),
-    COLOR_ITEM(SETTING_COLOR_PROTECTED_PROCESS, L"Protected processes", L"Processes with built-in protection levels."),
-    COLOR_ITEM(SETTING_COLOR_INHERIT_HANDLES, L"Inheritable handles", L"Handles that can be inherited by child processes."),
-    COLOR_ITEM(SETTING_COLOR_HANDLE_FILTERED, L"Filtered processes", L"Processes that are protected by handle object callbacks."),
-    COLOR_ITEM(SETTING_COLOR_UNKNOWN, L"Untrusted DLLs and Services", L"Services and DLLs which are not digitally signed."),
-    COLOR_ITEM(SETTING_COLOR_SERVICE_DISABLED, L"Disabled Services", L"Services which have been disabled."),
+    COLOR_ITEM(SETTING_COLOR_DEBUGGED_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Debugged processes", L"Processes that are currently being debugged."),
+    COLOR_ITEM(SETTING_COLOR_ELEVATED_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Elevated processes", L"Processes with full privileges on a system with UAC enabled."),
+    COLOR_ITEM(SETTING_COLOR_UI_ACCESS_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"UIAccess processes", L"Processes with UIAccess privileges."),
+    COLOR_ITEM(SETTING_COLOR_PICO_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Pico processes", L"Processes that belong to the Windows subsystem for Linux."),
+    COLOR_ITEM(SETTING_COLOR_IMMERSIVE_PROCESSES, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L"Immersive processes and DLLs", L"Processes and DLLs that belong to a Modern UI app."),
+    COLOR_ITEM(SETTING_COLOR_SUSPENDED, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Suspended processes and threads", L"Processes and threads that are suspended from execution."),
+    COLOR_ITEM(SETTING_COLOR_PARTIALLY_SUSPENDED, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Partially suspended processes and threads", L"Processes and threads that are partially suspended from execution."),
+    COLOR_ITEM(SETTING_COLOR_DOT_NET, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L".NET processes and DLLs", L".NET (i.e. managed) processes and DLLs."),
+    COLOR_ITEM(SETTING_COLOR_PACKED, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L"Packed processes", L"Executables are sometimes \"packed\" to reduce their size."),
+    COLOR_ITEM(SETTING_COLOR_LOW_IMAGE_COHERENCY, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L"Low process image coherency", L"The image file backing the process has low coherency when compared to the mapped image."),
+    COLOR_ITEM(SETTING_COLOR_GUI_THREADS, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"GUI threads", L"Threads that have made at least one GUI-related system call."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_SUSPENDED, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Suspended", L"Highlight suspended threads in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_DELAY_EXECUTION, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Delay execution", L"Highlight delay-execution waits in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_USER_REQUEST, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"User request", L"Highlight user-request waits in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_ALERT_BY_THREAD_ID, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Alert by thread ID", L"Highlight alert-by-thread-ID waits in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_QUEUE, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Queue", L"Highlight queue waits in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_EXECUTIVE, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Executive", L"Highlight executive waits in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_THREAD_GUI_THREADS, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"GUI threads", L"Highlight GUI threads in the Threads list."),
+    COLOR_ITEM(SETTING_COLOR_NETWORK_UNKNOWN_PROCESS, PH_OPTIONS_HIGHLIGHTING_GROUP_NETWORK, L"Unknown process", L"Highlight network items whose owning process is unknown."),
+    COLOR_ITEM(SETTING_COLOR_NETWORK_SUBSYSTEM_PROCESS, PH_OPTIONS_HIGHLIGHTING_GROUP_NETWORK, L"Subsystem process", L"Highlight network items owned by subsystem processes."),
+    COLOR_ITEM(SETTING_COLOR_ENVIRONMENT_PROCESS, PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT, L"Process environment", L"Highlight process environment variables in the Environment page."),
+    COLOR_ITEM(SETTING_COLOR_ENVIRONMENT_USER, PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT, L"User environment", L"Highlight user environment variables in the Environment page."),
+    COLOR_ITEM(SETTING_COLOR_ENVIRONMENT_SYSTEM, PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT, L"System environment", L"Highlight system environment variables in the Environment page."),
+    COLOR_ITEM(SETTING_COLOR_ENVIRONMENT_CMD, PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT, L"CMD variables", L"Highlight CMD-style environment variables in the Environment page."),
+    COLOR_ITEM(SETTING_COLOR_WMI_DEFAULT_NAMESPACE, PH_OPTIONS_HIGHLIGHTING_GROUP_WMI, L"Default namespace", L"Highlight providers in the default WMI namespace."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_ENABLED_DEFAULT, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Enabled by default", L"Token groups or privileges that are enabled by default."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_ENABLED, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Enabled", L"Token groups or privileges that are enabled."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_DISABLED_DEFAULT, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Disabled by default", L"Token groups or privileges that are disabled but enabled by default."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_DISABLED, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Disabled", L"Token groups or privileges that are disabled."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_REMOVED, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Removed privilege", L"Token privileges that have been removed."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_DANGEROUS_FLAG, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Dangerous flag", L"Token dangerous flags that are enabled."),
+    COLOR_ITEM(SETTING_COLOR_TOKEN_NORMAL_FLAG, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Normal flag", L"Token dangerous flags that are disabled."),
+    COLOR_ITEM(SETTING_COLOR_MEMORY_PRIVATE_PAGES, PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY, L"Private pages", L"Highlight private pages in the Memory list."),
+    COLOR_ITEM(SETTING_COLOR_MEMORY_SYSTEM_PAGES, PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY, L"System pages", L"Highlight system image pages in the Memory list."),
+    COLOR_ITEM(SETTING_COLOR_MEMORY_CFG_PAGES, PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY, L"CFG pages", L"Highlight CFG bitmap pages in the Memory list."),
+    COLOR_ITEM(SETTING_COLOR_MEMORY_EXECUTE_PAGES, PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY, L"Execute pages", L"Highlight executable pages in the Memory list."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_UNKNOWN, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Untrusted modules", L"Modules that are not digitally signed or otherwise untrusted."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_LOW_IMAGE_COHERENCY, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Low image coherency", L"Modules whose backing image file has low coherency."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_DOT_NET, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L".NET modules", L"Modules that contain managed .NET code."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_IMMERSIVE, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Immersive modules", L"Modules associated with app-container or immersive applications."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_RELOCATED, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Relocated modules", L"Modules that were not loaded at their preferred image base."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_IMAGEKNOWNDLL, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Known DLLs", L"Modules loaded from the KnownDLLs image set."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_SYSTEM, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Native modules", L"Standard loaded native modules, including trusted Microsoft modules."),
+    COLOR_ITEM(SETTING_COLOR_MODULE_MAPPED, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Mapped modules", L"Mapped files, mapped images, and enclave modules."),
+    COLOR_ITEM(SETTING_COLOR_RELOCATED_MODULES, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L"Relocated DLLs", L"DLLs that were not loaded at their preferred image bases."),
+    COLOR_ITEM(SETTING_COLOR_PROTECTED_HANDLES, PH_OPTIONS_HIGHLIGHTING_GROUP_HANDLES, L"Protected handles", L"Handles that are protected from being closed."),
+    COLOR_ITEM(SETTING_COLOR_PROTECTED_PROCESS, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Protected processes", L"Processes with built-in protection levels."),
+    COLOR_ITEM(SETTING_COLOR_INHERIT_HANDLES, PH_OPTIONS_HIGHLIGHTING_GROUP_HANDLES, L"Inheritable handles", L"Handles that can be inherited by child processes."),
+    COLOR_ITEM(SETTING_COLOR_HANDLE_FILTERED, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Filtered processes", L"Processes that are protected by handle object callbacks."),
+    COLOR_ITEM(SETTING_COLOR_UNKNOWN, PH_OPTIONS_HIGHLIGHTING_GROUP_SERVICES, L"Untrusted DLLs and Services", L"Services and DLLs which are not digitally signed."),
+    COLOR_ITEM(SETTING_COLOR_SERVICE_DISABLED, PH_OPTIONS_HIGHLIGHTING_GROUP_SERVICES, L"Disabled Services", L"Services which have been disabled."),
     //COLOR_ITEM(SETTING_COLOR_SERVICE_STOP, L"Stopped Services", L"Services that are not running.")
-    COLOR_ITEM(SETTING_COLOR_EFFICIENCY_MODE, L"Power efficiency", L"Processes and threads with power efficiency."),
+    COLOR_ITEM(SETTING_COLOR_EFFICIENCY_MODE, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Power efficiency", L"Processes and threads with power efficiency."),
 };
 
 COLORREF NTAPI PhpColorItemColorFunction(
@@ -3426,6 +3953,9 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
             ColorBox_SetColor(GetDlgItem(hwndDlg, IDC_REMOVEDOBJECTS), PhCsColorRemoved);
             ColorBox_ThemeSupport(GetDlgItem(hwndDlg, IDC_REMOVEDOBJECTS), PhEnableThemeSupport);
 
+            // Enable Window Border Color
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_WINDOW_BORDER_COLOR), PhGetIntegerSetting(SETTING_ENABLE_WINDOW_BORDER_COLOR) ? BST_CHECKED : BST_UNCHECKED);
+
             // Highlighting
             HighlightingListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
             PhSetListViewStyle(HighlightingListViewHandle, FALSE, TRUE);
@@ -3433,18 +3963,31 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
             PhAddListViewColumn(HighlightingListViewHandle, 0, 0, 0, LVCFMT_LEFT, 240, L"Name");
             PhSetExtendedListView(HighlightingListViewHandle);
             ExtendedListView_SetItemColorFunction(HighlightingListViewHandle, PhpColorItemColorFunction);
+            ListView_EnableGroupView(HighlightingListViewHandle, TRUE);
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_PROCESSES_AND_THREADS, L"Processes");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_THREADS, L"Threads");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_NETWORK, L"Network");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_ENVIRONMENT, L"Environment");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_WMI, L"WMI");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_TOKEN, L"Token");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_MEMORY, L"Memory");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_MODULES, L"Modules");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_IMAGES, L"Images and DLLs");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_HANDLES, L"Handles");
+            PhAddListViewGroup(HighlightingListViewHandle, PH_OPTIONS_HIGHLIGHTING_GROUP_SERVICES, L"Services");
 
             for (ULONG i = 0; i < RTL_NUMBER_OF(ColorItems); i++)
             {
                 INT lvItemIndex;
 
-                lvItemIndex = PhAddListViewItem(HighlightingListViewHandle, MAXINT, ColorItems[i].Name, &ColorItems[i]);
+                lvItemIndex = PhAddListViewGroupItem(HighlightingListViewHandle, ColorItems[i].GroupId, MAXINT, ColorItems[i].Name, &ColorItems[i]);
                 ColorItems[i].CurrentColor = PhGetIntegerSetting(ColorItems[i].SettingName);
                 ColorItems[i].CurrentUse = !!PhGetIntegerSetting(ColorItems[i].UseSettingName);
                 ListView_SetCheckState(HighlightingListViewHandle, lvItemIndex, ColorItems[i].CurrentUse);
             }
 
             PhInitializeLayoutManager(&LayoutManager, hwndDlg);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_ENABLE_WINDOW_BORDER_COLOR), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
             PhAddLayoutItem(&LayoutManager, HighlightingListViewHandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_INFO), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT | PH_LAYOUT_FORCE_INVALIDATE);
             PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_ENABLEALL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
@@ -3457,43 +4000,61 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
             PH_SET_INTEGER_CACHED_SETTING(ColorNew, ColorBox_GetColor(GetDlgItem(hwndDlg, IDC_NEWOBJECTS)));
             PH_SET_INTEGER_CACHED_SETTING(ColorRemoved, ColorBox_GetColor(GetDlgItem(hwndDlg, IDC_REMOVEDOBJECTS)));
 
+            PhSetIntegerSetting(SETTING_ENABLE_WINDOW_BORDER_COLOR, Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_WINDOW_BORDER_COLOR)) == BST_CHECKED);
+
             for (ULONG i = 0; i < RTL_NUMBER_OF(ColorItems); i++)
             {
-                ColorItems[i].CurrentUse = !!ListView_GetCheckState(HighlightingListViewHandle, i);
+                INT index;
+
+                index = PhFindListViewItemByParam(HighlightingListViewHandle, INT_ERROR, &ColorItems[i]);
+                if (index != INT_ERROR)
+                    ColorItems[i].CurrentUse = !!ListView_GetCheckState(HighlightingListViewHandle, index);
                 PhSetIntegerSetting(ColorItems[i].SettingName, ColorItems[i].CurrentColor);
                 PhSetIntegerSetting(ColorItems[i].UseSettingName, ColorItems[i].CurrentUse);
             }
 
-            PhDeleteLayoutManager(&LayoutManager);
-        }
-        break;
-    case WM_DPICHANGED_AFTERPARENT:
-        {
-            PhLayoutManagerUpdate(&LayoutManager, LOWORD(wParam));
-            PhLayoutManagerLayout(&LayoutManager);
-        }
-        break;
-    case WM_SIZE:
-        {
-            PhLayoutManagerLayout(&LayoutManager);
+             PhDeleteLayoutManager(&LayoutManager);
+         }
+         break;
+     case WM_DPICHANGED_AFTERPARENT:
+         {
+             PhLayoutManagerUpdate(&LayoutManager, PhGetWindowDpi(hwndDlg));
+             PhLayoutManagerLayout(&LayoutManager);
+         }
+         break;
+     case WM_SIZE:
+         {
+             PhLayoutManagerLayout(&LayoutManager);
 
-            ExtendedListView_SetColumnWidth(HighlightingListViewHandle, 0, ELVSCW_AUTOSIZE_REMAININGSPACE);
-        }
-        break;
-    case WM_COMMAND:
-        {
-            switch (GET_WM_COMMAND_ID(wParam, lParam))
-            {
-            case IDC_ENABLEALL:
+             ExtendedListView_SetColumnWidth(HighlightingListViewHandle, 0, ELVSCW_AUTOSIZE_REMAININGSPACE);
+         }
+         break;
+     case WM_COMMAND:
+         {
+             switch (GET_WM_COMMAND_ID(wParam, lParam))
+             {
+             case IDC_ENABLEALL:
                 {
                     for (ULONG i = 0; i < RTL_NUMBER_OF(ColorItems); i++)
-                        ListView_SetCheckState(HighlightingListViewHandle, i, TRUE);
+                    {
+                        INT index;
+
+                        index = PhFindListViewItemByParam(HighlightingListViewHandle, INT_ERROR, &ColorItems[i]);
+                        if (index != INT_ERROR)
+                            ListView_SetCheckState(HighlightingListViewHandle, index, TRUE);
+                    }
                 }
                 break;
             case IDC_DISABLEALL:
                 {
                     for (ULONG i = 0; i < RTL_NUMBER_OF(ColorItems); i++)
-                        ListView_SetCheckState(HighlightingListViewHandle, i, FALSE);
+                    {
+                        INT index;
+
+                        index = PhFindListViewItemByParam(HighlightingListViewHandle, INT_ERROR, &ColorItems[i]);
+                        if (index != INT_ERROR)
+                            ListView_SetCheckState(HighlightingListViewHandle, index, FALSE);
+                    }
                 }
                 break;
             }
@@ -3545,9 +4106,13 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
                     {
                         NMLVGETINFOTIP *getInfoTip = (NMLVGETINFOTIP *)lParam;
                         PH_STRINGREF tip;
+                        PCOLOR_ITEM colorItem;
 
-                        PhInitializeStringRefLongHint(&tip, ColorItems[getInfoTip->iItem].Description);
-                        PhCopyListViewInfoTip(getInfoTip, &tip);
+                        if (PhGetListViewItemParam(HighlightingListViewHandle, getInfoTip->iItem, &colorItem))
+                        {
+                            PhInitializeStringRefLongHint(&tip, colorItem->Description);
+                            PhCopyListViewInfoTip(getInfoTip, &tip);
+                        }
                     }
                 }
                 break;
@@ -3587,10 +4152,11 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
 
                     if (item && item->Id == IDC_RESET)
                     {
-                        PH_STRINGREF SettingName;
-                        PH_STRINGREF UseSettingName;
                         PPH_SETTING Color;
                         PPH_SETTING UseColor;
+
+                        PH_STRINGREF SettingName;
+                        PH_STRINGREF UseSettingName;
 
                         PhInitializeStringRef(&SettingName, ColorItem->SettingName);
                         PhInitializeStringRef(&UseSettingName, ColorItem->UseSettingName);
@@ -3634,9 +4200,10 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
 
                 if (item && item->Id == IDC_RESET)
                 {
-                    PH_STRINGREF SettingName;
                     PPH_SETTING Color;
                     BOOLEAN setNew = (HWND)wParam == GetDlgItem(hwndDlg, IDC_NEWOBJECTS);
+
+                    PH_STRINGREF SettingName;
 
                     PhInitializeStringRef(&SettingName, setNew ? SETTING_COLOR_NEW : SETTING_COLOR_REMOVED);
                     Color = PhGetSetting(&SettingName);
@@ -3662,17 +4229,269 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
     return FALSE;
 }
 
+typedef struct _PH_TRAYICON_NOTIFY_ITEM
+{
+    ULONG Bit;
+    PWSTR Name;
+} PH_TRAYICON_NOTIFY_ITEM, *PPH_TRAYICON_NOTIFY_ITEM;
+
+static PH_TRAYICON_NOTIFY_ITEM TrayIconNotifyItems[] =
+{
+    { PH_NOTIFY_PROCESS_CREATE, L"New processes" },
+    { PH_NOTIFY_PROCESS_DELETE, L"Terminated processes" },
+    { PH_NOTIFY_SERVICE_CREATE, L"New services" },
+    { PH_NOTIFY_SERVICE_START, L"Started services" },
+    { PH_NOTIFY_SERVICE_STOP, L"Stopped services" },
+    { PH_NOTIFY_SERVICE_DELETE, L"Deleted services" },
+    { PH_NOTIFY_SERVICE_MODIFIED, L"Modified services" },
+    { PH_NOTIFY_DEVICE_ARRIVED, L"Arrived devices" },
+    { PH_NOTIFY_DEVICE_REMOVED, L"Removed devices" },
+};
+
+#define PH_OPTIONS_TRAY_ICON_GROUP_NOTIFICATIONS 1
+#define PH_OPTIONS_TRAY_ICON_GROUP_TRAY_ICONS 2
+
+INT_PTR CALLBACK PhpOptionsTrayIconDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    )
+{
+    static PH_LAYOUT_MANAGER LayoutManager;
+    static HWND IconListViewHandle;
+    static BOOLEAN RestartRequired;
+
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        {
+            ULONG notifyMask;
+
+            RestartRequired = FALSE;
+
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_LAZYSTART), PhGetIntegerSetting(SETTING_ICON_TRAY_LAZY_START_DELAY) ? BST_CHECKED : BST_UNCHECKED);
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_PERSISTLAYOUT), PhGetIntegerSetting(SETTING_ICON_TRAY_PERSIST_GUID_ENABLED) ? BST_CHECKED : BST_UNCHECKED);
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_TRANSPARENTICONS), PhGetIntegerSetting(SETTING_ICON_TRANSPARENCY_ENABLED) ? BST_CHECKED : BST_UNCHECKED);
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_SINGLECLICK), PhGetIntegerSetting(SETTING_ICON_SINGLE_CLICK) ? BST_CHECKED : BST_UNCHECKED);
+
+            notifyMask = PhGetIntegerSetting(SETTING_ICON_NOTIFY_MASK);
+
+            IconListViewHandle = GetDlgItem(hwndDlg, IDC_TRAYICON_ICONLIST);
+            PhSetListViewStyle(IconListViewHandle, FALSE, TRUE);
+            ListView_SetExtendedListViewStyleEx(IconListViewHandle, LVS_EX_CHECKBOXES, LVS_EX_CHECKBOXES);
+            PhAddListViewColumn(IconListViewHandle, 0, 0, 0, LVCFMT_LEFT, 230, L"Name");
+            PhSetExtendedListView(IconListViewHandle);
+            ListView_EnableGroupView(IconListViewHandle, TRUE);
+            PhAddListViewGroup(IconListViewHandle, PH_OPTIONS_TRAY_ICON_GROUP_NOTIFICATIONS, L"Notifications");
+            PhAddListViewGroup(IconListViewHandle, PH_OPTIONS_TRAY_ICON_GROUP_TRAY_ICONS, L"Tray icons");
+
+            for (ULONG i = 0; i < RTL_NUMBER_OF(TrayIconNotifyItems); i++)
+            {
+                INT lvItemIndex;
+
+                if ((TrayIconNotifyItems[i].Bit == PH_NOTIFY_DEVICE_ARRIVED || TrayIconNotifyItems[i].Bit == PH_NOTIFY_DEVICE_REMOVED) &&
+                    WindowsVersion < WINDOWS_10)
+                {
+                    continue;
+                }
+
+                lvItemIndex = PhAddListViewGroupItem(
+                    IconListViewHandle,
+                    PH_OPTIONS_TRAY_ICON_GROUP_NOTIFICATIONS,
+                    MAXINT,
+                    TrayIconNotifyItems[i].Name,
+                    &TrayIconNotifyItems[i]
+                    );
+                ListView_SetCheckState(IconListViewHandle, lvItemIndex, !!(notifyMask & TrayIconNotifyItems[i].Bit));
+            }
+
+            for (ULONG i = 0; i < PhTrayIconItemList->Count; i++)
+            {
+                PPH_NF_ICON icon = PhTrayIconItemList->Items[i];
+                INT lvItemIndex;
+
+                lvItemIndex = PhAddListViewGroupItem(
+                    IconListViewHandle,
+                    PH_OPTIONS_TRAY_ICON_GROUP_TRAY_ICONS,
+                    MAXINT,
+                    icon->Text,
+                    icon
+                    );
+                ListView_SetCheckState(IconListViewHandle, lvItemIndex, !!(icon->Flags & PH_NF_ICON_ENABLED));
+            }
+
+            PhInitializeLayoutManager(&LayoutManager, hwndDlg);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_TRAYICON_LAZYSTART), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_TRAYICON_PERSISTLAYOUT), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_TRAYICON_TRANSPARENTICONS), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_TRAYICON_SINGLECLICK), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_TRAYICON_RESETLAYOUT), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, IconListViewHandle, NULL, PH_ANCHOR_ALL);
+        }
+        break;
+    case WM_DESTROY:
+        {
+            EXTERN_C BOOLEAN PhNfTransparencyEnabled;
+            BOOLEAN lazyStart;
+            BOOLEAN persistLayout;
+            BOOLEAN transparentIcons;
+            ULONG notifyMask;
+
+            lazyStart = Button_GetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_LAZYSTART)) == BST_CHECKED;
+            persistLayout = Button_GetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_PERSISTLAYOUT)) == BST_CHECKED;
+            transparentIcons = Button_GetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_TRANSPARENTICONS)) == BST_CHECKED;
+
+            if (lazyStart != !!PhGetIntegerSetting(SETTING_ICON_TRAY_LAZY_START_DELAY))
+                RestartRequired = TRUE;
+            if (persistLayout != !!PhGetIntegerSetting(SETTING_ICON_TRAY_PERSIST_GUID_ENABLED))
+                RestartRequired = TRUE;
+            if (transparentIcons != !!PhGetIntegerSetting(SETTING_ICON_TRANSPARENCY_ENABLED))
+                RestartRequired = TRUE;
+
+            PhSetIntegerSetting(SETTING_ICON_TRAY_LAZY_START_DELAY, lazyStart);
+            PhSetIntegerSetting(SETTING_ICON_TRAY_PERSIST_GUID_ENABLED, persistLayout);
+            PhSetIntegerSetting(SETTING_ICON_TRANSPARENCY_ENABLED, transparentIcons);
+            PhSetIntegerSetting(SETTING_ICON_SINGLE_CLICK, Button_GetCheck(GetDlgItem(hwndDlg, IDC_TRAYICON_SINGLECLICK)) == BST_CHECKED);
+
+            PhNfTransparencyEnabled = transparentIcons;
+
+            notifyMask = 0;
+
+            for (ULONG i = 0; i < RTL_NUMBER_OF(TrayIconNotifyItems); i++)
+            {
+                INT index;
+
+                index = PhFindListViewItemByParam(IconListViewHandle, INT_ERROR, &TrayIconNotifyItems[i]);
+                if (index != INT_ERROR && ListView_GetCheckState(IconListViewHandle, index))
+                    notifyMask |= TrayIconNotifyItems[i].Bit;
+            }
+
+            PhSetIntegerSetting(SETTING_ICON_NOTIFY_MASK, notifyMask);
+            PhMwpNotifyIconNotifyMask = notifyMask;
+
+            for (ULONG i = 0; i < PhTrayIconItemList->Count; i++)
+            {
+                PPH_NF_ICON icon = PhTrayIconItemList->Items[i];
+                INT index;
+
+                index = PhFindListViewItemByParam(IconListViewHandle, INT_ERROR, icon);
+                if (index != INT_ERROR)
+                    PhNfSetVisibleIcon(icon, !!ListView_GetCheckState(IconListViewHandle, index));
+            }
+
+            PhNfSaveSettings();
+
+            if (RestartRequired)
+                PhShowOptionsRestartRequired(hwndDlg);
+
+            PhDeleteLayoutManager(&LayoutManager);
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            PhLayoutManagerUpdate(&LayoutManager, PhGetWindowDpi(hwndDlg));
+            PhLayoutManagerLayout(&LayoutManager);
+        }
+        break;
+    case WM_SIZE:
+        {
+            PhLayoutManagerLayout(&LayoutManager);
+
+            ExtendedListView_SetColumnWidth(IconListViewHandle, 0, ELVSCW_AUTOSIZE_REMAININGSPACE);
+        }
+        break;
+    case WM_COMMAND:
+        {
+            switch (GET_WM_COMMAND_ID(wParam, lParam))
+            {
+            case IDC_TRAYICON_RESETLAYOUT:
+                {
+                    EXTERN_C VOID PhNfLoadGuids(VOID);
+
+                    PhSetStringSetting(SETTING_ICON_TRAY_GUIDS, L"");
+                    PhNfLoadGuids();
+                    RestartRequired = TRUE;
+                }
+                break;
+            }
+        }
+        break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    }
+
+    return FALSE;
+}
+
+INT_PTR CALLBACK PhpOptionsThemesDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    )
+{
+    static PH_LAYOUT_MANAGER LayoutManager;
+
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        {
+            HWND comboHandle;
+
+            PhInitializeLayoutManager(&LayoutManager, hwndDlg);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_ENABLETHEME), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&LayoutManager, GetDlgItem(hwndDlg, IDC_THEMEMODE), NULL, PH_ANCHOR_TOP | PH_ANCHOR_LEFT);
+
+            SetDlgItemCheckForSetting(hwndDlg, IDC_ENABLETHEME, SETTING_ENABLE_THEME_SUPPORT);
+
+            comboHandle = GetDlgItem(hwndDlg, IDC_THEMEMODE);
+            ComboBox_AddString(comboHandle, L"Automatic");
+            ComboBox_AddString(comboHandle, L"Light");
+            ComboBox_AddString(comboHandle, L"Dark");
+            ComboBox_AddString(comboHandle, L"Custom");
+            ComboBox_SetCurSel(comboHandle, PhGetIntegerSetting(SETTING_THEME_MODE));
+            EnableWindow(comboHandle, PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) != 0);
+        }
+        break;
+    case WM_DESTROY:
+        {
+            PhDeleteLayoutManager(&LayoutManager);
+        }
+        break;
+    case WM_COMMAND:
+        {
+            if (GET_WM_COMMAND_ID(wParam, lParam) == IDC_ENABLETHEME && !ThemeListViewStateInitializing)
+            {
+                PhpApplyThemeSupportSetting(hwndDlg);
+            }
+            else if (GET_WM_COMMAND_ID(wParam, lParam) == IDC_THEMEMODE &&
+                GET_WM_COMMAND_CMD(wParam, lParam) == CBN_SELCHANGE && !ThemeListViewStateInitializing)
+            {
+                PhpApplyThemeModeSetting(hwndDlg);
+            }
+        }
+        break;
+    }
+
+    return FALSE;
+}
+
 static COLOR_ITEM PhpOptionsGraphColorItems[] =
 {
-    COLOR_ITEM(SETTING_COLOR_CPU_KERNEL, L"CPU kernel", L"CPU kernel"),
-    COLOR_ITEM(SETTING_COLOR_CPU_USER, L"CPU user", L"CPU user"),
-    COLOR_ITEM(SETTING_COLOR_IO_READ_OTHER, L"I/O R+O", L"I/O R+O"),
-    COLOR_ITEM(SETTING_COLOR_IO_WRITE, L"I/O W", L"I/O W"),
-    COLOR_ITEM(SETTING_COLOR_PRIVATE, L"Private bytes", L"Private bytes"),
-    COLOR_ITEM(SETTING_COLOR_PHYSICAL, L"物理内存", L"物理内存"),
-    COLOR_ITEM(SETTING_COLOR_POWER_USAGE, L"Power usage", L"Power usage"),
-    COLOR_ITEM(SETTING_COLOR_TEMPERATURE, L"温度", L"温度"),
-    COLOR_ITEM(SETTING_COLOR_FAN_RPM, L"风扇转速", L"风扇转速"),
+    COLOR_ITEM(SETTING_COLOR_CPU_KERNEL, 0, L"CPU kernel", L"CPU kernel"),
+    COLOR_ITEM(SETTING_COLOR_CPU_USER, 0, L"CPU user", L"CPU user"),
+    COLOR_ITEM(SETTING_COLOR_IO_READ_OTHER, 0, L"I/O R+O", L"I/O R+O"),
+    COLOR_ITEM(SETTING_COLOR_IO_WRITE, 0, L"I/O W", L"I/O W"),
+    COLOR_ITEM(SETTING_COLOR_PRIVATE, 0, L"提交内存", L"提交内存"),
+    COLOR_ITEM(SETTING_COLOR_PHYSICAL, 0, L"物理内存", L"物理内存"),
+    COLOR_ITEM(SETTING_COLOR_POWER_USAGE, 0, L"Power usage", L"Power usage"),
+    COLOR_ITEM(SETTING_COLOR_TEMPERATURE, 0, L"温度", L"温度"),
+    COLOR_ITEM(SETTING_COLOR_FAN_RPM, 0, L"风扇转速", L"风扇转速"),
 };
 static HWND PhpGraphListViewHandle = NULL;
 
@@ -3730,27 +4549,27 @@ INT_PTR CALLBACK PhpOptionsGraphsDlgProc(
                 PhSetIntegerSetting(PhpOptionsGraphColorItems[i].SettingName, PhpOptionsGraphColorItems[i].CurrentColor);
             }
 
-            PhDeleteLayoutManager(&LayoutManager);
-        }
-        break;
-    case WM_DPICHANGED_AFTERPARENT:
-        {
-            PhLayoutManagerUpdate(&LayoutManager, LOWORD(wParam));
-            PhLayoutManagerLayout(&LayoutManager);
-        }
-        break;
-    case WM_SIZE:
-        {
-            PhLayoutManagerLayout(&LayoutManager);
+             PhDeleteLayoutManager(&LayoutManager);
+         }
+         break;
+     case WM_DPICHANGED_AFTERPARENT:
+         {
+             PhLayoutManagerUpdate(&LayoutManager, PhGetWindowDpi(hwndDlg));
+             PhLayoutManagerLayout(&LayoutManager);
+         }
+         break;
+     case WM_SIZE:
+         {
+             PhLayoutManagerLayout(&LayoutManager);
 
-            ExtendedListView_SetColumnWidth(PhpGraphListViewHandle, 0, ELVSCW_AUTOSIZE_REMAININGSPACE);
-        }
-        break;
-    case WM_COMMAND:
-        {
-            switch (GET_WM_COMMAND_ID(wParam, lParam))
-            {
-            case IDC_USEOLDCOLORS:
+             ExtendedListView_SetColumnWidth(PhpGraphListViewHandle, 0, ELVSCW_AUTOSIZE_REMAININGSPACE);
+         }
+         break;
+     case WM_COMMAND:
+         {
+             switch (GET_WM_COMMAND_ID(wParam, lParam))
+             {
+             case IDC_USEOLDCOLORS:
                 {
                     ListView_SetItemState(PhpGraphListViewHandle, -1, 0, LVIS_SELECTED); // deselect all items
 
@@ -3854,8 +4673,9 @@ INT_PTR CALLBACK PhpOptionsGraphsDlgProc(
 
                     if (item && item->Id == IDC_RESET)
                     {
-                        PH_STRINGREF SettingName;
                         PPH_SETTING Color;
+
+                        PH_STRINGREF SettingName;
 
                         PhInitializeStringRef(&SettingName, ColorItem->SettingName);
                         Color = PhGetSetting(&SettingName);

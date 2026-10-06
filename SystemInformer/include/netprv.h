@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -69,6 +69,7 @@ typedef struct _PH_NETWORK_ITEM
     };
 
     PPH_PROCESS_ITEM ProcessItem;
+    PH_HASH_ENTRY HashEntry;
 } PH_NETWORK_ITEM, *PPH_NETWORK_ITEM;
 // end_phapppub
 
@@ -137,6 +138,13 @@ PhGetTcpStateName(
     _In_ ULONG State
     );
 // end_phapppub
+
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhIsUdpExemptPort(
+    _In_ ULONG Port
+    );
 
 // iphlpapi imports
 

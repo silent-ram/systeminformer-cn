@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2016-2024
+ *     dmex    2016-2026
  *
  */
 
@@ -28,6 +28,7 @@
 #include "dltmgr.h"
 #include "guisup.h"
 #include "treenew.h"
+#include "tabnew.h"
 #include "graph.h"
 #include "emenu.h"
 #include "cpysave.h"

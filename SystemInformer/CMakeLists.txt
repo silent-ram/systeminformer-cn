@@ -110,10 +110,10 @@ set(SOURCES
     "hndlstat.c"
     "infodlg.c"
     "informer.c"
+    "informerwnd.c"
     "itemtips.c"
     "jobprp.c"
     "kdump.c"
-    "ksidbg.c"
     "ksisup.c"
     "ksyscall.c"
     "log.c"
@@ -154,6 +154,7 @@ set(SOURCES
     "procprv.c"
     "procrec.c"
     "proctree.c"
+    "envdlg.c"
     "prpgenv.c"
     "prpggen.c"
     "prpghndl.c"
@@ -168,6 +169,7 @@ set(SOURCES
     "prpgvdm.c"
     "prpgwmi.c"
     "runas.c"
+    "runaspkg.c"
     "searchbox.c"
     "sessmsg.c"
     "sessprp.c"
@@ -211,7 +213,8 @@ target_include_directories(SystemInformer PRIVATE
 )
 
 target_include_directories(SystemInformer INTERFACE
-    "${SI_ROOT}/sdk/include"
+    "${SI_ROOT}/phnt/include"
+    "${SI_ROOT}/sdk/include/$<CONFIG>${SI_PLATFORM_SHORT}"
 )
 
 target_compile_definitions(SystemInformer PRIVATE

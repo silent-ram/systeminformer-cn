@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -37,7 +37,7 @@ LONG PhpMemoryTreeNewPostSortFunction(
     );
 
 BOOLEAN NTAPI PhpMemoryTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -132,6 +132,7 @@ VOID PhLoadSettingsMemoryList(
     sortSettings = PhGetStringSetting(SETTING_MEMORY_TREE_LIST_SORT);
 
     Context->Flags = flags;
+
     PhCmLoadSettingsEx(Context->TreeNewHandle, &Context->Cm, 0, &settings->sr, &sortSettings->sr);
 
     PhDereferenceObject(settings);
@@ -393,8 +394,6 @@ VOID PhReplaceMemoryList(
 
     PhApplyTreeNewFilters(&Context->AllocationTreeFilterSupport);
     PhApplyTreeNewFilters(&Context->TreeFilterSupport);
-
-    TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
 VOID PhRemoveMemoryNode(
@@ -421,7 +420,8 @@ VOID PhRemoveMemoryNode(
 
     PhpDestroyMemoryNode(MemoryNode);
 
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    if (Context->TreeNewSortOrder != NoSortOrder)
+        TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
 VOID PhUpdateMemoryNode(
@@ -457,7 +457,6 @@ VOID PhInvalidateAllMemoryNodes(
         TreeNew_InvalidateNode(Context->TreeNewHandle, &memoryNode->Node);
     }
 
-    InvalidateRect(Context->TreeNewHandle, NULL, FALSE);
     TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
@@ -477,7 +476,7 @@ VOID PhInvalidateAllMemoryBaseAddressNodes(
             PhPrintPointer(memoryNode->MemoryItem->BaseAddressString, memoryNode->MemoryItem->BaseAddress);
 
         memset(memoryNode->TextCache, 0, sizeof(PH_STRINGREF) * PHMMTLC_MAXIMUM);
-        //TreeNew_InvalidateNode(Context->TreeNewHandle, &memoryNode->Node);
+        TreeNew_InvalidateNode(Context->TreeNewHandle, &memoryNode->Node);
     }
 
     for (i = 0; i < Context->RegionNodeList->Count; i++)
@@ -490,11 +489,11 @@ VOID PhInvalidateAllMemoryBaseAddressNodes(
             PhPrintPointer(memoryNode->MemoryItem->BaseAddressString, memoryNode->MemoryItem->BaseAddress);
 
         memset(memoryNode->TextCache, 0, sizeof(PH_STRINGREF) * PHMMTLC_MAXIMUM);
-        //TreeNew_InvalidateNode(Context->TreeNewHandle, &memoryNode->Node);
+        TreeNew_InvalidateNode(Context->TreeNewHandle, &memoryNode->Node);
     }
 
-    InvalidateRect(Context->TreeNewHandle, NULL, FALSE);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    if (Context->TreeNewSortOrder != NoSortOrder)
+        TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
 VOID PhExpandAllMemoryNodes(
@@ -612,6 +611,8 @@ PPH_STRING PhGetMemoryRegionUseText(
         return PhFormatString(L"USER_PROCESS_PARAMETERS");
     case LeapSecondDataRegion:
         return PhFormatString(L"LEAP_SECOND_DATA");
+    case DesktopHeapRegion:
+        return PhFormatString(L"Desktop heap");
     default:
         return NULL;
     }
@@ -796,7 +797,7 @@ BEGIN_SORT_FUNCTION(Priority)
 END_SORT_FUNCTION
 
 BOOLEAN NTAPI PhpMemoryTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -806,7 +807,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
     PPH_MEMORY_LIST_CONTEXT context = Context;
     PPH_MEMORY_NODE node;
 
-    if (PhCmForwardMessage(hwnd, Message, Parameter1, Parameter2, &context->Cm))
+    if (PhCmForwardMessage(WindowHandle, Message, Parameter1, Parameter2, &context->Cm))
         return TRUE;
 
     switch (Message)
@@ -833,7 +834,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
             {
                 if (!node)
                 {
-                    static PVOID sortFunctions[] =
+                    static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                     {
                         SORT_FUNCTION(BaseAddress),
                         SORT_FUNCTION(Type),
@@ -853,7 +854,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
                         SORT_FUNCTION(RegionType),
                         SORT_FUNCTION(Priority),
                     };
-                    int (__cdecl *sortFunction)(void *, const void *, const void *);
+                    _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                     static_assert(RTL_NUMBER_OF(sortFunctions) == PHMMTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1107,7 +1108,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
                 memoryItem->Protect & PAGE_EXECUTE_WRITECOPY
                 ))
             {
-                getNodeColor->BackColor = PhCsColorPacked;
+                getNodeColor->BackColor = PhCsColorMemoryExecutePages;
             }
             else if (
                 context->HighlightCfgPages && (
@@ -1115,18 +1116,18 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
                 memoryItem->RegionType == CfgBitmap32Region
                 ))
             {
-                getNodeColor->BackColor = PhCsColorElevatedProcesses;
+                getNodeColor->BackColor = PhCsColorMemoryCfgPages;
             }
             else if (
                 context->HighlightSystemPages && (
                 memoryItem->Type & SEC_IMAGE
                 ))
             {
-                getNodeColor->BackColor = PhCsColorSystemProcesses;
+                getNodeColor->BackColor = PhCsColorMemorySystemPages;
             }
             else if (context->HighlightPrivatePages && memoryItem->Type & MEM_PRIVATE)
             {
-                getNodeColor->BackColor = PhCsColorOwnProcesses;
+                getNodeColor->BackColor = PhCsColorMemoryPrivatePages;
             }
             //else if (
             //    memoryItem->RegionType == StackRegion || memoryItem->RegionType == Stack32Region ||
@@ -1152,7 +1153,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
             context->TreeNewSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -1178,13 +1179,13 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
         {
             PH_TN_COLUMN_MENU_DATA data;
 
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = 0;
             data.DefaultSortOrder = NoSortOrder;
             PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_SHOW_RESET_SORT);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
+            data.Selection = PhShowEMenu(data.Menu, WindowHandle, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);
@@ -1196,7 +1197,7 @@ BOOLEAN NTAPI PhpMemoryTreeNewCallback(
             node = (PPH_MEMORY_NODE)mouseEvent->Node;
 
             if (node && node->IsAllocationBase)
-                TreeNew_SetNodeExpanded(hwnd, node, !node->Node.Expanded);
+                TreeNew_SetNodeExpanded(WindowHandle, node, !node->Node.Expanded);
             else
                 SendMessage(context->ParentWindowHandle, WM_COMMAND, ID_MEMORY_READWRITEMEMORY, 0);
         }

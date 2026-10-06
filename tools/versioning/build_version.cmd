@@ -1,8 +1,20 @@
 @echo off
 @setlocal enableextensions
 
-for /f "usebackq tokens=*" %%A in (`call "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath`) do (
+for /f "usebackq tokens=*" %%A in (`call "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -prerelease -products * -requires Microsoft.Component.MSBuild -property installationPath`) do (
     set VSINSTALLPATH=%%A
+)
+
+if not defined VSINSTALLPATH if defined VSINSTALLDIR (
+   set "VSINSTALLPATH=%VSINSTALLDIR%"
+)
+
+if not defined VSINSTALLPATH if defined VCINSTALLDIR (
+   for %%I in ("%VCINSTALLDIR%\..\..") do set "VSINSTALLPATH=%%~fI"
+)
+
+if not defined VSINSTALLPATH if defined WindowsSdkDir (
+   set "VSINSTALLPATH=%WindowsSdkDir%"
 )
 
 if not defined VSINSTALLPATH (
@@ -10,11 +22,8 @@ if not defined VSINSTALLPATH (
     goto end
 )
 
-if exist "%VSINSTALLPATH%\VC\Auxiliary\Build\vcvarsall.bat" (
-   call "%VSINSTALLPATH%\VC\Auxiliary\Build\vcvarsall.bat" amd64_arm64
-) else (
-    echo [-] Failed to set up build environment
-    goto end
+if exist "%VSINSTALLPATH%\Common7\Tools\VsDevCmd.bat" (
+   call "%VSINSTALLPATH%\Common7\Tools\VsDevCmd.bat" -arch=arm64 -host_arch=amd64
 )
 
 echo;

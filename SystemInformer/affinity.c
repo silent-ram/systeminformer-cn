@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -182,7 +182,7 @@ static BOOLEAN PhpShowThreadErrorAffinity(
 
 VOID PhpShowThreadErrorAffinityList(
     _In_ PPH_AFFINITY_DIALOG_CONTEXT Context,
-    _Inout_ PPH_LIST AffinityErrorsList
+    _In_ PPH_LIST AffinityErrorsList
     )
 {
     PH_STRING_BUILDER stringBuilder;
@@ -548,6 +548,12 @@ INT_PTR CALLBACK PhpProcessAffinityDlgProc(
                              affinityGroup = context->AffinityGroup;
                          else
                              affinityGroup = (USHORT)affinityGroupSelection;
+                    }
+
+                    if (affinityMask == 0)
+                    {
+                        PhShowError2(hwndDlg, L"Unable to change affinity settings.", L"%s", L"You must select at least one CPU.");
+                        break;
                     }
 
                     if (context->ProcessItem)

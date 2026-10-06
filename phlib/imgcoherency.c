@@ -6,13 +6,14 @@
  * Authors:
  *
  *     jxy-s   2020-2022
- *     dmex    2021-2023
+ *     dmex    2021-2026
  *
  */
 
 #include <ph.h>
 #include <mapimg.h>
 #include <kphuser.h>
+#include <phintrin.h>
 
 #define PH_IMGCOHERENCY_NORMAL_SCAN_LIMIT         (40 * (1024 * 1024)) // 40Mib
 #define PH_IMGCOHERENCY_QUICK_SCAN_LIMIT          (PAGE_SIZE * 2)
@@ -154,6 +155,7 @@ VOID PhpFreeImageCoherencyContext(
     }
 }
 
+_Function_class_(PH_MAPPED_IMAGE_RELOC_CALLBACK)
 static NTSTATUS NTAPI PhImageCoherencyRelocationCallback(
     _In_ PPH_MAPPED_IMAGE MappedImage,
     _In_ PIMAGE_DATA_DIRECTORY DataDirectory,
@@ -181,7 +183,7 @@ static NTSTATUS NTAPI PhImageCoherencyRelocationCallback(
             (entry->Type != IMAGE_REL_BASED_RESERVED)
             )
         {
-            PVOID rva = PTR_ADD_OFFSET(RelocationDirectory->VirtualAddress, entry->Offset);
+            PVOID rva = (PVOID)UInt32Add32To64(RelocationDirectory->VirtualAddress, entry->Offset);
 
             if (entry->Type == IMAGE_REL_BASED_DIR64)
             {
@@ -203,8 +205,127 @@ static NTSTATUS NTAPI PhImageCoherencyRelocationCallback(
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_MAPPED_IMAGE_DYNAMIC_RELOC_CALLBACK)
+static NTSTATUS NTAPI PhImageCoherencyDynamicRelocationCallback(
+    _In_ PPH_MAPPED_IMAGE MappedImage,
+    _In_ PPH_IMAGE_DYNAMIC_RELOC_ENTRY Entry,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_IMAGE_COHERENCY_CONTEXT context = Context;
+    ULONG_PTR rva = 0;
+    ULONG_PTR size = 0;
+
+    if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_ARM64X)
+    {
+        rva = UInt32Add32To64(Entry->ARM64X.BlockRva, Entry->ARM64X.RecordFixup.Offset);
+
+        switch (Entry->ARM64X.RecordFixup.Type)
+        {
+        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_ZEROFILL:
+        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE:
+            size = (ULONG_PTR)(1ull << Entry->ARM64X.RecordFixup.Size);
+            break;
+        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA:
+            size = 4;
+            break;
+        }
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_IMPORT_CONTROL_TRANSFER)
+    {
+        rva = UInt32Add32To64(Entry->ImportControl.BlockRva, Entry->ImportControl.Record.PageRelativeOffset);
+        //
+        // 48 FF 15 XX XX XX XX     call qword ptr [_imp_<function>]
+        // 0F 1F 44 00 00           nop
+        //
+        size = 12;
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_ARM64_KERNEL_IMPORT_CALL_TRANSFER)
+    {
+        rva = UInt32Add32To64(Entry->ARM64ImportControl.BlockRva, (Entry->ARM64ImportControl.Record.PageRelativeOffset << 2));
+        //
+        // ARM64 instructions are fixed 4 bytes
+        // Either BR or BLR instruction for indirect call/jump
+        //
+        size = 4;
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_RF_PROLOGUE)
+    {
+        rva = Entry->RFPrologue.BlockRva;
+        //
+        // Prologue size is variable, specified in PrologueByteCount
+        //
+        size = Entry->RFPrologue.PrologueByteCount;
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_RF_EPILOGUE)
+    {
+        rva = Entry->RFEpilogue.BlockRva;
+        //
+        // Epilogue size is variable
+        // Total size = EpilogueByteCount + (BranchDescriptorElementSize * BranchDescriptorCount) + bitmap
+        //
+        size = (ULONG_PTR)Entry->RFEpilogue.EpilogueByteCount +
+               ((ULONG_PTR)Entry->RFEpilogue.BranchDescriptorElementSize * Entry->RFEpilogue.BranchDescriptorCount) +
+               ((Entry->RFEpilogue.BranchDescriptorCount + 7) / 8);
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_INDIR_CONTROL_TRANSFER)
+    {
+        rva = UInt32Add32To64(Entry->IndirControl.BlockRva, Entry->IndirControl.Record.PageRelativeOffset);
+        size = 12;
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_SWITCHTABLE_BRANCH)
+    {
+        rva = UInt32Add32To64(Entry->SwitchBranch.BlockRva, Entry->SwitchBranch.Record.PageRelativeOffset);
+        //
+        // FF D0                    jmp rax
+        // CC CC CC                 int 3
+        //
+        size = 5;
+    }
+    else if (Entry->Symbol == IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE)
+    {
+        rva = UInt32Add32To64(Entry->FuncOverride.BlockRva, Entry->FuncOverride.Record.Offset);
+
+        //
+        // The loader patches a fixed width per override type (see RtlpParseFunctionOverrideRelocations):
+        // X64 REL32 and ARM64 BRANCH26 rewrite 4 bytes; ARM64 THUNK rewrites 8. Use the record type
+        // rather than the image magic so x64 REL32 sites don't over-skip trailing code bytes.
+        //
+        switch (Entry->FuncOverride.Record.Type)
+        {
+        case IMAGE_FUNCTION_OVERRIDE_X64_REL32:
+        case IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26:
+            size = 4;
+            break;
+        case IMAGE_FUNCTION_OVERRIDE_ARM64_THUNK:
+            size = 8;
+            break;
+        }
+    }
+    else
+    {
+        //
+        // This should only be absolute, skipping others.
+        //
+        if (Entry->Other.Record.Type == IMAGE_REL_BASED_ABSOLUTE)
+        {
+            rva = UInt32Add32To64(Entry->Other.BlockRva, Entry->Other.Record.Offset);
+
+            if (MappedImage->Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                size = 4;
+            else if (MappedImage->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                size = 8;
+        }
+    }
+
+    if (rva && size)
+        PhAddItemSimpleHashtable(context->MappedImageReloc, (PVOID)rva, (PVOID)size);
+
+    return STATUS_SUCCESS;
+}
+
 _Function_class_(PH_READ_VIRTUAL_MEMORY_CALLBACK)
-static NTSTATUS PhImageCoherencyReadVirtualMemoryCallback(
+static NTSTATUS NTAPI PhImageCoherencyReadVirtualMemoryCallback(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID BaseAddress,
     _Out_writes_bytes_(BufferSize) PVOID Buffer,
@@ -276,7 +397,6 @@ PPH_IMAGE_COHERENCY_CONTEXT PhpCreateImageCoherencyContext(
 
         if (NT_SUCCESS(context->MappedImageStatus))
         {
-            PH_MAPPED_IMAGE_DYNAMIC_RELOC dynRelocs;
             PIMAGE_DATA_DIRECTORY directory;
 
             PhMappedImagePrefetch(&context->MappedImage);
@@ -294,82 +414,11 @@ PPH_IMAGE_COHERENCY_CONTEXT PhpCreateImageCoherencyContext(
                 context
                 );
 
-            if (NT_SUCCESS(PhGetMappedImageDynamicRelocations(&context->MappedImage, &dynRelocs)))
-            {
-                for (ULONG i = 0; i < dynRelocs.NumberOfEntries; i++)
-                {
-                    PPH_IMAGE_DYNAMIC_RELOC_ENTRY entry;
-                    ULONG_PTR rva = 0;
-                    ULONG_PTR size = 0;
-
-                    entry = &dynRelocs.RelocationEntries[i];
-
-                    if (entry->Symbol == IMAGE_DYNAMIC_RELOCATION_ARM64X)
-                    {
-                        rva = (ULONG_PTR)entry->ARM64X.BlockRva + entry->ARM64X.RecordFixup.Offset;
-                        switch (entry->ARM64X.RecordFixup.Type)
-                        {
-                        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_ZEROFILL:
-                        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE:
-                            size = (ULONG_PTR)(1ull << entry->ARM64X.RecordFixup.Size);
-                            break;
-                        case IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA:
-                            size = 4;
-                            break;
-                        }
-                    }
-                    else if (entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_IMPORT_CONTROL_TRANSFER)
-                    {
-                        rva = (ULONG_PTR)entry->ImportControl.BlockRva + entry->ImportControl.Record.PageRelativeOffset;
-                        //
-                        // 48 FF 15 XX XX XX XX     call qword ptr [_imp_<function>]
-                        // 0F 1F 44 00 00           nop
-                        //
-                        size = 12;
-                    }
-                    else if (entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_INDIR_CONTROL_TRANSFER)
-                    {
-                        rva = (ULONG_PTR)entry->IndirControl.BlockRva + entry->IndirControl.Record.PageRelativeOffset;
-                        size = 12;
-                    }
-                    else if (entry->Symbol == IMAGE_DYNAMIC_RELOCATION_GUARD_SWITCHTABLE_BRANCH)
-                    {
-                        rva = (ULONG_PTR)entry->SwitchBranch.BlockRva + entry->SwitchBranch.Record.PageRelativeOffset;
-                        //
-                        // FF D0                    jmp rax
-                        // CC CC CC                 int 3
-                        //
-                        size = 5;
-                    }
-                    else if (entry->Symbol == IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE)
-                    {
-                        rva = (ULONG_PTR)entry->FuncOverride.BlockRva + entry->FuncOverride.Record.Offset;
-                        if (context->MappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-                            size = 4;
-                        else if (context->MappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-                            size = 8;
-                    }
-                    else
-                    {
-                        //
-                        // This should only be absolute, skipping others.
-                        //
-                        if (entry->Other.Record.Type == IMAGE_REL_BASED_ABSOLUTE)
-                        {
-                            rva = (ULONG_PTR)entry->Other.BlockRva + entry->Other.Record.Offset;
-                            if (context->MappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-                                size = 4;
-                            else if (context->MappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-                                size = 8;
-                        }
-                    }
-
-                    if (rva && size)
-                        PhAddItemSimpleHashtable(context->MappedImageReloc, (PVOID)rva, (PVOID)size);
-                }
-
-                PhFreeMappedImageDynamicRelocations(&dynRelocs);
-            }
+            PhMappedImageEnumerateDynamicRelocations(
+                &context->MappedImage,
+                PhImageCoherencyDynamicRelocationCallback,
+                context
+                );
 
             if (NT_SUCCESS(PhGetMappedImageDataDirectory(
                 &context->MappedImage,
@@ -460,12 +509,14 @@ NTSTATUS PhpAnalyzeImageCoherencyInspect(
     if (LeftBuffer && RightBuffer)
     {
         ULONG length = min(LeftCount, RightCount);
+        ULONG i = 0;
 
-        for (ULONG i = 0; i < length; i++)
+        while (i < length)
         {
             if (SkipCallback)
             {
                 ULONG skip = SkipCallback(Rva + i, SkipCallbackContext);
+
                 if (skip != 0)
                 {
                     ULONG remaining = length - i;
@@ -493,6 +544,8 @@ NTSTATUS PhpAnalyzeImageCoherencyInspect(
                 status = GetExceptionCode();
                 break;
             }
+
+            i++;
         }
     }
 
@@ -502,11 +555,11 @@ NTSTATUS PhpAnalyzeImageCoherencyInspect(
     //
     if (LeftCount > RightCount)
     {
-        Context->TotalBytes += (LeftCount - RightCount);
+        Context->TotalBytes += ((SIZE_T)LeftCount - (SIZE_T)RightCount);
     }
     else if (LeftCount < RightCount)
     {
-        Context->TotalBytes += (RightCount - LeftCount);
+        Context->TotalBytes += ((SIZE_T)RightCount - (SIZE_T)LeftCount);
     }
 
     return status;
@@ -535,7 +588,7 @@ VOID PhpAnalyzeImageCoherencyCommonByRva(
     BYTE buffer[PAGE_SIZE];
     ULONG remainingBytes;
     ULONG chunk;
-    PBYTE fileBytes;
+    PBYTE fileBytes = 0;
     SIZE_T bytesRead;
     SIZE_T remainingView;
     SIZE_T bytes;
@@ -570,15 +623,15 @@ VOID PhpAnalyzeImageCoherencyCommonByRva(
             bytesRead = 0;
         }
 
-        fileBytes = PhMappedImageRvaToVa(&Context->MappedImage, rva, NULL);
-        if (fileBytes)
+        if (NT_SUCCESS(PhMappedImageRvaToVa(&Context->MappedImage, rva, &fileBytes)))
         {
             //
             // Calculate the remaining view from the VA
             //
-            remainingView = (SIZE_T)PTR_SUB_OFFSET(Context->MappedImage.ViewSize,
-                                                   PTR_SUB_OFFSET(fileBytes,
-                                                                  Context->MappedImage.ViewBase));
+            remainingView = (SIZE_T)PTR_SUB_OFFSET(
+                Context->MappedImage.ViewSize,
+                PTR_SUB_OFFSET(fileBytes, Context->MappedImage.ViewBase)
+                );
         }
         else
         {
@@ -754,7 +807,7 @@ VOID PhpAnalyzeImageCoherencyCommonAsNative(
     )
 {
     ULONG addressOfEntry = 0;
-    PIMAGE_SECTION_HEADER entrySection;
+    PIMAGE_SECTION_HEADER entrySection = NULL;
 
     switch (Context->MappedImage.Magic)
     {
@@ -768,10 +821,7 @@ VOID PhpAnalyzeImageCoherencyCommonAsNative(
         break;
     }
 
-    if (addressOfEntry != 0)
-        entrySection = PhMappedImageRvaToSection(&Context->MappedImage, addressOfEntry);
-    else
-        entrySection = NULL;
+    PhMappedImageRvaToSection(&Context->MappedImage, addressOfEntry, &entrySection);
 
     //
     // Here we will inspect each executable section.
@@ -934,8 +984,10 @@ VOID PhpAnalyzeImageCoherencyCommonAsManaged(
     //
     // Get the .NET MetaData
     //
-    dotNet = PhMappedImageRvaToVa(&Context->MappedImage, dataDirectory->VirtualAddress, NULL);
-    if (!dotNet ||
+    if (!NT_SUCCESS(PhMappedImageRvaToVa(
+        &Context->MappedImage,
+        dataDirectory->VirtualAddress,
+        &dotNet)) ||
         (dotNet->MetaData.Size == 0) ||
         !dotNet->MetaData.VirtualAddress)
     {
@@ -959,7 +1011,6 @@ VOID PhpAnalyzeImageCoherencyCommonAsManaged(
 * Checks if the image is a .NET application.
 *
 * \param[in] Context - Image coherency context.
-*
 * \return TRUE if the image is a .NET application, FALSE otherwise.
 */
 BOOLEAN PhpAnalyzeImageCoherencyIsDotNet (
@@ -985,21 +1036,22 @@ BOOLEAN PhpAnalyzeImageCoherencyIsDotNet (
     //
     // Check for the COR20 header
     //
-    dotNet = PhMappedImageRvaToVa(
+    if (!NT_SUCCESS(PhMappedImageRvaToVa(
         &Context->MappedImage,
         dataDirectory->VirtualAddress,
-        NULL
-        );
-    if (!dotNet || (dotNet->cb != sizeof(IMAGE_COR20_HEADER)))
+        &dotNet)) || (dotNet->cb != sizeof(IMAGE_COR20_HEADER)))
     {
         return FALSE;
     }
 
-    dotNetMagic = PhMappedImageRvaToVa(
+    if (!NT_SUCCESS(PhMappedImageRvaToVa(
         &Context->MappedImage,
         dotNet->MetaData.VirtualAddress,
-        NULL
-        );
+        &dotNetMagic)) || !dotNetMagic)
+    {
+        return FALSE;
+    }
+
     //
     // If we can locate the magic number and it equal the .NET magic then we
     // are reasonably confident it is .NET.
@@ -1068,7 +1120,6 @@ VOID PhpAnalyzeImageCoherencyCommon(
 *
 * \param[in] ProcessHandle - Handle to the process requires PROCESS_VM_READ.
 * \param[in] Context - Image coherency context.
-*
 * \return Success status or failure.
 */
 NTSTATUS PhpAnalyzeImageCoherencyNt32(
@@ -1127,7 +1178,6 @@ NTSTATUS PhpAnalyzeImageCoherencyNt32(
 *
 * \param[in] ProcessHandle - Handle to the process requires PROCESS_VM_READ.
 * \param[in] Context - Image coherency context.
-*
 * \return Success status or failure.
 */
 NTSTATUS PhpAnalyzeImageCoherencyNt64(
@@ -1526,7 +1576,7 @@ NTSTATUS PhGetProcessModuleImageCoherency(
 /**
  * \brief Checks the image pages for tampering.
  *
- * \details Checkout out or blog for more info:
+ * \details Check out our blog for more info:
  * https://windows-internals.com/understanding-a-new-mitigation-module-tampering-protection/
  *
  * \param[in] ProcessHandle - Handle to the process where the module is mapped.
@@ -1534,7 +1584,6 @@ NTSTATUS PhGetProcessModuleImageCoherency(
  * \param[in] SizeOfImage - Size of the image to check.
  * \param[out] NumberOfPages - Number of pages checked.
  * \param[out] NumberOfTamperedPages - Number of tampered pages.
- *
  * \return Successful or errant status.
  */
 NTSTATUS PhCheckImagePagesForTampering(

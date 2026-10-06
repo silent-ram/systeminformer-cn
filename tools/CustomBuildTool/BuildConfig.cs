@@ -28,9 +28,9 @@ namespace CustomBuildTool
         /// Currently active channels are:
         /// - "release" (0): Stable release channel
         /// - "canary" (2): Canary/testing channel
-        /// 
+        ///
         /// N.B. Order is important, SortedDictionary is used on purpose.
-        /// 
+        /// </remarks>
         public static readonly SortedDictionary<string, int> Build_Channels = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase)
         {
             ["release"] = 0, // PhReleaseChannel
@@ -50,13 +50,9 @@ namespace CustomBuildTool
         public static readonly ImmutableArray<string> Build_Sdk_Directories =
         [
             "sdk",
-            "sdk\\include",
             "sdk\\dbg\\amd64",
             "sdk\\dbg\\i386",
             "sdk\\dbg\\arm64",
-            "sdk\\lib\\amd64",
-            "sdk\\lib\\i386",
-            "sdk\\lib\\arm64",
             //"sdk\\samples\\SamplePlugin",
             //"sdk\\samples\\SamplePlugin\\bin\\Release32"
         ];
@@ -68,50 +64,50 @@ namespace CustomBuildTool
         /// Contains native Windows API headers required for low-level system integration and type definitions,
         /// and required for the SDK used by plugins and extensions.
         /// </remarks>
-        public static readonly ImmutableArray<string> Build_Phnt_Headers =
-        [
-            "ntafd.h",
-            "ntbcd.h",
-            "ntdbg.h",
-            "ntexapi.h",
-            "ntgdi.h",
-            "ntimage.h",
-            "ntintsafe.h",
-            "ntioapi.h",
-            "ntkeapi.h",
-            "ntldr.h",
-            "ntlpcapi.h",
-            "ntmisc.h",
-            "ntmmapi.h",
-            "ntnls.h",
-            "ntobapi.h",
-            "ntpebteb.h",
-            "ntpfapi.h",
-            "ntpnpapi.h",
-            "ntpoapi.h",
-            "ntpsapi.h",
-            "ntregapi.h",
-            "ntrtl.h",
-            "ntsam.h",
-            "ntseapi.h",
-            "ntsmss.h",
-            "ntstrsafe.h",
-            "ntsxs.h",
-            "nttmapi.h",
-            "nttp.h",
-            "ntuser.h",
-            "ntwmi.h",
-            "ntwow64.h",
-            "ntxcapi.h",
-            "ntzwapi.h",
-            "phnt.h",
-            "phnt_ntdef.h",
-            "phnt_windows.h",
-            "smbios.h",
-            "subprocesstag.h",
-            "usermgr.h",
-            "winsta.h"
-        ];
+        //public static readonly ImmutableArray<string> Build_Phnt_Headers =
+        //[
+        //    "ntafd.h",
+        //    "ntbcd.h",
+        //    "ntdbg.h",
+        //    "ntexapi.h",
+        //    "ntgdi.h",
+        //    "ntimage.h",
+        //    "ntintsafe.h",
+        //    "ntioapi.h",
+        //    "ntkeapi.h",
+        //    "ntldr.h",
+        //    "ntlpcapi.h",
+        //    "ntmisc.h",
+        //    "ntmmapi.h",
+        //    "ntnls.h",
+        //    "ntobapi.h",
+        //    "ntpebteb.h",
+        //    "ntpfapi.h",
+        //    "ntpnpapi.h",
+        //    "ntpoapi.h",
+        //    "ntpsapi.h",
+        //    "ntregapi.h",
+        //    "ntrtl.h",
+        //    "ntsam.h",
+        //    "ntseapi.h",
+        //    "ntsmss.h",
+        //    "ntstrsafe.h",
+        //    "ntsxs.h",
+        //    "nttmapi.h",
+        //    "nttp.h",
+        //    "ntuser.h",
+        //    "ntwmi.h",
+        //    "ntwow64.h",
+        //    "ntxcapi.h",
+        //    "ntzwapi.h",
+        //    "phnt.h",
+        //    "phnt_ntdef.h",
+        //    "phnt_windows.h",
+        //    "smbios.h",
+        //    "subprocesstag.h",
+        //    "usermgr.h",
+        //    "winsta.h"
+        //];
 
         /// <summary>
         /// An immutable array containing the header filenames for the phlib library build.
@@ -133,6 +129,8 @@ namespace CustomBuildTool
             "fastlock.h",
             "filestream.h",
             "graph.h",
+            "graphprp.h",
+            "graphscroll.h",
             "guisup.h",
             "guisupview.h",
             "hexedit.h",
@@ -148,6 +146,7 @@ namespace CustomBuildTool
             "phbasesup.h",
             "phconfig.h",
             "phconsole.h",
+            "phcrypt.h",
             "phdata.h",
             "phfirmware.h",
             "phnative.h",
@@ -163,6 +162,7 @@ namespace CustomBuildTool
             "settings.h",
             "svcsup.h",
             "symprv.h",
+            "tabnew.h",
             "templ.h",
             "trace.h",
             "treenew.h",
@@ -173,7 +173,6 @@ namespace CustomBuildTool
         /// <summary>
         /// An immutable array containing the header filenames for the kphlib (Kernel System Informer) library build.
         /// </summary>
-        /// <remarks>
         public static readonly ImmutableArray<string> Build_Kphlib_Headers =
         [
             "kphapi.h",

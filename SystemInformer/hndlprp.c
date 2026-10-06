@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2018-2024
+ *     dmex    2018-2026
  *
  */
 
@@ -65,6 +65,7 @@ typedef enum _PHP_HANDLE_GENERAL_INDEX
     PH_HANDLE_GENERAL_INDEX_FLAGS,
     PH_HANDLE_GENERAL_INDEX_SEQUENCENUMBER,
     PH_HANDLE_GENERAL_INDEX_PORTCONTEXT,
+    PH_HANDLE_GENERAL_INDEX_ALPCSTATE,
 
     PH_HANDLE_GENERAL_INDEX_FILETYPE,
     PH_HANDLE_GENERAL_INDEX_FILEMODE,
@@ -105,7 +106,7 @@ typedef struct _HANDLE_PROPERTIES_CONTEXT
     HWND ListViewHandle;
     HWND ParentWindow;
     HANDLE ProcessId;
-    IListView* ListViewClass;
+    PPH_LISTVIEW_CONTEXT ListViewClass;
     PPH_HANDLE_ITEM HandleItem;
     PH_LAYOUT_MANAGER LayoutManager;
 } HANDLE_PROPERTIES_CONTEXT, *PHANDLE_PROPERTIES_CONTEXT;
@@ -117,7 +118,7 @@ typedef struct _HANDLE_PERMISSIONS_CONTEXT
     HWND ListViewHandle;
     HWND ParentWindow;
     HANDLE ProcessId;
-    IListView* ListViewClass;
+    PPH_LISTVIEW_CONTEXT ListViewClass;
     PPH_HANDLE_ITEM HandleItem;
     PH_LAYOUT_MANAGER LayoutManager;
 } HANDLE_PERMISSIONS_CONTEXT, *PHANDLE_PERMISSIONS_CONTEXT;
@@ -149,6 +150,25 @@ CONST PH_ACCESS_ENTRY AlpcFlags[] =
     { L"ALPC_PORFLG_WAKE_POLICY3", ALPC_PORFLG_WAKE_POLICY3, FALSE, FALSE, L"Wake policy (3)"},
     { L"ALPC_PORFLG_DIRECT_MESSAGE", ALPC_PORFLG_DIRECT_MESSAGE, FALSE, FALSE, L"No shared section (direct)"},
     { L"ALPC_PORFLG_ALLOW_MULTIHANDLE_ATTRIBUTE", ALPC_PORFLG_ALLOW_MULTIHANDLE_ATTRIBUTE, FALSE, FALSE, L"Allow multi-handle attributes"},
+};
+
+CONST PH_ACCESS_ENTRY AlpcStateFlags[] =
+{
+    { L"Initialized", 0x0001UL, FALSE, FALSE, L"Initialized" },
+    { L"ConnectionPending", 0x0008UL, FALSE, FALSE, L"Connection pending" },
+    { L"ConnectionRefused", 0x0010UL, FALSE, FALSE, L"Connection refused" },
+    { L"Disconnected", 0x0020UL, FALSE, FALSE, L"Disconnected" },
+    { L"Closed", 0x0040UL, FALSE, FALSE, L"Closed" },
+    { L"NoFlushOnClose", 0x0080UL, FALSE, FALSE, L"No flush on close" },
+    { L"ReturnExtendedInfo", 0x0100UL, FALSE, FALSE, L"Return extended info" },
+    { L"Waitable", 0x0200UL, FALSE, FALSE, L"Waitable" },
+    { L"DynamicSecurity", 0x0400UL, FALSE, FALSE, L"Dynamic security" },
+    { L"Wow64CompletionList", 0x0800UL, FALSE, FALSE, L"WOW64 completion list" },
+    { L"Lpc", 0x1000UL, FALSE, FALSE, L"LPC" },
+    { L"LpcToLpc", 0x2000UL, FALSE, FALSE, L"LPC-to-LPC" },
+    { L"HasCompletionList", 0x4000UL, FALSE, FALSE, L"Has completion list" },
+    { L"HadCompletionList", 0x8000UL, FALSE, FALSE, L"Had completion list" },
+    { L"EnableCompletionList", 0x10000UL, FALSE, FALSE, L"Enable completion list" },
 };
 
 INT_PTR CALLBACK PhpHandleGeneralDlgProc(
@@ -493,13 +513,13 @@ VOID PhShowHandleProperties(
 }
 
 VOID PhAddHandleListViewItem(
-    _In_ IListView* ListViewClass,
+    _In_ PPH_LISTVIEW_CONTEXT ListViewClass,
     _In_ LONG GroupId,
     _In_ LONG Index,
     _In_ PCWSTR Text
     )
 {
-    PhAddIListViewGroupItem(ListViewClass, GroupId, Index, Text, UlongToPtr(Index));
+    PhListView_AddGroupItem(ListViewClass, GroupId, Index, Text, UlongToPtr(Index));
 }
 
 VOID PhSetHandleListViewItem(
@@ -513,7 +533,7 @@ VOID PhSetHandleListViewItem(
 
     if (index != INT_ERROR)
     {
-        PhSetIListViewSubItem(Context->ListViewClass, index, SubItemIndex, Text);
+        PhListView_SetSubItem(Context->ListViewClass, index, SubItemIndex, Text);
     }
 }
 
@@ -521,11 +541,11 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     _In_ PHANDLE_PROPERTIES_CONTEXT Context
     )
 {
-    IListView_EnableGroupView(Context->ListViewClass, TRUE);
-    PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_BASICINFO, L"Basic information");
-    PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECURITY, L"Security information");
-    PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_REFERENCES, L"References");
-    PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_QUOTA, L"Quota charges");
+    PhListView_EnableGroupView(Context->ListViewClass, TRUE);
+    PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_BASICINFO, L"Basic information");
+    PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECURITY, L"Security information");
+    PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_REFERENCES, L"References");
+    PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_QUOTA, L"Quota charges");
 
     PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_BASICINFO, PH_HANDLE_GENERAL_INDEX_NAME, L"Name");
     PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_BASICINFO, PH_HANDLE_GENERAL_INDEX_TYPE, L"Type");
@@ -548,10 +568,11 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualString2(Context->HandleItem->TypeName, L"ALPC Port", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, L"ALPC Port");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, L"ALPC Port");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, PH_HANDLE_GENERAL_INDEX_FLAGS, L"Flags");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, PH_HANDLE_GENERAL_INDEX_SEQUENCENUMBER, L"Sequence Number");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, PH_HANDLE_GENERAL_INDEX_PORTCONTEXT, L"Port Context");
+        PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ALPC, PH_HANDLE_GENERAL_INDEX_ALPCSTATE, L"State");
 
         if (KsiLevel() >= KphLevelMed)
         {
@@ -567,13 +588,13 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualString2(Context->HandleItem->TypeName, L"EtwRegistration", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ETW, L"Event trace information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ETW, L"Event trace information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ETW, PH_HANDLE_GENERAL_INDEX_ETWORIGINALNAME, L"GUID");
         //PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_ETW, PH_HANDLE_GENERAL_INDEX_ETWGROUPNAME, L"Group GUID");
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"File", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_FILE, L"File information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_FILE, L"File information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_FILE, PH_HANDLE_GENERAL_INDEX_FILETYPE, L"Type");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_FILE, PH_HANDLE_GENERAL_INDEX_FILEMODE, L"Mode");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_FILE, PH_HANDLE_GENERAL_INDEX_FILEPOSITION, L"Position");
@@ -588,21 +609,21 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Section", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECTION, L"Section information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECTION, L"Section information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECTION, PH_HANDLE_GENERAL_INDEX_SECTIONTYPE, L"Type");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECTION, PH_HANDLE_GENERAL_INDEX_SECTIONFILE, L"File");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SECTION, PH_HANDLE_GENERAL_INDEX_SECTIONSIZE, L"Size");
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Mutant", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_MUTANT, L"Mutant information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_MUTANT, L"Mutant information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_MUTANT, PH_HANDLE_GENERAL_INDEX_MUTANTCOUNT, L"Count");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_MUTANT, PH_HANDLE_GENERAL_INDEX_MUTANTABANDONED, L"Abandoned");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_MUTANT, PH_HANDLE_GENERAL_INDEX_MUTANTOWNER, L"Owner");
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Process", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Process information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Process information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME, L"Name");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME, L"Created");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME, L"Exited");
@@ -610,7 +631,7 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Thread", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Thread information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Thread information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME, L"Name");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME, L"Created");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME, L"Exited");
@@ -618,7 +639,7 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"SymbolicLink", TRUE))
     {
-        PhAddIListViewGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SYMBOLICLINK, L"Symbolic Link information");
+        PhListView_AddGroup(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SYMBOLICLINK, L"Symbolic Link information");
         PhAddHandleListViewItem(Context->ListViewClass, PH_HANDLE_GENERAL_CATEGORY_SYMBOLICLINK, PH_HANDLE_GENERAL_INDEX_SYMBOLICLINKLINK, L"Link target");
     }
 }
@@ -828,10 +849,6 @@ VOID PhpUpdateHandleGeneral(
                 Context->ProcessId
                 )))
         {
-            //
-            // TODO this path doesn't use all the ALPC info returned yet
-            // see: KPH_ALPC_BASIC_INFORMATION.State
-            //
             KPH_ALPC_BASIC_INFORMATION basicInfo;
             PKPH_ALPC_COMMUNICATION_NAMES_INFORMATION connectionNames;
             KPH_ALPC_COMMUNICATION_INFORMATION connectionInfo;
@@ -870,6 +887,48 @@ VOID PhpUpdateHandleGeneral(
 
                 PhPrintPointer(string, basicInfo.PortContext);
                 PhSetHandleListViewItem(Context, PH_HANDLE_GENERAL_INDEX_PORTCONTEXT, 1, string);
+
+                {
+                    PCWSTR portTypeString;
+                    PPH_STRING stateFlagsString;
+                    PPH_STRING alpcStateString;
+
+                    switch ((basicInfo.State >> 1) & 0x3)
+                    {
+                    case 1: portTypeString = L"Server connection"; break;
+                    case 2: portTypeString = L"Client communication"; break;
+                    case 3: portTypeString = L"Server communication"; break;
+                    default: portTypeString = L"Unconnected"; break;
+                    }
+
+                    stateFlagsString = PhGetAccessString(
+                        basicInfo.State & ~0x6UL,
+                        (PPH_ACCESS_ENTRY)AlpcStateFlags,
+                        RTL_NUMBER_OF(AlpcStateFlags)
+                        );
+
+                    if (stateFlagsString->Length > 0)
+                    {
+                        alpcStateString = PhFormatString(
+                            L"0x%08lX (%s, %s)",
+                            basicInfo.State,
+                            portTypeString,
+                            stateFlagsString->Buffer
+                            );
+                    }
+                    else
+                    {
+                        alpcStateString = PhFormatString(
+                            L"0x%08lX (%s)",
+                            basicInfo.State,
+                            portTypeString
+                            );
+                    }
+
+                    PhDereferenceObject(stateFlagsString);
+                    PhSetHandleListViewItem(Context, PH_HANDLE_GENERAL_INDEX_ALPCSTATE, 1, PhGetString(alpcStateString));
+                    PhDereferenceObject(alpcStateString);
+                }
             }
 
             if (!NT_SUCCESS(KphAlpcQueryCommunicationsNamesInfo(
@@ -1086,7 +1145,7 @@ VOID PhpUpdateHandleGeneral(
             FILE_POSITION_INFORMATION filePositionInfo;
             FILE_IO_PRIORITY_HINT_INFORMATION_EX priorityInfo;
             IO_STATUS_BLOCK isb;
-            KPH_FILE_OBJECT_DRIVER fileObjectDriver;
+            HANDLE fileObjectDriver;
 
             if (NT_SUCCESS(KphQueryVolumeInformationFile(
                 processHandle,
@@ -1138,7 +1197,8 @@ VOID PhpUpdateHandleGeneral(
                 Context->HandleItem->Handle,
                 FileModeInformation,
                 &fileModeInfo,
-                sizeof(FILE_MODE_INFORMATION)
+                sizeof(FILE_MODE_INFORMATION),
+                NULL
                 )))
             {
                 PH_FORMAT format[5];
@@ -1174,7 +1234,8 @@ VOID PhpUpdateHandleGeneral(
                     Context->HandleItem->Handle,
                     FileStandardInformation,
                     &fileStandardInfo,
-                    sizeof(FILE_STANDARD_INFORMATION)
+                    sizeof(FILE_STANDARD_INFORMATION),
+                    NULL
                     )))
                 {
                     PH_FORMAT format[1];
@@ -1200,7 +1261,8 @@ VOID PhpUpdateHandleGeneral(
                     Context->HandleItem->Handle,
                     FilePositionInformation,
                     &filePositionInfo,
-                    sizeof(FILE_POSITION_INFORMATION)
+                    sizeof(FILE_POSITION_INFORMATION),
+                    NULL
                     )))
                 {
                     if (filePositionInfo.CurrentByteOffset.QuadPart != 0 && fileStandardInfo.EndOfFile.QuadPart != 0)
@@ -1238,7 +1300,8 @@ VOID PhpUpdateHandleGeneral(
                 Context->HandleItem->Handle,
                 FileIoPriorityHintInformation,
                 &priorityInfo,
-                sizeof(priorityInfo)
+                sizeof(priorityInfo),
+                NULL
                 )))
             {
                 switch (priorityInfo.PriorityHint)
@@ -1266,25 +1329,25 @@ VOID PhpUpdateHandleGeneral(
                 Context->HandleItem->Handle,
                 KphObjectFileObjectDriver,
                 &fileObjectDriver,
-                sizeof(fileObjectDriver),
+                sizeof(HANDLE),
                 NULL
                 )))
             {
                 PPH_STRING driverName;
 
-                if (NT_SUCCESS(PhGetDriverName(fileObjectDriver.DriverHandle, &driverName)))
+                if (NT_SUCCESS(PhGetDriverName(fileObjectDriver, &driverName)))
                 {
                     PhSetHandleListViewItem(Context, PH_HANDLE_GENERAL_INDEX_FILEDRIVER, 1, PhGetString(driverName));
                     PhDereferenceObject(driverName);
                 }
 
-                if (NT_SUCCESS(PhGetDriverImageFileName(fileObjectDriver.DriverHandle, &driverName)))
+                if (NT_SUCCESS(PhGetDriverImageFileName(fileObjectDriver, &driverName)))
                 {
                     PhSetHandleListViewItem(Context, PH_HANDLE_GENERAL_INDEX_FILEDRIVERIMAGE, 1, PhGetString(driverName));
                     PhDereferenceObject(driverName);
                 }
 
-                NtClose(fileObjectDriver.DriverHandle);
+                NtClose(fileObjectDriver);
             }
 
             NtClose(processHandle);
@@ -1430,7 +1493,8 @@ VOID PhpUpdateHandleGeneral(
                     fileHandle,
                     FileModeInformation,
                     &fileModeInfo,
-                    sizeof(FILE_MODE_INFORMATION)
+                    sizeof(FILE_MODE_INFORMATION),
+                    NULL
                     )))
                 {
                     PH_FORMAT format[5];
@@ -1465,7 +1529,8 @@ VOID PhpUpdateHandleGeneral(
                         fileHandle,
                         FileStandardInformation,
                         &fileStandardInfo,
-                        sizeof(FILE_STANDARD_INFORMATION)
+                        sizeof(FILE_STANDARD_INFORMATION),
+                        NULL
                         )))
                     {
                         PH_FORMAT format[1];
@@ -1490,7 +1555,8 @@ VOID PhpUpdateHandleGeneral(
                         fileHandle,
                         FilePositionInformation,
                         &filePositionInfo,
-                        sizeof(FILE_POSITION_INFORMATION)
+                        sizeof(FILE_POSITION_INFORMATION),
+                        NULL
                         )))
                     {
                         if (fileStandardInfo.EndOfFile.QuadPart != 0)
@@ -1528,7 +1594,8 @@ VOID PhpUpdateHandleGeneral(
                     fileHandle,
                     FileIoPriorityHintInformation,
                     &priorityInfo,
-                    sizeof(priorityInfo)
+                    sizeof(priorityInfo),
+                    NULL
                     )))
                 {
                     switch (priorityInfo.PriorityHint)
@@ -1750,76 +1817,75 @@ VOID PhpUpdateHandleGeneral(
         KERNEL_USER_TIMES times;
         BOOLEAN haveTimes = FALSE;
 
-        // TODO(jxy-s): Uncomment following code after next driver release (commented out as workaround for KphObjectProcessImageFileName memory leak) (dmex)
-        //if (KsiLevel() >= KphLevelMed && NT_SUCCESS(PhOpenProcess(
-        //        &processHandle,
-        //        PROCESS_QUERY_LIMITED_INFORMATION,
-        //        Context->ProcessId
-        //        )))
-        //{
-        //    ULONG bufferSize;
-        //    ULONG returnLength;
-        //    PUNICODE_STRING buffer;
-        //    NTSTATUS status2;
+        if (KsiLevel() >= KphLevelMed && NT_SUCCESS(PhOpenProcess(
+            &processHandle,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            Context->ProcessId
+            )))
+        {
+            ULONG bufferSize;
+            ULONG returnLength;
+            PUNICODE_STRING buffer;
+            NTSTATUS status2;
 
-        //    returnLength = 0;
-        //    bufferSize = 0x100;
-        //    buffer = PhAllocate(bufferSize);
+            returnLength = 0;
+            bufferSize = 0x100;
+            buffer = PhAllocate(bufferSize);
 
-        //    if (NT_SUCCESS(KphQueryInformationObject(
-        //        processHandle,
-        //        Context->HandleItem->Handle,
-        //        KphObjectProcessBasicInformation,
-        //        &basicInfo,
-        //        sizeof(basicInfo),
-        //        NULL
-        //        )))
-        //    {
-        //        exitStatus = basicInfo.ExitStatus;
-        //    }
+            if (NT_SUCCESS(KphQueryInformationObject(
+                processHandle,
+                Context->HandleItem->Handle,
+                KphObjectProcessBasicInformation,
+                &basicInfo,
+                sizeof(basicInfo),
+                NULL
+                )))
+            {
+                exitStatus = basicInfo.ExitStatus;
+            }
 
-        //    haveTimes = NT_SUCCESS(KphQueryInformationObject(
-        //        processHandle,
-        //        Context->HandleItem->Handle,
-        //        KphObjectProcessTimes,
-        //        &times,
-        //        sizeof(times),
-        //        NULL
-        //        ));
+            haveTimes = NT_SUCCESS(KphQueryInformationObject(
+                processHandle,
+                Context->HandleItem->Handle,
+                KphObjectProcessTimes,
+                &times,
+                sizeof(times),
+                NULL
+                ));
 
-        //    status2 = KphQueryInformationObject(
-        //        processHandle,
-        //        Context->HandleItem->Handle,
-        //        KphObjectProcessImageFileName,
-        //        buffer,
-        //        bufferSize,
-        //        &returnLength
-        //        );
-        //    if (status2 == STATUS_BUFFER_TOO_SMALL && returnLength > 0)
-        //    {
-        //        PhFree(buffer);
-        //        bufferSize = returnLength;
-        //        buffer = PhAllocate(returnLength);
+            status2 = KphQueryInformationObject(
+                processHandle,
+                Context->HandleItem->Handle,
+                KphObjectProcessImageFileName,
+                buffer,
+                bufferSize,
+                &returnLength
+                );
+            if (status2 == STATUS_BUFFER_TOO_SMALL && returnLength > 0)
+            {
+                PhFree(buffer);
+                bufferSize = returnLength;
+                buffer = PhAllocate(returnLength);
 
-        //        status2 = KphQueryInformationObject(
-        //            processHandle,
-        //            Context->HandleItem->Handle,
-        //            KphObjectProcessImageFileName,
-        //            buffer,
-        //            bufferSize,
-        //            &returnLength
-        //            );
-        //    }
+                status2 = KphQueryInformationObject(
+                    processHandle,
+                    Context->HandleItem->Handle,
+                    KphObjectProcessImageFileName,
+                    buffer,
+                    bufferSize,
+                    &returnLength
+                    );
+            }
 
-        //    if (NT_SUCCESS(status2))
-        //    {
-        //        fileName = PhCreateStringFromUnicodeString(buffer);
-        //        PhMoveReference(&fileName, PhGetFileName(fileName));
-        //    }
+            if (NT_SUCCESS(status2))
+            {
+                fileName = PhCreateStringFromUnicodeString(buffer);
+                PhMoveReference(&fileName, PhGetFileName(fileName));
+            }
 
-        //    NtClose(processHandle);
-        //}
-        //else
+            NtClose(processHandle);
+        }
+        else
         {
             HANDLE dupHandle = NULL;
 
@@ -2071,11 +2137,11 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
     {
     case WM_INITDIALOG:
         {
-            PhSetApplicationWindowIcon(context->ParentWindow);
-
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
             context->ParentWindow = GetParent(hwndDlg);
-            context->ListViewClass = PhGetListViewInterface(context->ListViewHandle);
+            context->ListViewClass = PhListView_Initialize(context->ListViewHandle);
+
+            PhSetApplicationWindowIcon(context->ParentWindow);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -2086,8 +2152,8 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
 
-            if (PhValidWindowPlacementFromSetting(L"HandlePropertiesWindowPosition"))
-                PhLoadWindowPlacementFromSetting(L"HandlePropertiesWindowPosition", NULL, context->ParentWindow);
+            if (PhValidWindowPlacementFromSetting(SETTING_HANDLE_PROPERTIES_WINDOW_POSITION))
+                PhLoadWindowPlacementFromSetting(SETTING_HANDLE_PROPERTIES_WINDOW_POSITION, NULL, context->ParentWindow);
             else
                 PhCenterWindow(context->ParentWindow, GetParent(context->ParentWindow)); // HACK
 
@@ -2110,17 +2176,21 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
                 PhInitializeWindowTheme(hwndDlg, FALSE);
         }
         break;
+    case WM_NCDESTROY:
+        {
+
+            PhDeleteLayoutManager(&context->LayoutManager);
+
+            PhListView_Destroy(context->ListViewClass);
+
+            PhRemoveDialogContext(hwndDlg);
+        }
+        break;
     case WM_DESTROY:
         {
             PhUnregisterWindowCallback(context->ParentWindow);
 
-            PhSaveWindowPlacementToSetting(L"HandlePropertiesWindowPosition", NULL, context->ParentWindow);
-
-            PhDeleteLayoutManager(&context->LayoutManager);
-
-            PhDestroyListViewInterface(context->ListViewClass);
-
-            PhRemoveDialogContext(hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_HANDLE_PROPERTIES_WINDOW_POSITION, NULL, context->ParentWindow);
         }
         break;
     case WM_DPICHANGED:
@@ -2165,15 +2235,13 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
                 point.y = GET_Y_LPARAM(lParam);
 
                 if (point.x == -1 && point.y == -1)
-                    PhGetIListViewContextMenuPoint(context->ListViewClass, &point);
+                    PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedIListViewItemParams(context->ListViewClass, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
-                    PhInsertCopyIListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle, context->ListViewClass);
+                    PhInsertCopyListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle);
 
                     item = PhShowEMenu(
                         menu,
@@ -2199,7 +2267,7 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
                             {
                             case IDC_COPY:
                                 {
-                                    PhCopyIListView(context->ListViewHandle, context->ListViewClass);
+                                    PhCopyListView(context->ListViewHandle);
                                 }
                                 break;
                             }
@@ -2207,9 +2275,9 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
@@ -2348,7 +2416,7 @@ VOID PhUpdateHandlePermissionsOwnerSecurity(
     BOOLEAN currentOwnerDefaulted;
     PACL currentOwner;
 
-    status = PhGetObjectSecurity(
+    status = PhGetObjectSecurityWithTimeout(
         QueryHandle,
         OWNER_SECURITY_INFORMATION,
         &currentSecurityDescriptor
@@ -2443,7 +2511,7 @@ VOID PhUpdateHandlePermissionsGroupSecurity(
     BOOLEAN currentGroupDefaulted;
     PACL currentGroupSid;
 
-    status = PhGetObjectSecurity(
+    status = PhGetObjectSecurityWithTimeout(
         QueryHandle,
         GROUP_SECURITY_INFORMATION,
         &currentSecurityDescriptor
@@ -2539,7 +2607,7 @@ VOID PhUpdateHandlePermissionsSaclSecurity(
     BOOLEAN currentSaclDefaulted;
     PACL currentSacl;
 
-    status = PhGetObjectSecurity(
+    status = PhGetObjectSecurityWithTimeout(
         QueryHandle,
         SACL_SECURITY_INFORMATION,
         &currentSecurityDescriptor
@@ -2605,7 +2673,7 @@ VOID PhUpdateHandlePermissionsLabelSecurity(
     BOOLEAN currentSaclDefaulted;
     PACL currentSacl;
 
-    status = PhGetObjectSecurity(
+    status = PhGetObjectSecurityWithTimeout(
         QueryHandle,
         LABEL_SECURITY_INFORMATION,
         &currentSecurityDescriptor
@@ -2671,7 +2739,7 @@ VOID PhUpdateHandlePermissionsDaclSecurity(
     BOOLEAN currentSaclDefaulted;
     PACL currentSacl;
 
-    status = PhGetObjectSecurity(
+    status = PhGetObjectSecurityWithTimeout(
         QueryHandle,
         DACL_SECURITY_INFORMATION,
         &currentSecurityDescriptor
@@ -2928,11 +2996,11 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
         LPPROPSHEETPAGE propSheetPage = (LPPROPSHEETPAGE)lParam;
         context = PhAllocateZero(sizeof(HANDLE_PERMISSIONS_CONTEXT));
         context->HandleProperties = (PHANDLE_PROPERTIES_CONTEXT)propSheetPage->lParam;
-        PhSetDialogContext(hwndDlg, context);
+        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetDialogContext(hwndDlg);
+        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
@@ -2942,12 +3010,12 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
     {
     case WM_INITDIALOG:
         {
-            PhSetApplicationWindowIcon(context->ParentWindow);
-
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
             context->ListViewHeader = GetDlgItem(hwndDlg, IDC_SETTINGS);
             context->ParentWindow = GetParent(hwndDlg);
             //context->ListViewClass = PhGetListViewInterface(context->ListViewHandle);
+
+            PhSetApplicationWindowIcon(context->ParentWindow);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -2972,32 +3040,11 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
 
             PhUpdateHandlePermissionSecurity(context);
 
-
-               // index = PhAddListViewGroupItem(GetDlgItem(hwndDlg, IDC_LIST2), 0, MAXINT, L"Integrity level", NULL);
-              //  PhSetListViewSubItem(GetDlgItem(hwndDlg, IDC_LIST2), index, 1, L"Unable to disable the integrity level.");
-
-
-
-            //// Plugins can load window position in GeneralCallbackHandlePropertiesWindowInitialized, ex. Object Manager (Dart Vanya)
-            //if (!PhPluginsEnabled || !context->OwnerPlugin)
-            //{
-            //    // HACK
-            //    if (PhValidWindowPlacementFromSetting(L"HandlePropertiesWindowPosition"))
-            //        PhLoadWindowPlacementFromSetting(L"HandlePropertiesWindowPosition", NULL, context->ParentWindow);
-            //    else
-            //        PhCenterWindow(context->ParentWindow, GetParent(context->ParentWindow)); // HACK
-            //}
-
-            //PhpUpdateHandleGeneralListViewGroups(context);
-            //PhpUpdateHandleGeneral(context);
-
-            //PhRegisterWindowCallback(context->ParentWindow, PH_PLUGIN_WINDOW_EVENT_TYPE_TOPMOST, NULL);
-
             //if (PhPluginsEnabled)
             //{
             //    PPH_PLUGIN_HANDLE_PROPERTIES_WINDOW_CONTEXT Context;
             //    Context = (PPH_PLUGIN_HANDLE_PROPERTIES_WINDOW_CONTEXT)context;
-
+            //
             //    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackHandlePropertiesWindowInitialized), Context);
             //}
 
@@ -3011,13 +3058,13 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
         {
             //PhUnregisterWindowCallback(context->ParentWindow);
 
-            //PhSaveWindowPlacementToSetting(L"HandlePropertiesWindowPosition", NULL, context->ParentWindow);
+            //PhSaveWindowPlacementToSetting(SETTING_HANDLE_PROPERTIES_WINDOW_POSITION, NULL, context->ParentWindow);
 
             PhDeleteLayoutManager(&context->LayoutManager);
 
             //PhDestroyListViewInterface(context->ListViewClass);
 
-            PhRemoveDialogContext(hwndDlg);
+            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhFree(context);
         }
@@ -3066,9 +3113,7 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -3106,9 +3151,9 @@ INT_PTR CALLBACK PhpHandlePermissionsDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
@@ -3134,11 +3179,11 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
         LPPROPSHEETPAGE propSheetPage = (LPPROPSHEETPAGE)lParam;
         context = PhAllocateZero(sizeof(HANDLE_PERMISSIONS_CONTEXT));
         context->HandleProperties = (PHANDLE_PROPERTIES_CONTEXT)propSheetPage->lParam;
-        PhSetDialogContext(hwndDlg, context);
+        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetDialogContext(hwndDlg);
+        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
@@ -3148,12 +3193,12 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
     {
     case WM_INITDIALOG:
         {
-            PhSetApplicationWindowIcon(context->ParentWindow);
-
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
             context->ListViewHeader = GetDlgItem(hwndDlg, IDC_SETTINGS);
             context->ParentWindow = GetParent(hwndDlg);
             //context->ListViewClass = PhGetListViewInterface(context->ListViewHandle);
+
+            PhSetApplicationWindowIcon(context->ParentWindow);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -3182,15 +3227,13 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
         break;
     case WM_DESTROY:
         {
-            //PhUnregisterWindowCallback(context->ParentWindow);
-
-            //PhSaveWindowPlacementToSetting(L"HandlePropertiesWindowPosition", NULL, context->ParentWindow);
+            //PhSaveWindowPlacementToSetting(SETTING_HANDLE_PROPERTIES_WINDOW_POSITION, NULL, context->ParentWindow);
 
             PhDeleteLayoutManager(&context->LayoutManager);
 
             //PhDestroyListViewInterface(context->ListViewClass);
 
-            PhRemoveDialogContext(hwndDlg);
+            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhFree(context);
         }
@@ -3237,15 +3280,13 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
                 point.y = GET_Y_LPARAM(lParam);
 
                 if (point.x == -1 && point.y == -1)
-                    PhGetIListViewContextMenuPoint(context->ListViewClass, &point);
+                    PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedIListViewItemParams(context->ListViewClass, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
-                    PhInsertCopyIListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle, context->ListViewClass);
+                    PhInsertCopyListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle);
 
                     item = PhShowEMenu(
                         menu,
@@ -3271,7 +3312,7 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
                             {
                             case IDC_COPY:
                                 {
-                                    PhCopyIListView(context->ListViewHandle, context->ListViewClass);
+                                    PhCopyListView(context->ListViewHandle);
                                 }
                                 break;
                             }
@@ -3280,9 +3321,8 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
         HANDLE_MSG(hwndDlg, WM_CTLCOLORBTN, PhWindowThemeControlColor);
@@ -3292,3 +3332,4 @@ INT_PTR CALLBACK PhpHandleAuditingDlgProc(
 
     return FALSE;
 }
+

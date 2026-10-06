@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -21,6 +21,7 @@ static PPH_SYSINFO_SECTION IoSection;
 static HWND IoDialog;
 static PH_LAYOUT_MANAGER IoLayoutManager;
 static RECT IoGraphMargin;
+static RECT IoGraphMarginScaled;
 static HWND IoReadLabelHandle;
 static HWND IoReadGraphHandle;
 static HWND IoWriteLabelHandle;
@@ -282,6 +283,8 @@ INT_PTR CALLBACK PhSipIoDialogProc(
             graphItem = PhAddLayoutItem(&IoLayoutManager, GetDlgItem(hwndDlg, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
             panelItem = PhAddLayoutItem(&IoLayoutManager, GetDlgItem(hwndDlg, IDC_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             IoGraphMargin = graphItem->Margin;
+            IoGraphMarginScaled = IoGraphMargin;
+            PhGetMarginDpiValue(&IoGraphMarginScaled, IoSection->Parameters->WindowDpi, TRUE);
 
             SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), IoSection->Parameters->LargeFont, FALSE);
 
@@ -289,7 +292,7 @@ INT_PTR CALLBACK PhSipIoDialogProc(
             ShowWindow(IoPanel, SW_SHOW);
 
             margin = panelItem->Margin;
-            PhGetSizeDpiValue(&margin, IoSection->Parameters->WindowDpi, TRUE);
+            PhGetMarginDpiValue(&margin, IoSection->Parameters->WindowDpi, TRUE);
             PhAddLayoutItemEx(&IoLayoutManager, IoPanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &margin);
 
             PhSipCreateIoGraph();
@@ -304,6 +307,9 @@ INT_PTR CALLBACK PhSipIoDialogProc(
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
+            IoGraphMarginScaled = IoGraphMargin;
+            PhGetMarginDpiValue(&IoGraphMarginScaled, IoSection->Parameters->WindowDpi, TRUE);
+
             if (IoSection->Parameters->LargeFont)
             {
                 SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), IoSection->Parameters->LargeFont, FALSE);
@@ -461,8 +467,7 @@ VOID PhSipLayoutIoGraphs(
     HDWP deferHandle;
     LONG y;
 
-    marginRect = IoGraphMargin;
-    PhGetSizeDpiValue(&marginRect, IoSection->Parameters->WindowDpi, TRUE);
+    marginRect = IoGraphMarginScaled;
 
     if (!PhGetClientRect(IoDialog, &clientRect))
         return;

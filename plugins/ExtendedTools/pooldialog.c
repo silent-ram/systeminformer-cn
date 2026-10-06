@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -46,7 +46,23 @@ VOID EtUpdatePoolTagTable(
             PhUpdateDelta(&node->PoolItem->FreesDelta, poolTagInfo.PagedFrees + poolTagInfo.NonPagedFrees);
             PhUpdateDelta(&node->PoolItem->CurrentDelta, (poolTagInfo.PagedAllocs - poolTagInfo.PagedFrees) + (poolTagInfo.NonPagedAllocs - poolTagInfo.NonPagedFrees));
             PhUpdateDelta(&node->PoolItem->TotalSizeDelta, poolTagInfo.PagedUsed + poolTagInfo.NonPagedUsed);
-            node->PoolItem->HaveFirstSample = TRUE;
+
+            if (!node->PoolItem->HaveFirstSample)
+            {
+                node->PoolItem->PagedAllocsDelta.Delta = 0;
+                node->PoolItem->PagedFreesDelta.Delta = 0;
+                node->PoolItem->PagedCurrentDelta.Delta = 0;
+                node->PoolItem->PagedTotalSizeDelta.Delta = 0;
+                node->PoolItem->NonPagedAllocsDelta.Delta = 0;
+                node->PoolItem->NonPagedFreesDelta.Delta = 0;
+                node->PoolItem->NonPagedCurrentDelta.Delta = 0;
+                node->PoolItem->NonPagedTotalSizeDelta.Delta = 0;
+                node->PoolItem->AllocsDelta.Delta = 0;
+                node->PoolItem->FreesDelta.Delta = 0;
+                node->PoolItem->CurrentDelta.Delta = 0;
+                node->PoolItem->TotalSizeDelta.Delta = 0;
+                node->PoolItem->HaveFirstSample = TRUE;
+            }
 
             EtUpdatePoolTagNode(Context, node);
         }
@@ -70,6 +86,20 @@ VOID EtUpdatePoolTagTable(
             PhUpdateDelta(&entry->FreesDelta, poolTagInfo.PagedFrees + poolTagInfo.NonPagedFrees);
             PhUpdateDelta(&entry->CurrentDelta, (poolTagInfo.PagedAllocs - poolTagInfo.PagedFrees) + (poolTagInfo.NonPagedAllocs - poolTagInfo.NonPagedFrees));
             PhUpdateDelta(&entry->TotalSizeDelta, poolTagInfo.PagedUsed + poolTagInfo.NonPagedUsed);
+
+            entry->PagedAllocsDelta.Delta = 0;
+            entry->PagedFreesDelta.Delta = 0;
+            entry->PagedCurrentDelta.Delta = 0;
+            entry->PagedTotalSizeDelta.Delta = 0;
+            entry->NonPagedAllocsDelta.Delta = 0;
+            entry->NonPagedFreesDelta.Delta = 0;
+            entry->NonPagedCurrentDelta.Delta = 0;
+            entry->NonPagedTotalSizeDelta.Delta = 0;
+            entry->AllocsDelta.Delta = 0;
+            entry->FreesDelta.Delta = 0;
+            entry->CurrentDelta.Delta = 0;
+            entry->TotalSizeDelta.Delta = 0;
+            entry->HaveFirstSample = TRUE;
 
             EtUpdatePoolTagBinaryName(Context, entry, poolTagInfo.TagUlong);
 
@@ -121,9 +151,10 @@ VOID NTAPI EtPoolMonProcessesUpdatedCallback(
     _In_ PVOID Context
     )
 {
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
     PPOOLTAG_CONTEXT context = Context;
 
-    if (PtrToUlong(Parameter) < 3)
+    if (!updateEvent || updateEvent->RunCount < 3)
         return;
 
     EtUpdatePoolTagTable(Context);
@@ -147,58 +178,61 @@ VOID NTAPI EtPoolMonSearchControlCallback(
 }
 
 INT_PTR CALLBACK EtPoolMonDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PPOOLTAG_CONTEXT context;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(POOLTAG_CONTEXT));
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->WindowHandle = hwndDlg;
+            context->WindowHandle = WindowHandle;
             context->ParentWindowHandle = (HWND)lParam;
-            context->TreeNewHandle = GetDlgItem(hwndDlg, IDC_POOLTREE);
-            context->SearchboxHandle = GetDlgItem(hwndDlg, IDC_POOLSEARCH);
+            context->TreeNewHandle = GetDlgItem(WindowHandle, IDC_POOLTREE);
+            context->SearchboxHandle = GetDlgItem(WindowHandle, IDC_POOLSEARCH);
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(WindowHandle));
 
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetApplicationWindowIcon(WindowHandle);
 
             PhCreateSearchControl(
-                hwndDlg,
+                WindowHandle,
                 context->SearchboxHandle,
                 L"Search Pool Tags (Ctrl+K)",
                 EtPoolMonSearchControlCallback,
                 context
                 );
 
+            SetWindowFont(context->TreeNewHandle, context->WindowFont, FALSE);
+
             EtInitializePoolTagTree(context);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->TreeNewHandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&context->LayoutManager, context->SearchboxHandle, NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_POOL_AUTOSIZE_COLUMNS), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_POOL_AUTOSIZE_COLUMNS), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
 
             if (PhValidWindowPlacementFromSetting(SETTING_NAME_POOL_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(SETTING_NAME_POOL_WINDOW_POSITION, SETTING_NAME_POOL_WINDOW_SIZE, hwndDlg);
+                PhLoadWindowPlacementFromSetting(SETTING_NAME_POOL_WINDOW_POSITION, SETTING_NAME_POOL_WINDOW_SIZE, WindowHandle);
             else
-                PhCenterWindow(hwndDlg, context->ParentWindowHandle);
+                PhCenterWindow(WindowHandle, context->ParentWindowHandle);
 
             context->TreeFilterEntry = PhAddTreeNewFilter(
                 &context->FilterSupport,
@@ -218,18 +252,18 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
                 &context->ProcessesUpdatedCallbackRegistration
                 );
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 
-            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)context->TreeNewHandle, TRUE);
+            SendMessage(WindowHandle, WM_NEXTDLGCTL, (WPARAM)context->TreeNewHandle, TRUE);
         }
         break;
     case WM_DESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhUnregisterCallback(PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent), &context->ProcessesUpdatedCallbackRegistration);
 
-            PhSaveWindowPlacementToSetting(SETTING_NAME_POOL_WINDOW_POSITION, SETTING_NAME_POOL_WINDOW_SIZE, hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_NAME_POOL_WINDOW_POSITION, SETTING_NAME_POOL_WINDOW_SIZE, WindowHandle);
 
             EtSaveSettingsPoolTagTreeList(context);
 
@@ -238,6 +272,8 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
 
             EtDeletePoolTagTree(context);
             EtFreePoolTagDatabase(context);
+
+            if (context->WindowFont) DeleteFont(context->WindowFont);
 
             PhFree(context);
 
@@ -256,6 +292,11 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->TreeNewHandle, windowFont, TRUE);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
 
@@ -267,12 +308,12 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
         break;
     case WM_PH_SHOW_DIALOG:
         {
-            if (IsMinimized(hwndDlg))
-                ShowWindow(hwndDlg, SW_RESTORE);
+            if (IsMinimized(WindowHandle))
+                ShowWindow(WindowHandle, SW_RESTORE);
             else
-                ShowWindow(hwndDlg, SW_SHOW);
+                ShowWindow(WindowHandle, SW_SHOW);
 
-            SetForegroundWindow(hwndDlg);
+            SetForegroundWindow(WindowHandle);
         }
         break;
     case WM_COMMAND:
@@ -280,7 +321,7 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
             switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
-                DestroyWindow(hwndDlg);
+                DestroyWindow(WindowHandle);
                 break;
             case IDC_POOLCLEAR:
                 {
@@ -313,7 +354,7 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
 
                         selectedItem = PhShowEMenu(
                             menu,
-                            hwndDlg,
+                            WindowHandle,
                             PH_EMENU_SHOW_LEFTRIGHT,
                             PH_ALIGN_LEFT | PH_ALIGN_TOP,
                             contextMenuEvent->Location.x,
@@ -366,11 +407,11 @@ INT_PTR CALLBACK EtPoolMonDlgProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

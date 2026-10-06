@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -102,6 +102,8 @@ typedef struct _PH_MODULE_NODE
 #define PH_MODULE_FLAGS_IMAGEKNOWNDLL_OPTION 15
 #define PH_MODULE_FLAGS_HIGHLIGHT_IMAGEKNOWNDLL 16
 #define PH_MODULE_FLAGS_ZERO_PAD_ADDRESSES 17
+#define PH_MODULE_FLAGS_HIGHLIGHT_NATIVE_MODULES 18
+#define PH_MODULE_FLAGS_HIGHLIGHT_MAPPED_MODULES 19
 #define PH_MODULE_FLAGS_SAVE_OPTION 40 // Always last (dmex)
 
 typedef struct _PH_MODULE_LIST_CONTEXT
@@ -117,6 +119,7 @@ typedef struct _PH_MODULE_LIST_CONTEXT
     HANDLE ProcessId;
     LARGE_INTEGER ProcessCreateTime;
     BOOLEAN HasServices;
+    BOOLEAN IsSubsystemProcess;
     BOOLEAN EnableStateHighlighting;
 
     union

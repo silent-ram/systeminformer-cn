@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     jxy-s   2020-2024
+ *     jxy-s   2020-2026
  *
  */
 
@@ -204,6 +204,7 @@ static BCRYPT_KEY_HANDLE KphpPublicKeyHandles[ARRAYSIZE(KphpPublicKeys)] = { 0 }
 static ULONG KphpPublicKeyHandlesCount = 0;
 C_ASSERT(ARRAYSIZE(KphpPublicKeyHandles) == ARRAYSIZE(KphpPublicKeys));
 KPH_PROTECTED_DATA_SECTION_POP();
+static KPH_RUNDOWN KphpVerifyRundown = { 0 };
 
 KPH_PAGED_FILE();
 
@@ -232,35 +233,44 @@ NTSTATUS KphpVerifyHash(
 
     KPH_PAGED_CODE_PASSIVE();
 
-    status = STATUS_UNSUCCESSFUL;
-
     if (KeyHandle)
     {
-        status = BCryptVerifySignature(KeyHandle,
+        return BCryptVerifySignature(KeyHandle,
+                                     KPH_KEY_PADDING_INFO,
+                                     HashInformation->Hash,
+                                     HashInformation->Length,
+                                     Signature,
+                                     SignatureLength,
+                                     KPH_KEY_PADDING_FLAGS);
+    }
+
+    if (!KphAcquireRundown(&KphpVerifyRundown))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      VERIFY,
+                      "Failed to acquire rundown.");
+
+        return STATUS_TOO_LATE;
+    }
+
+    status = STATUS_UNSUCCESSFUL;
+
+    for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
+    {
+        status = BCryptVerifySignature(KphpPublicKeyHandles[i],
                                        KPH_KEY_PADDING_INFO,
                                        HashInformation->Hash,
                                        HashInformation->Length,
                                        Signature,
                                        SignatureLength,
                                        KPH_KEY_PADDING_FLAGS);
-    }
-    else
-    {
-        for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
+        if (NT_SUCCESS(status))
         {
-            status = BCryptVerifySignature(KphpPublicKeyHandles[i],
-                                           KPH_KEY_PADDING_INFO,
-                                           HashInformation->Hash,
-                                           HashInformation->Length,
-                                           Signature,
-                                           SignatureLength,
-                                           KPH_KEY_PADDING_FLAGS);
-            if (NT_SUCCESS(status))
-            {
-                return status;
-            }
+            break;
         }
     }
+
+    KphReleaseRundown(&KphpVerifyRundown);
 
     return status;
 }
@@ -399,7 +409,7 @@ NTSTATUS KphVerifyBuffer(
 
 #define KphpVerifyValidFileName(FileName)                                      \
     (((FileName)->Length > KphpSigExtension.Length) &&                         \
-     ((FileName)->Buffer[0] == L'\\'))
+     ((FileName)->Buffer[0] == OBJ_NAME_PATH_SEPARATOR))
 
 /**
  * \brief Verifies a file object.
@@ -431,7 +441,7 @@ NTSTATUS KphVerifyFileObject(
     KPH_PAGED_CODE_PASSIVE();
 
     localFileName = NULL;
-    RtlZeroMemory(&signatureFileName, sizeof(signatureFileName));
+    RtlZeroMemory(&signatureFileName, sizeof(UNICODE_STRING));
     signatureFileHandle = NULL;
     signature = NULL;
 
@@ -474,7 +484,7 @@ NTSTATUS KphVerifyFileObject(
                       "RtlDuplicateUnicodeString failed: %!STATUS!",
                       status);
 
-        RtlZeroMemory(&signatureFileName, sizeof(signatureFileName));
+        RtlZeroMemory(&signatureFileName, sizeof(UNICODE_STRING));
         goto Exit;
     }
 
@@ -589,7 +599,7 @@ NTSTATUS KphVerifyFileObject(
 
     status = KphQueryHashInformationFileObject(FileObject,
                                                &hashInfo,
-                                               sizeof(hashInfo));
+                                               sizeof(KPH_HASH_INFORMATION));
     if (!NT_SUCCESS(status))
     {
         KphTracePrint(TRACE_LEVEL_VERBOSE,
@@ -698,7 +708,7 @@ NTSTATUS KphVerifyFile(
     if (!NT_SUCCESS(status))
     {
         KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      HASH,
+                      VERIFY,
                       "KphCreateFile failed: %!STATUS!",
                       status);
 
@@ -708,7 +718,7 @@ NTSTATUS KphVerifyFile(
     else if (status == STATUS_OPLOCK_BREAK_IN_PROGRESS)
     {
         KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      HASH,
+                      VERIFY,
                       "KphCreateFile failed: %!STATUS!",
                       status);
 
@@ -775,6 +785,8 @@ NTSTATUS KphInitializeVerify(
 
     KPH_PAGED_CODE_PASSIVE();
 
+    KphInitializeRundown(&KphpVerifyRundown);
+
     testSigning = KphTestSigningEnabled();
 
     for (ULONG i = 0; i < ARRAYSIZE(KphpPublicKeys); i++)
@@ -818,6 +830,8 @@ VOID KphCleanupVerify(
     )
 {
     KPH_PAGED_CODE_PASSIVE();
+
+    KphWaitForRundown(&KphpVerifyRundown);
 
     for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
     {

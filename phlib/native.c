@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -227,7 +227,7 @@ NTSTATUS PhMergeSystemAcls(
 
     // Allocate new ACL (header + aligned payload).
 
-    requiredSize = sizeof(ACL) + ALIGN_UP_BY(requiredSize, sizeof(ULONG));
+    requiredSize = (ULONG)sizeof(ACL) + ALIGN_UP_BY(requiredSize, sizeof(ULONG));
 
     if (requiredSize > USHORT_MAX)
         return STATUS_INVALID_PARAMETER;
@@ -254,7 +254,7 @@ NTSTATUS PhMergeSystemAcls(
             {
                 RtlCopyMemory(mergedAce, ace, ace->AceSize);
                 mergedSacl->AceCount++;
-                PhEnsureAclRevision(&mergedSacl->AclRevision, mergedAce->AceType);
+                PhEnsureAclRevision((PULONG_PTR)&mergedSacl->AclRevision, mergedAce->AceType);
                 mergedAce = (PACE_HEADER)PTR_ADD_OFFSET(mergedAce, mergedAce->AceSize);
             }
         }
@@ -272,7 +272,7 @@ NTSTATUS PhMergeSystemAcls(
             {
                 RtlCopyMemory(mergedAce, ace, ace->AceSize);
                 mergedSacl->AceCount++;
-                PhEnsureAclRevision(&mergedSacl->AclRevision, mergedAce->AceType);
+                PhEnsureAclRevision((PULONG_PTR)&mergedSacl->AclRevision, mergedAce->AceType);
                 mergedAce = (PACE_HEADER)PTR_ADD_OFFSET(mergedAce, mergedAce->AceSize);
             }
         }
@@ -868,7 +868,13 @@ NTSTATUS PhGetProcessUnloadedDlls(
     if (capturedElementCount > 0x4000)
         capturedElementCount = 0x4000;
 
-    eventTraceSize = capturedElementSize * capturedElementCount;
+    if (!NT_SUCCESS(status = RtlSizeTMult(
+        (SIZE_T)capturedElementSize,
+        (SIZE_T)capturedElementCount,
+        &eventTraceSize
+        )))
+        goto CleanupExit;
+
     capturedEventTrace = PhAllocateSafe(eventTraceSize);
 
     if (!capturedEventTrace)
@@ -1569,6 +1575,91 @@ NTSTATUS PhEnumProcessesEx(
     *Processes = buffer;
 
     return status;
+}
+
+/**
+ * Enumerates basic process information.
+ *
+ * \param Buffer A pointer to a variable which receives a pointer to a buffer containing basic process information.
+ * \param BufferSize A pointer to a variable which receives the size of the buffer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumBasicProcessInformation(
+    _Inout_ PVOID *Buffer,
+    _Inout_ PULONG BufferSize
+    )
+{
+    NTSTATUS status;
+    PVOID buffer;
+    ULONG bufferSize;
+
+    bufferSize = *BufferSize;
+    buffer = *Buffer;
+
+    if (!buffer)
+    {
+        if (bufferSize == 0)
+            bufferSize = 0x4000;
+
+        buffer = PhAllocateSafe(bufferSize);
+
+        if (!buffer)
+            return STATUS_NO_MEMORY;
+    }
+
+    while (TRUE)
+    {
+        status = NtQuerySystemInformation(
+            SystemBasicProcessInformation,
+            buffer,
+            bufferSize,
+            &bufferSize
+            );
+
+        if (status == STATUS_BUFFER_TOO_SMALL || status == STATUS_INFO_LENGTH_MISMATCH)
+        {
+            PhFree(buffer);
+            buffer = PhAllocateSafe(bufferSize);
+
+            if (!buffer)
+                return STATUS_NO_MEMORY;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if (!NT_SUCCESS(status))
+    {
+        PhFree(buffer);
+        *Buffer = NULL;
+        *BufferSize = 0;
+        return status;
+    }
+
+    *Buffer = buffer;
+    *BufferSize = bufferSize;
+
+    return status;
+}
+
+/**
+ * Gets basic system information.
+ *
+ * \param BasicInformation A variable which receives the information.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhGetSystemBasicInformation(
+    _Out_ PSYSTEM_BASIC_INFORMATION BasicInformation
+    )
+{
+    return NtQuerySystemInformation(
+        SystemBasicInformation,
+        BasicInformation,
+        sizeof(SYSTEM_BASIC_INFORMATION),
+        NULL
+        );
 }
 
 /**
@@ -3023,290 +3114,6 @@ NTSTATUS PhGetProcessIsDotNetEx(
     }
 }
 
-/*
- * Opens a directory object.
- *
- * \param DirectoryHandle A variable which receives a handle to the directory object.
- * \param DesiredAccess The desired access to the directory object.
- * \param RootDirectory A handle to the root directory of the object.
- * \param ObjectName The name of the directory object.
- * \return NTSTATUS Successful or errant status.
- */
-NTSTATUS PhOpenDirectoryObject(
-    _Out_ PHANDLE DirectoryHandle,
-    _In_ ACCESS_MASK DesiredAccess,
-    _In_opt_ HANDLE RootDirectory,
-    _In_ PCPH_STRINGREF ObjectName
-    )
-{
-    NTSTATUS status;
-    UNICODE_STRING objectName;
-    OBJECT_ATTRIBUTES objectAttributes;
-
-    if (!PhStringRefToUnicodeString(ObjectName, &objectName))
-        return STATUS_NAME_TOO_LONG;
-
-    InitializeObjectAttributes(
-        &objectAttributes,
-        &objectName,
-        OBJ_CASE_INSENSITIVE,
-        RootDirectory,
-        NULL
-        );
-
-    status = NtOpenDirectoryObject(
-        DirectoryHandle,
-        DesiredAccess,
-        &objectAttributes
-        );
-
-    return status;
-}
-
-/**
- * Enumerates the objects in a directory object.
- *
- * \param DirectoryHandle A handle to a directory. The handle must have DIRECTORY_QUERY access.
- * \param Callback A callback function which is executed for each object.
- * \param Context A user-defined value to pass to the callback function.
- * \return NTSTATUS Successful or errant status.
- */
-NTSTATUS PhEnumDirectoryObjects(
-    _In_ HANDLE DirectoryHandle,
-    _In_ PPH_ENUM_DIRECTORY_OBJECTS Callback,
-    _In_opt_ PVOID Context
-    )
-{
-    NTSTATUS status;
-    ULONG context = 0;
-    BOOLEAN firstTime = TRUE;
-    ULONG bufferSize;
-    POBJECT_DIRECTORY_INFORMATION buffer;
-    ULONG i;
-
-    bufferSize = 0x200;
-    buffer = PhAllocateStack(bufferSize);
-    if (!buffer) return STATUS_NO_MEMORY;
-
-    while (TRUE)
-    {
-        // Get a batch of entries.
-
-        while ((status = NtQueryDirectoryObject(
-            DirectoryHandle,
-            buffer,
-            bufferSize,
-            FALSE,
-            firstTime,
-            &context,
-            NULL
-            )) == STATUS_MORE_ENTRIES)
-        {
-            // Check if we have at least one entry. If not, we'll double the buffer size and try
-            // again.
-            if (buffer[0].Name.Buffer)
-                break;
-
-            // Make sure we don't use too much memory.
-            if (bufferSize > PH_LARGE_BUFFER_SIZE)
-            {
-                PhFreeStack(buffer);
-                return STATUS_INSUFFICIENT_RESOURCES;
-            }
-
-            PhFreeStack(buffer);
-            bufferSize *= 2;
-            buffer = PhAllocateStack(bufferSize);
-            if (!buffer) return STATUS_NO_MEMORY;
-        }
-
-        if (!NT_SUCCESS(status))
-        {
-            if (status == STATUS_NO_MORE_ENTRIES)
-                status = STATUS_SUCCESS;
-
-            PhFreeStack(buffer);
-            return status;
-        }
-
-        // Read the batch and execute the callback function for each object.
-
-        i = 0;
-
-        while (TRUE)
-        {
-            POBJECT_DIRECTORY_INFORMATION info;
-            PH_STRINGREF name;
-            PH_STRINGREF typeName;
-
-            info = &buffer[i];
-
-            if (!info->Name.Buffer)
-                break;
-
-            PhUnicodeStringToStringRef(&info->Name, &name);
-            PhUnicodeStringToStringRef(&info->TypeName, &typeName);
-
-            status = Callback(
-                DirectoryHandle,
-                &name,
-                &typeName,
-                Context
-                );
-
-            if (status == STATUS_NO_MORE_ENTRIES)
-                break;
-
-            i++;
-        }
-
-        if (status == STATUS_NO_MORE_ENTRIES)
-            break;
-
-        firstTime = FALSE;
-    }
-
-    if (status == STATUS_NO_MORE_ENTRIES)
-        status = STATUS_SUCCESS;
-
-    PhFreeStack(buffer);
-
-    return status;
-}
-
-/**
- * Creates a symbolic link object.
- *
- * \param LinkHandle Pointer to a variable that receives the handle to the symbolic link object.
- * \param DesiredAccess Specifies the desired access rights for the symbolic link object.
- * \param RootDirectory Optional handle to the root directory for the symbolic link object name.
- * \param FileName Pointer to a string that specifies the target file or object to which the symbolic link points.
- * \param LinkName Pointer to a string that specifies the name of the symbolic link object to be created.
- * \return NTSTATUS Successful or errant status.
- */
-NTSTATUS PhCreateSymbolicLinkObject(
-    _Out_ PHANDLE LinkHandle,
-    _In_ ACCESS_MASK DesiredAccess,
-    _In_opt_ HANDLE RootDirectory,
-    _In_ PCPH_STRINGREF FileName,
-    _In_ PCPH_STRINGREF LinkName
-    )
-{
-    NTSTATUS status;
-    HANDLE linkHandle;
-    OBJECT_ATTRIBUTES objectAttributes;
-    UNICODE_STRING objectName;
-    UNICODE_STRING objectTarget;
-
-    if (!PhStringRefToUnicodeString(FileName, &objectName))
-        return STATUS_NAME_TOO_LONG;
-    if (!PhStringRefToUnicodeString(LinkName, &objectTarget))
-        return STATUS_NAME_TOO_LONG;
-
-    InitializeObjectAttributes(
-        &objectAttributes,
-        &objectName,
-        OBJ_CASE_INSENSITIVE,
-        RootDirectory,
-        NULL
-        );
-
-    status = NtCreateSymbolicLinkObject(
-        &linkHandle,
-        DesiredAccess,
-        &objectAttributes,
-        &objectTarget
-        );
-
-    if (NT_SUCCESS(status))
-    {
-        *LinkHandle = linkHandle;
-    }
-
-    return status;
-}
-
-/**
- * Queries the target of a symbolic link object.
- *
- * \param LinkTarget Pointer to a variable that receives the target of the symbolic link as a PPH_STRING.
- * \param RootDirectory Optional handle to the root directory for the object name. Can be NULL.
- * \param ObjectName Pointer to a string reference that specifies the name of the symbolic link object.
- * \return NTSTATUS Successful or errant status.
- */
-NTSTATUS PhQuerySymbolicLinkObject(
-    _Out_ PPH_STRING* LinkTarget,
-    _In_opt_ HANDLE RootDirectory,
-    _In_ PCPH_STRINGREF ObjectName
-    )
-{
-    NTSTATUS status;
-    HANDLE linkHandle;
-    OBJECT_ATTRIBUTES objectAttributes;
-    UNICODE_STRING objectName;
-    UNICODE_STRING targetName;
-    ULONG returnLength = 0;
-    WCHAR stackBuffer[DOS_MAX_PATH_LENGTH];
-    ULONG bufferLength = sizeof(stackBuffer);
-    PWCHAR buffer = stackBuffer;
-
-    if (!PhStringRefToUnicodeString(ObjectName, &objectName))
-        return STATUS_NAME_TOO_LONG;
-
-    InitializeObjectAttributes(
-        &objectAttributes,
-        &objectName,
-        OBJ_CASE_INSENSITIVE,
-        RootDirectory,
-        NULL
-        );
-
-    status = NtOpenSymbolicLinkObject(
-        &linkHandle,
-        SYMBOLIC_LINK_QUERY,
-        &objectAttributes
-        );
-
-    if (!NT_SUCCESS(status))
-        return status;
-
-    RtlInitEmptyUnicodeString(&targetName, buffer, (USHORT)bufferLength);
-
-    status = NtQuerySymbolicLinkObject(
-        linkHandle,
-        &targetName,
-        &returnLength
-        );
-
-    if (status == STATUS_BUFFER_TOO_SMALL)
-    {
-        bufferLength = returnLength;
-        buffer = PhAllocate(bufferLength);
-
-        RtlInitEmptyUnicodeString(&targetName, buffer, (USHORT)bufferLength);
-
-        status = NtQuerySymbolicLinkObject(
-            linkHandle,
-            &targetName,
-            &returnLength
-            );
-    }
-
-    if (NT_SUCCESS(status))
-    {
-        *LinkTarget = PhCreateStringFromUnicodeString(&targetName);
-    }
-
-    if (buffer != stackBuffer)
-    {
-        PhFree(buffer);
-    }
-
-    NtClose(linkHandle);
-
-    return status;
-}
-
 /**
  * Initializes the device prefixes module.
  */
@@ -4213,6 +4020,7 @@ PPH_STRING PhDosPathNameToNtPathName(
     PPH_STRING newName = NULL;
     PH_STRINGREF prefix;
     ULONG index;
+    PH_STRINGREF name;
 
     if (PhBeginInitOnce(&PhDevicePrefixesInitOnce))
     {
@@ -4223,9 +4031,19 @@ PPH_STRING PhDosPathNameToNtPathName(
         PhEndInitOnce(&PhDevicePrefixesInitOnce);
     }
 
-    if (PATH_IS_WIN32_DRIVE_PREFIX(Name))
+    if (PhIsNullOrEmptyStringRef(Name))
+        return NULL;
+
+    name = *Name;
+
+    if (PhStartsWithStringRef(&name, &PhWin32ExtendedPathPrefix, TRUE))
     {
-        index = (ULONG)(PhUpcaseUnicodeChar(Name->Buffer[0]) - L'A');
+        PhSkipStringRef(&name, PhWin32ExtendedPathPrefix.Length);
+    }
+
+    if (PATH_IS_WIN32_DRIVE_PREFIX(&name))
+    {
+        index = (ULONG)(PhUpcaseUnicodeChar(name.Buffer[0]) - L'A');
 
         if (index >= RTL_NUMBER_OF(PhDevicePrefixes))
             return NULL;
@@ -4236,7 +4054,7 @@ PPH_STRING PhDosPathNameToNtPathName(
         if (prefix.Length != 0)
         {
             // C:\\Name -> \\Device\\HardDiskVolumeX\\Name
-            newName = PhCreateStringEx(NULL, prefix.Length + Name->Length - sizeof(WCHAR[2]));
+            newName = PhCreateStringEx(NULL, prefix.Length + name.Length - sizeof(WCHAR[2]));
             memcpy(
                 newName->Buffer,
                 prefix.Buffer,
@@ -4244,14 +4062,14 @@ PPH_STRING PhDosPathNameToNtPathName(
                 );
             memcpy(
                 PTR_ADD_OFFSET(newName->Buffer, prefix.Length),
-                PTR_ADD_OFFSET(Name->Buffer, sizeof(WCHAR[2])),
-                Name->Length - sizeof(WCHAR[2])
+                PTR_ADD_OFFSET(name.Buffer, sizeof(WCHAR[2])),
+                name.Length - sizeof(WCHAR[2])
                 );
         }
 
         PhReleaseQueuedLockShared(&PhDevicePrefixesLock);
     }
-    else if (PhStartsWithStringRef2(Name, L"\\SystemRoot", TRUE))
+    else if (PhStartsWithStringRef2(&name, L"\\SystemRoot", TRUE))
     {
         PhAcquireQueuedLockShared(&PhDevicePrefixesLock);
         PhUnicodeStringToStringRef(&PhDevicePrefixes[(ULONG)'C'-'A'], &prefix);
@@ -4261,7 +4079,7 @@ PPH_STRING PhDosPathNameToNtPathName(
             static CONST PH_STRINGREF systemRoot = PH_STRINGREF_INIT(L"\\Windows");
 
             // \\SystemRoot\\Name -> \\Device\\HardDiskVolumeX\\Windows\\Name
-            newName = PhCreateStringEx(NULL, prefix.Length + Name->Length + systemRoot.Length - sizeof(L"SystemRoot"));
+            newName = PhCreateStringEx(NULL, prefix.Length + name.Length + systemRoot.Length - sizeof(L"SystemRoot"));
             memcpy(
                 newName->Buffer,
                 prefix.Buffer,
@@ -4274,16 +4092,16 @@ PPH_STRING PhDosPathNameToNtPathName(
                 );
             memcpy(
                 PTR_ADD_OFFSET(newName->Buffer, prefix.Length + systemRoot.Length),
-                PTR_ADD_OFFSET(Name->Buffer, sizeof(L"SystemRoot")),
-                Name->Length - sizeof(L"SystemRoot")
+                PTR_ADD_OFFSET(name.Buffer, sizeof(L"SystemRoot")),
+                name.Length - sizeof(L"SystemRoot")
                 );
         }
 
         PhReleaseQueuedLockShared(&PhDevicePrefixesLock);
     }
-    else if (PATH_IS_WIN32_DOSDEVICES_PREFIX(Name))
+    else if (PATH_IS_WIN32_DOSDEVICES_PREFIX(&name))
     {
-        newName = PhResolveMountPrefix(Name, FALSE);
+        newName = PhResolveMountPrefix(&name, FALSE);
     }
 
     return newName;
@@ -4306,6 +4124,16 @@ NTSTATUS PhDosLongPathNameToNtPathNameWithStatus(
     )
 {
     NTSTATUS status;
+
+    if (NtFileName) {
+        RtlZeroMemory(NtFileName, sizeof(UNICODE_STRING));
+    }
+    if (FilePart) {
+        *FilePart = NULL;
+    }
+    if (RelativeName) {
+        RtlZeroMemory(RelativeName, sizeof(RTL_RELATIVE_NAME_U));
+    }
 
     if (
         WindowsVersion >= WINDOWS_10_RS1 && PhAreLongPathsEnabled() &&
@@ -4657,6 +4485,9 @@ NTSTATUS PhQueryProcessHeapInformation(
     NTSTATUS status;
     PRTL_DEBUG_INFORMATION debugBuffer = NULL;
     PPH_PROCESS_DEBUG_HEAP_INFORMATION heapDebugInfo = NULL;
+    ULONG numberOfHeaps;
+    SIZE_T heapEntriesSize = 0;
+    SIZE_T heapDebugInfoLength;
 
     for (ULONG i = 0x400000; ; i *= 2) // rev from Heap32First/Heap32Next (dmex)
     {
@@ -4704,15 +4535,40 @@ NTSTATUS PhQueryProcessHeapInformation(
 
     if (WindowsVersion > WINDOWS_11)
     {
-        heapDebugInfo = PhAllocateZero(sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY));
-        heapDebugInfo->NumberOfHeaps = ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps;
+        numberOfHeaps = ((PRTL_PROCESS_HEAPS_V2)debugBuffer->Heaps)->NumberOfHeaps;
     }
     else
     {
-        heapDebugInfo = PhAllocateZero(sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY));
-        heapDebugInfo->NumberOfHeaps = ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps;
+        numberOfHeaps = ((PRTL_PROCESS_HEAPS_V1)debugBuffer->Heaps)->NumberOfHeaps;
     }
 
+    // Multiply numberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY)
+    status = RtlSizeTMult((SIZE_T)numberOfHeaps, sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY), &heapEntriesSize);
+
+    if (!NT_SUCCESS(status))
+    {
+        RtlDestroyQueryDebugBuffer(debugBuffer);
+        return status;
+    }
+
+    // Add sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + heapEntriesSize
+    status = RtlSizeTAdd(sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION), heapEntriesSize, &heapDebugInfoLength);
+
+    if (!NT_SUCCESS(status))
+    {
+        RtlDestroyQueryDebugBuffer(debugBuffer);
+        return status;
+    }
+
+    heapDebugInfo = PhAllocateZero(heapDebugInfoLength);
+
+    if (!heapDebugInfo)
+    {
+        RtlDestroyQueryDebugBuffer(debugBuffer);
+        return STATUS_NO_MEMORY;
+    }
+
+    heapDebugInfo->NumberOfHeaps = numberOfHeaps;
     heapDebugInfo->DefaultHeap = debugBuffer->ProcessHeap;
 
     for (ULONG i = 0; i < heapDebugInfo->NumberOfHeaps; i++)
@@ -5316,7 +5172,7 @@ NTSTATUS PhDestroyExecutionRequiredRequest(
  * \return NTSTATUS Successful or errant status.
  */
 NTSTATUS PhGetProcessorNominalFrequency(
-    _In_ PH_PROCESSOR_NUMBER ProcessorNumber,
+    _In_ PPH_PROCESSOR_NUMBER ProcessorNumber,
     _Out_ PULONG NominalFrequency
     )
 {
@@ -5326,9 +5182,9 @@ NTSTATUS PhGetProcessorNominalFrequency(
 
     memset(&frequencyInput, 0, sizeof(frequencyInput));
     frequencyInput.InternalType = PowerInternalProcessorBrandedFrequency;
-    frequencyInput.ProcessorNumber.Group = ProcessorNumber.Group; // USHRT_MAX for max
-    frequencyInput.ProcessorNumber.Number = (BYTE)ProcessorNumber.Number; // UCHAR_MAX for max
-    frequencyInput.ProcessorNumber.Reserved = 0; // UCHAR_MAX
+    frequencyInput.Version = POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_VERSION;
+    frequencyInput.ProcessorNumber.Group = ProcessorNumber->Group; // USHRT_MAX for max
+    frequencyInput.ProcessorNumber.Number = (BYTE)ProcessorNumber->Number; // UCHAR_MAX for max
 
     memset(&frequencyOutput, 0, sizeof(frequencyOutput));
     frequencyOutput.Version = POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_VERSION;
@@ -5874,7 +5730,10 @@ static BOOLEAN NTAPI PhKnownDllsHashtableEqualFunction(
     _In_ PVOID Entry2
     )
 {
-    return PhEqualStringRef(&((PPH_KNOWNDLL_CACHE_ENTRY)Entry1)->FileName->sr, &((PPH_KNOWNDLL_CACHE_ENTRY)Entry2)->FileName->sr, FALSE);
+    PPH_KNOWNDLL_CACHE_ENTRY entry1 = (PPH_KNOWNDLL_CACHE_ENTRY)Entry1;
+    PPH_KNOWNDLL_CACHE_ENTRY entry2 = (PPH_KNOWNDLL_CACHE_ENTRY)Entry2;
+
+    return PhEqualStringRef(&entry1->FileName->sr, &entry2->FileName->sr, FALSE);
 }
 
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
@@ -5882,7 +5741,9 @@ static ULONG NTAPI PhKnownDllsHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-    return PhHashStringRefEx(&((PPH_KNOWNDLL_CACHE_ENTRY)Entry)->FileName->sr, FALSE, PH_STRING_HASH_XXH32);
+    PPH_KNOWNDLL_CACHE_ENTRY entry = (PPH_KNOWNDLL_CACHE_ENTRY)Entry;
+
+    return PhHashStringRefEx(&entry->FileName->sr, FALSE, PH_STRING_HASH_XXH32);
 }
 
 _Function_class_(PH_ENUM_DIRECTORY_OBJECTS)
@@ -5895,13 +5756,9 @@ static NTSTATUS NTAPI PhpKnownDllObjectsCallback(
 {
     NTSTATUS status;
     HANDLE sectionHandle;
-    UNICODE_STRING objectName;
     PVOID baseAddress;
     SIZE_T viewSize;
     PPH_STRING fileName;
-
-    if (!PhStringRefToUnicodeString(Name, &objectName))
-        goto CleanupExit;
 
     status = PhOpenSection(
         &sectionHandle,
@@ -6093,7 +5950,7 @@ NTSTATUS PhGetSystemProcessorPerformanceDistribution(
  * Retrieves the processor performance distribution information for a specified processor group.
  *
  * \param ProcessorGroup The processor group number for which to retrieve performance distribution information.
- * \param Buffer A pointer to a variable that receives a pointer to a SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION 
+ * \param Buffer A pointer to a variable that receives a pointer to a SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION
  * structure containing the performance distribution data.
  * \return NTSTATUS Successful or errant status.
  */
@@ -6159,7 +6016,7 @@ NTSTATUS PhGetSystemLogicalProcessorInformation(
     _Out_ PULONG BufferLength
     )
 {
-    static ULONG initialBufferSize[] = { 0x200, 0x80, 0x100, 0x1000 };
+    static ULONG initialBufferSize[] = { 0x200, 0x200, 0x80, 0x100, 0x1000 };
     NTSTATUS status;
     ULONG classIndex;
     PVOID buffer;
@@ -6171,14 +6028,17 @@ NTSTATUS PhGetSystemLogicalProcessorInformation(
     case RelationProcessorCore:
         classIndex = 0;
         break;
-    case RelationProcessorPackage:
+    case RelationCache:
         classIndex = 1;
         break;
-    case RelationGroup:
+    case RelationProcessorPackage:
         classIndex = 2;
         break;
-    case RelationAll:
+    case RelationGroup:
         classIndex = 3;
+        break;
+    case RelationAll:
+        classIndex = 4;
         break;
     default:
         return STATUS_INVALID_INFO_CLASS;
@@ -6229,7 +6089,7 @@ NTSTATUS PhGetSystemLogicalProcessorInformation(
 /**
  * Retrieves information about the logical processor relationships in the system.
  *
- * \param LogicalProcessorInformation A pointer to a PH_LOGICAL_PROCESSOR_INFORMATION structure 
+ * \param LogicalProcessorInformation A pointer to a PH_LOGICAL_PROCESSOR_INFORMATION structure
  * that receives the logical processor relationship information.
  * \return NTSTATUS Successful or errant status.
  */
@@ -6316,6 +6176,72 @@ BOOLEAN PhIsProcessorFeaturePresent(
 
     return !!IsProcessorFeaturePresent(ProcessorFeature); // RtlIsProcessorFeaturePresent
 }
+
+#if defined(PHNT_EXPERIMENTAL)
+BOOLEAN PhIsProcessorFeaturePresentEx(
+    _In_ ULONG ProcessorFeature
+    )
+{
+    static PH_INITONCE initonce = PH_INITONCE_INIT;
+    static RTL_BITMAP_EX RtlProcessorFeaturesBitMap;
+    static ULONG64 RtlProcessorFeaturesBitMapBuffer[2] = { 0 };
+    static BOOLEAN RtlAdditionalProcessorFeaturesEnabled = FALSE;
+
+    if (PhBeginInitOnce(&initonce))
+    {
+        ULONG returnLength = 0;
+
+        if (NT_SUCCESS(NtQuerySystemInformation(
+            SystemProcessorFeaturesBitMapInformation,
+            RtlProcessorFeaturesBitMapBuffer,
+            sizeof(RtlProcessorFeaturesBitMapBuffer),
+            &returnLength
+            )))
+        {
+            RtlInitializeBitMapEx(
+                &RtlProcessorFeaturesBitMap,
+                RtlProcessorFeaturesBitMapBuffer,
+                128
+                );
+            RtlAdditionalProcessorFeaturesEnabled = TRUE;
+        }
+        else
+        {
+            RtlAdditionalProcessorFeaturesEnabled = FALSE;
+            RtlProcessorFeaturesBitMap.SizeOfBitMap = 0;
+            RtlProcessorFeaturesBitMap.Buffer = NULL;
+        }
+
+        PhEndInitOnce(&initonce);
+    }
+
+    //
+    // Additional feature path
+    //
+
+    if (RtlAdditionalProcessorFeaturesEnabled)
+    {
+        if (ProcessorFeature >= 192)
+            return FALSE;
+
+        if (ProcessorFeature >= 64) // 64..191
+        {
+            ULONG64 bit = (ULONG64)(ProcessorFeature - 0x40);
+
+            return RtlTestBitEx(&RtlProcessorFeaturesBitMap, bit);
+        }
+    }
+
+    //
+    // Legacy PF_* path (0..63) from KUSER_SHARED_DATA::ProcessorFeatures.
+    //
+
+    if (ProcessorFeature >= 64)
+        return FALSE;
+
+    return (BOOLEAN)(USER_SHARED_DATA->ProcessorFeatures[ProcessorFeature] != 0);
+}
+#endif
 
 /**
  * Retrieves the processor number information for the current processor.
@@ -6654,72 +6580,72 @@ NTSTATUS PhPrefetchVirtualMemory(
 }
 
 // rev from OfferVirtualMemory (dmex)
-//NTSTATUS PhOfferVirtualMemory(
-//    _In_ HANDLE ProcessHandle,
-//    _In_ PVOID VirtualAddress,
-//    _In_ SIZE_T NumberOfBytes,
-//    _In_ MEMORY_PAGE_PRIORITY_INFORMATION Priority
-//    )
-//{
-//    NTSTATUS status;
-//    MEMORY_RANGE_ENTRY virtualMemoryRange;
-//    ULONG virtualMemoryFlags;
-//
-//    if (!NtSetInformationVirtualMemory_Import())
-//        return STATUS_PROCEDURE_NOT_FOUND;
-//
-//    // TODO: NtQueryVirtualMemory (dmex)
-//
-//    memset(&virtualMemoryRange, 0, sizeof(MEMORY_RANGE_ENTRY));
-//    virtualMemoryRange.VirtualAddress = VirtualAddress;
-//    virtualMemoryRange.NumberOfBytes = NumberOfBytes;
-//
-//    memset(&virtualMemoryFlags, 0, sizeof(virtualMemoryFlags));
-//    virtualMemoryFlags = Priority;
-//
-//    status = PhpSetInformationVirtualMemory(
-//        ProcessHandle,
-//        VmPagePriorityInformation,
-//        1,
-//        &virtualMemoryRange,
-//        &virtualMemoryFlags,
-//        sizeof(virtualMemoryFlags)
-//        );
-//
-//    return status;
-//}
-//
+NTSTATUS PhOfferVirtualMemory(
+    _In_ HANDLE ProcessHandle,
+    _In_ PVOID VirtualAddress,
+    _In_ SIZE_T NumberOfBytes,
+    _In_ PMEMORY_PAGE_PRIORITY_INFORMATION Priority
+    )
+{
+    NTSTATUS status;
+    MEMORY_RANGE_ENTRY virtualMemoryRange;
+    ULONG virtualMemoryFlags;
+
+    if (!NtSetInformationVirtualMemory_Import())
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    // TODO: NtQueryVirtualMemory (dmex)
+
+    memset(&virtualMemoryRange, 0, sizeof(MEMORY_RANGE_ENTRY));
+    virtualMemoryRange.VirtualAddress = VirtualAddress;
+    virtualMemoryRange.NumberOfBytes = NumberOfBytes;
+
+    memset(&virtualMemoryFlags, 0, sizeof(virtualMemoryFlags));
+    virtualMemoryFlags = Priority->PagePriority;
+
+    status = PhpSetInformationVirtualMemory(
+        ProcessHandle,
+        VmPagePriorityInformation,
+        1,
+        &virtualMemoryRange,
+        &virtualMemoryFlags,
+        sizeof(virtualMemoryFlags)
+        );
+
+    return status;
+}
+
 // rev from DiscardVirtualMemory (dmex)
-//NTSTATUS PhDiscardVirtualMemory(
-//    _In_ HANDLE ProcessHandle,
-//    _In_ PVOID VirtualAddress,
-//    _In_ SIZE_T NumberOfBytes
-//    )
-//{
-//    NTSTATUS status;
-//    MEMORY_RANGE_ENTRY virtualMemoryRange;
-//    ULONG virtualMemoryFlags;
-//
-//    if (!NtSetInformationVirtualMemory_Import())
-//        return STATUS_PROCEDURE_NOT_FOUND;
-//
-//    memset(&virtualMemoryRange, 0, sizeof(MEMORY_RANGE_ENTRY));
-//    virtualMemoryRange.VirtualAddress = VirtualAddress;
-//    virtualMemoryRange.NumberOfBytes = NumberOfBytes;
-//
-//    memset(&virtualMemoryFlags, 0, sizeof(virtualMemoryFlags));
-//
-//    status = PhpSetInformationVirtualMemory(
-//        ProcessHandle,
-//        VmPagePriorityInformation,
-//        1,
-//        &virtualMemoryRange,
-//        &virtualMemoryFlags,
-//        sizeof(virtualMemoryFlags)
-//        );
-//
-//    return status;
-//}
+NTSTATUS PhDiscardVirtualMemory(
+    _In_ HANDLE ProcessHandle,
+    _In_ PVOID VirtualAddress,
+    _In_ SIZE_T NumberOfBytes
+    )
+{
+    NTSTATUS status;
+    MEMORY_RANGE_ENTRY virtualMemoryRange;
+    ULONG virtualMemoryFlags;
+
+    if (!NtSetInformationVirtualMemory_Import())
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    memset(&virtualMemoryRange, 0, sizeof(MEMORY_RANGE_ENTRY));
+    virtualMemoryRange.VirtualAddress = VirtualAddress;
+    virtualMemoryRange.NumberOfBytes = NumberOfBytes;
+
+    memset(&virtualMemoryFlags, 0, sizeof(virtualMemoryFlags));
+
+    status = PhpSetInformationVirtualMemory(
+        ProcessHandle,
+        VmPagePriorityInformation,
+        1,
+        &virtualMemoryRange,
+        &virtualMemoryFlags,
+        sizeof(virtualMemoryFlags)
+        );
+
+    return status;
+}
 
 /**
  * Sets the priority of a range of virtual memory pages in a specified process.
@@ -7071,9 +6997,9 @@ NTSTATUS PhGetSystemFileCacheSize(
 /**
  * Limits the size of the working set of the virtual memory manager system cache.
  *
- * \param CacheInfo The minimum size of the file cache, in bytes. The virtual memory manager
+ * \param MinimumFileCacheSize The minimum size of the file cache, in bytes. The virtual memory manager
  * attempts to keep at least this much memory resident in the system file cache.
- * \param CacheInfo The maximum size of the file cache, in bytes. The virtual memory manager
+ * \param MaximumFileCacheSize The maximum size of the file cache, in bytes. The virtual memory manager
  * enforces this limit only if this call or a previous call to SetSystemFileCacheSize
  * specifies FILE_CACHE_MAX_HARD_ENABLE.
  * \return NTSTATUS Successful or errant status.
@@ -7099,6 +7025,145 @@ NTSTATUS PhSetSystemFileCacheSize(
         );
 
     return status;
+}
+
+/**
+ * Creates a mutant (mutex) object.
+ *
+ * \param MutantHandle A pointer to a variable that receives the handle to the mutant object.
+ * \param DesiredAccess The access mask that specifies the requested access to the mutant object.
+ * \param RootDirectory Optional handle to the root directory for the object name.
+ * \param ObjectName Optional pointer to a string reference specifying the name of the mutant object.
+ * \param InitialOwner If TRUE, the calling thread obtains initial ownership of the mutant object.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhCreateMutant(
+    _Out_ PHANDLE MutantHandle,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_opt_ HANDLE RootDirectory,
+    _In_opt_ PCPH_STRINGREF ObjectName,
+    _In_ BOOLEAN InitialOwner
+    )
+{
+    NTSTATUS status;
+    UNICODE_STRING objectName;
+    OBJECT_ATTRIBUTES objectAttributes;
+
+    if (ObjectName)
+    {
+        if (!PhStringRefToUnicodeString(ObjectName, &objectName))
+            return STATUS_NAME_TOO_LONG;
+    }
+    else
+    {
+        RtlInitEmptyUnicodeString(&objectName, NULL, 0);
+    }
+
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &objectName,
+        OBJ_CASE_INSENSITIVE,
+        RootDirectory,
+        NULL
+        );
+
+    status = NtCreateMutant(
+        MutantHandle,
+        DesiredAccess,
+        &objectAttributes,
+        InitialOwner
+        );
+
+    return status;
+}
+
+/**
+ * Opens an existing mutant (mutex) object.
+ *
+ * \param MutantHandle A pointer to a variable that receives the handle to the mutant object.
+ * \param DesiredAccess The access mask that specifies the requested access to the mutant object.
+ * \param RootDirectory Optional handle to the root directory for the object name.
+ * \param ObjectName Optional pointer to a string reference specifying the name of the mutant object.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhOpenMutant(
+    _Out_ PHANDLE MutantHandle,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_opt_ HANDLE RootDirectory,
+    _In_opt_ PCPH_STRINGREF ObjectName
+    )
+{
+    NTSTATUS status;
+    UNICODE_STRING objectName;
+    OBJECT_ATTRIBUTES objectAttributes;
+
+    if (ObjectName)
+    {
+        if (!PhStringRefToUnicodeString(ObjectName, &objectName))
+            return STATUS_NAME_TOO_LONG;
+    }
+    else
+    {
+        RtlInitEmptyUnicodeString(&objectName, NULL, 0);
+    }
+
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &objectName,
+        OBJ_CASE_INSENSITIVE,
+        RootDirectory,
+        NULL
+        );
+
+    status = NtOpenMutant(
+        MutantHandle,
+        DesiredAccess,
+        &objectAttributes
+        );
+
+    return status;
+}
+
+/**
+ * Retrieves basic information about a mutant (mutex) object.
+ *
+ * \param MutantHandle Handle to the mutant object.
+ * \param BasicInformation Pointer to a MUTANT_BASIC_INFORMATION structure that receives the information.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhGetMutantBasicInformation(
+    _In_ HANDLE MutantHandle,
+    _Out_ PMUTANT_BASIC_INFORMATION BasicInformation
+    )
+{
+    return NtQueryMutant(
+        MutantHandle,
+        MutantBasicInformation,
+        BasicInformation,
+        sizeof(MUTANT_BASIC_INFORMATION),
+        NULL
+        );
+}
+
+/**
+ * Retrieves owner information for a mutant (mutex) object.
+ *
+ * \param MutantHandle Handle to the mutant object.
+ * \param OwnerInformation Pointer to a MUTANT_OWNER_INFORMATION structure that receives the information.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhGetMutantOwnerInformation(
+    _In_ HANDLE MutantHandle,
+    _Out_ PMUTANT_OWNER_INFORMATION OwnerInformation
+    )
+{
+    return NtQueryMutant(
+        MutantHandle,
+        MutantOwnerInformation,
+        OwnerInformation,
+        sizeof(MUTANT_OWNER_INFORMATION),
+        NULL
+        );
 }
 
 /**
@@ -7144,6 +7209,26 @@ NTSTATUS PhCreateEvent(
     }
 
     return status;
+}
+
+/**
+ * Gets basic information for a event.
+ *
+ * \param EventHandle A handle to a event. The handle must have EVENT_QUERY_STATE access.
+ * \param BasicInformation A variable which receives the information.
+ */
+NTSTATUS PhGetEventBasicInformation(
+    _In_ HANDLE EventHandle,
+    _Out_ PEVENT_BASIC_INFORMATION BasicInformation
+    )
+{
+    return NtQueryEvent(
+        EventHandle,
+        EventBasicInformation,
+        BasicInformation,
+        sizeof(EVENT_BASIC_INFORMATION),
+        NULL
+        );
 }
 
 /**
@@ -8290,4 +8375,239 @@ NTSTATUS PhGetFileMotw(
     }
 
     return status;
+}
+
+/**
+ * Sets an event object to the not-signaled state and optionally returns the previous state.
+ *
+ * \param EventHandle A handle to the event object.
+ * \param PreviousState A pointer to a variable that receives the previous state of the event object.
+ * \return NTSTATUS Successful or errant status.
+ */
+//NTSTATUS PhResetEvent(
+//    _In_ HANDLE EventHandle,
+//    _Out_opt_ PLONG PreviousState
+//    )
+//{
+//    return NtResetEvent(EventHandle, PreviousState);
+//}
+
+/**
+ * Sets an event object to the signaled state and then resets it to the not-signaled state after
+ * releasing the appropriate number of waiting threads.
+ *
+ * \param EventHandle A handle to the event object.
+ * \param PreviousState A pointer to a variable that receives the previous state of the event object.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhPulseEvent(
+    _In_ HANDLE EventHandle,
+    _Out_opt_ PLONG PreviousState
+    )
+{
+    return NtPulseEvent(EventHandle, PreviousState);
+}
+
+/**
+ * Retrieves information about an event object.
+ *
+ * \param EventHandle A handle to the event object.
+ * \param EventInformationClass The type of information to be retrieved.
+ * \param EventInformation A pointer to a buffer that receives the requested information.
+ * \param EventInformationLength The size of the buffer pointed to by EventInformation.
+ * \param ReturnLength A pointer to a variable that receives the size of the data returned in the buffer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhQueryEvent(
+    _In_ HANDLE EventHandle,
+    _In_ EVENT_INFORMATION_CLASS EventInformationClass,
+    _Out_writes_bytes_(EventInformationLength) PVOID EventInformation,
+    _In_ ULONG EventInformationLength,
+    _Out_opt_ PULONG ReturnLength
+    )
+{
+    return NtQueryEvent(
+        EventHandle,
+        EventInformationClass,
+        EventInformation,
+        EventInformationLength,
+        ReturnLength
+        );
+}
+
+/**
+ * Creates a waitable timer object.
+ *
+ * \param TimerHandle A pointer to a variable that receives the handle to the timer object.
+ * \param DesiredAccess The access mask that specifies the requested access to the timer object.
+ * \param TimerType The type of the timer object (NotificationTimer or SynchronizationTimer).
+ * \param HighResolution If TRUE and NtCreateTimer2 is available, creates a high-resolution timer;
+ * otherwise falls back to NtCreateTimer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhCreateWaitableTimer(
+    _Out_ PHANDLE TimerHandle,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_ TIMER_TYPE TimerType
+    )
+{
+    NTSTATUS status;
+    HANDLE timerHandle = NULL;
+
+    if (PhEnableHighResolution && NtCreateTimer2_Import())
+    {
+        status = NtCreateTimer2_Import()(
+            &timerHandle,
+            NULL,
+            NULL,
+            TIMER2_BUILD_ATTRIBUTES(TimerType, TRUE),
+            DesiredAccess
+            );
+
+        if (NT_SUCCESS(status))
+        {
+            *TimerHandle = timerHandle;
+            return status;
+        }
+    }
+
+    {
+        OBJECT_ATTRIBUTES objectAttributes;
+
+        InitializeObjectAttributes(
+            &objectAttributes,
+            NULL,
+            OBJ_EXCLUSIVE,
+            NULL,
+            NULL
+            );
+
+        status = NtCreateTimer(
+            &timerHandle,
+            DesiredAccess,
+            &objectAttributes,
+            TimerType
+            );
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        *TimerHandle = timerHandle;
+    }
+
+    return status;
+}
+
+/**
+ * Sets a waitable timer.
+ *
+ * \param TimerHandle A handle to the timer object.
+ * \param DueTime The time at which the timer is to expire, in 100-nanosecond intervals.
+ * Negative values specify a relative time; positive values specify an absolute time.
+ * \param Period An optional pointer to the timer period in 100-nanosecond intervals.
+ * If NULL the timer is non-periodic. When falling back to NtSetTimer, the period is
+ * converted from 100-nanosecond intervals to milliseconds.
+ * \param TimerApcRoutine An optional APC routine invoked when the timer expires.
+ * Only used when NtSetTimer2 is unavailable.
+ * \param TimerContext An optional context value passed to the APC routine.
+ * Only used when NtSetTimer2 is unavailable.
+ * \param ResumeTimer If TRUE, resumes the system from a low-power state on expiry.
+ * Only used when NtSetTimer2 is unavailable.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhSetWaitableTimer(
+    _In_ HANDLE TimerHandle,
+    _In_ PLARGE_INTEGER DueTime,
+    _In_opt_ PLARGE_INTEGER Period,
+    _In_opt_ PTIMER_APC_ROUTINE TimerApcRoutine,
+    _In_opt_ PVOID TimerContext,
+    _In_ BOOLEAN ResumeTimer
+    )
+{
+    if (PhEnableHighResolution)
+    {
+        TIMER_SET_COALESCABLE_TIMER_INFO timerParameters;
+
+        if (NtSetTimer2_Import())
+        {
+            T2_SET_PARAMETERS timer2Parameters;
+
+            memset(&timer2Parameters, 0, sizeof(T2_SET_PARAMETERS));
+            timer2Parameters.Version = TIMER2_SET_PARAMETERS_CURRENT_VERSION;
+            timer2Parameters.NoWakeTolerance = 0;
+
+            return NtSetTimer2_Import()(
+                TimerHandle,
+                DueTime,
+                Period,
+                &timer2Parameters
+                );
+        }
+
+        memset(&timerParameters, 0, sizeof(TIMER_SET_COALESCABLE_TIMER_INFO));
+        timerParameters.DueTime.QuadPart = DueTime->QuadPart;
+        timerParameters.Period = Period ? (LONG)(Period->QuadPart / PH_TIMEOUT_MS) : 0;
+        timerParameters.TimerApcRoutine = TimerApcRoutine;
+        timerParameters.TimerContext = TimerContext;
+        timerParameters.TolerableDelay = 0;
+
+        return NtSetTimerEx(
+            TimerHandle,
+            TimerSetCoalescableTimer,
+            &timerParameters,
+            sizeof(TIMER_SET_COALESCABLE_TIMER_INFO)
+            );
+    }
+
+    return NtSetTimer(
+        TimerHandle,
+        DueTime,
+        TimerApcRoutine,
+        TimerContext,
+        ResumeTimer,
+        Period ? (LONG)(Period->QuadPart / PH_TIMEOUT_MS) : 0,
+        NULL
+        );
+}
+
+/**
+ * Creates a timer with the specified time-out value.
+ *
+ * \param WindowHandle A handle to the window to be associated with the timer.
+ * \param TimerID The timer identifier.
+ * \param Elapse The time-out value, in milliseconds.
+ * \param TimerProcedure A pointer to the function to be notified when the time-out value elapses.
+ * \return The timer identifier if successful; otherwise, zero.
+ */
+ULONG_PTR PhSetTimer(
+    _In_ HWND WindowHandle,
+    _In_ ULONG_PTR TimerID,
+    _In_ ULONG Elapse,
+    _In_opt_ TIMERPROC TimerProcedure
+    )
+{
+    assert(WindowHandle);
+
+    if (PhEnableHighResolution && SetCoalescableTimer_Import())
+    {
+        return SetCoalescableTimer_Import()(WindowHandle, TimerID, Elapse, TimerProcedure, TIMERV_NO_COALESCING);
+    }
+
+    return SetTimer(WindowHandle, TimerID, Elapse, TimerProcedure);
+}
+
+/**
+ * Destroys a timer.
+ *
+ * \param WindowHandle A handle to the window associated with the timer.
+ * \param TimerID The identifier of the timer to be destroyed.
+ * \return TRUE if the function succeeds, FALSE otherwise.
+ */
+BOOL PhKillTimer(
+    _In_ HWND WindowHandle,
+    _In_ ULONG_PTR TimerID
+    )
+{
+    assert(WindowHandle);
+    return KillTimer(WindowHandle, TimerID);
 }

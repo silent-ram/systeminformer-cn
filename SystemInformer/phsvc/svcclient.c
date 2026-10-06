@@ -23,7 +23,8 @@ RTL_STATIC_LIST_HEAD(PhSvcClientListHead);
 PH_QUEUED_LOCK PhSvcClientListLock = PH_QUEUED_LOCK_INIT;
 
 PPHSVC_CLIENT PhSvcCreateClient(
-    _In_opt_ PCLIENT_ID ClientId
+    _In_opt_ PCLIENT_ID ClientId,
+    _In_ HANDLE ProcessHandle
     )
 {
     static PH_INITONCE initOnce = PH_INITONCE_INIT;
@@ -40,10 +41,14 @@ PPHSVC_CLIENT PhSvcCreateClient(
     PhInitializeEvent(&client->ReadyEvent);
 
     if (ClientId)
+    {
         client->ClientId = *ClientId;
+    }
+
+    client->ProcessHandle = ProcessHandle;
 
     PhAcquireQueuedLockExclusive(&PhSvcClientListLock);
-    InsertTailList(&PhSvcClientListHead, &client->ListEntry);
+    InsertTailListNoFence(&PhSvcClientListHead, &client->ListEntry);
     PhReleaseQueuedLockExclusive(&PhSvcClientListLock);
 
     return client;
@@ -58,11 +63,14 @@ VOID NTAPI PhSvcpClientDeleteProcedure(
     PPHSVC_CLIENT client = Object;
 
     PhAcquireQueuedLockExclusive(&PhSvcClientListLock);
-    RemoveEntryList(&client->ListEntry);
+    RemoveEntryListNoFence(&client->ListEntry);
     PhReleaseQueuedLockExclusive(&PhSvcClientListLock);
 
     if (client->PortHandle)
         NtClose(client->PortHandle);
+
+    if (client->ProcessHandle)
+        NtClose(client->ProcessHandle);
 }
 
 PPHSVC_CLIENT PhSvcReferenceClientByClientId(
@@ -103,7 +111,7 @@ PPHSVC_CLIENT PhSvcReferenceClientByClientId(
 
     if (client)
     {
-        if (!PhReferenceObjectSafe(client))
+        if (!PhReferenceObjectUnsafe(client))
             client = NULL;
     }
 

@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2011-2023
+ *     dmex    2011-2026
  *
  */
 
@@ -27,11 +27,25 @@ BOOLEAN RebarBandInsert(
     rebarBandInfo.hwndChild = ChildWindowHandle;
     rebarBandInfo.cxMinChild = ChildMinimumWidth;
     rebarBandInfo.cyMinChild = ChildMinimumHeight;
+    rebarBandInfo.cyChild = ChildMinimumHeight;
 
     if (ToolStatusConfig.ToolBarLocked)
         rebarBandInfo.fStyle = RBBS_VARIABLEHEIGHT | RBBS_USECHEVRON | RBBS_NOGRIPPER;
     else
         rebarBandInfo.fStyle = RBBS_VARIABLEHEIGHT | RBBS_USECHEVRON;
+
+    // Color the band background so the area not covered by a transparent/auto-sized
+    // child (e.g. the space to the right of the menu bar band, which the rebar
+    // stretches to fill the row) matches the dark theme instead of showing the
+    // default system band color.
+    if (EnableThemeSupport)
+    {
+        const PH_WINDOW_THEME_PALETTE* palette = PhGetWindowThemePalette();
+
+        rebarBandInfo.fMask |= RBBIM_COLORS;
+        rebarBandInfo.clrFore = palette->TextColor;
+        rebarBandInfo.clrBack = palette->BackgroundColor;
+    }
 
     ULONG index = SearchboxHandle ? RebarBandToIndex(REBAR_BAND_ID_SEARCHBOX) : ULONG_MAX;
 
@@ -39,6 +53,52 @@ BOOLEAN RebarBandInsert(
         return TRUE;
 
     return FALSE;
+}
+
+/**
+ * Refreshes the themed band colors for every rebar band.
+ *
+ * Band colors are cached per band, so a live theme mode switch (which changes
+ * the palette but keeps theme support enabled) must re-push them; enabling or
+ * disabling theme support itself requires a restart.
+ */
+VOID RebarUpdateBandColors(
+    VOID
+    )
+{
+    ULONG count;
+
+    if (!RebarHandle)
+        return;
+
+    if (!RebarGetBandCount(&count))
+        return;
+
+    for (ULONG index = 0; index < count; index++)
+    {
+        REBARBANDINFO rebarBandInfo;
+
+        memset(&rebarBandInfo, 0, sizeof(REBARBANDINFO));
+        rebarBandInfo.cbSize = sizeof(REBARBANDINFO);
+        rebarBandInfo.fMask = RBBIM_COLORS;
+
+        if (EnableThemeSupport)
+        {
+            const PH_WINDOW_THEME_PALETTE* palette = PhGetWindowThemePalette();
+
+            rebarBandInfo.clrFore = palette->TextColor;
+            rebarBandInfo.clrBack = palette->BackgroundColor;
+        }
+        else
+        {
+            rebarBandInfo.clrFore = CLR_DEFAULT;
+            rebarBandInfo.clrBack = CLR_DEFAULT;
+        }
+
+        SendMessage(RebarHandle, RB_SETBANDINFO, index, (LPARAM)&rebarBandInfo);
+    }
+
+    InvalidateRect(RebarHandle, NULL, TRUE);
 }
 
 VOID RebarBandRemove(
@@ -93,7 +153,14 @@ LONG RebarGetRowHeight(
     _In_ REBAR_BAND BandID
     )
 {
-    return (LONG)SendMessage(RebarHandle, RB_GETROWHEIGHT, BandID, 0);
+    ULONG index;
+
+    index = RebarBandToIndex(BandID);
+
+    if (index == ULONG_MAX)
+        return 0;
+
+    return (LONG)SendMessage(RebarHandle, RB_GETROWHEIGHT, index, 0);
 }
 
 VOID RebarSetBarInfo(

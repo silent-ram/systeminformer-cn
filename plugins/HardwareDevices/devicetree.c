@@ -381,10 +381,10 @@ VOID NTAPI DeviceTreePublish(
 
     TreeNew_SetRedraw(DeviceTreeHandle, TRUE);
 
-    TreeNew_NodesStructured(DeviceTreeHandle);
-
     if (DeviceTreeFilterSupport.FilterList)
         PhApplyTreeNewFilters(&DeviceTreeFilterSupport);
+    else
+        TreeNew_NodesStructured(DeviceTreeHandle);
 
     PhClearReference(&oldTree);
 }
@@ -806,10 +806,10 @@ BOOLEAN NTAPI DeviceTreeCallback(
             DeviceTreeSortColumn = sorting->SortColumn;
             DeviceTreeSortOrder = sorting->SortOrder;
 
-            TreeNew_NodesStructured(hwnd);
-
             if (DeviceTreeFilterSupport.FilterList)
                 PhApplyTreeNewFilters(&DeviceTreeFilterSupport);
+            else
+                TreeNew_NodesStructured(hwnd);
         }
         return TRUE;
     case TreeNewContextMenu:
@@ -839,6 +839,9 @@ BOOLEAN NTAPI DeviceTreeCallback(
 
             menu = PhCreateEMenu();
             PhInsertEMenuItem(menu, gotoServiceItem = PhCreateEMenuItem(0, 108, L"跳转到服务...", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_ONLINE, L"在线搜索(&o)\bCtrl+M", NULL, NULL), ULONG_MAX);
+            PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_DEVICE_SEARCH_DRIVER_UPDATE, L"Search driver update", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
             PhInsertEMenuItem(menu, enable = PhCreateEMenuItem(0, 0, L"启用", NULL, NULL), ULONG_MAX);
             PhInsertEMenuItem(menu, disable = PhCreateEMenuItem(0, 1, L"禁用", NULL, NULL), ULONG_MAX);
@@ -921,6 +924,43 @@ BOOLEAN NTAPI DeviceTreeCallback(
                             {
                                 if (devices[i]->InstanceId)
                                     republish |= HardwareDeviceUninstall(hwnd, devices[i]->InstanceId);
+                            }
+                        }
+                        break;
+                    case ID_DEVICE_SEARCH_ONLINE:
+                    case ID_DEVICE_SEARCH_DRIVER_UPDATE:
+                        {
+                            PPH_DEVICE_ITEM deviceItem;
+
+                            if (node->DeviceItem->DeviceInterface)
+                                deviceItem = node->DeviceItem->Parent;
+                            else
+                                deviceItem = node->DeviceItem;
+
+                            if (deviceItem)
+                            {
+                                PPH_DEVICE_PROPERTY deviceId = PhGetDeviceProperty(deviceItem, PhDevicePropertyMatchingDeviceId);
+                                PPH_STRING searchId = NULL;
+                                if (deviceId->Valid && !PhIsNullOrEmptyString(deviceId->String))
+                                    searchId = deviceId->String;
+                                else
+                                    searchId = deviceItem->InstanceId;
+
+                                if (searchId)
+                                {
+                                    if (selectedItem->Id == ID_DEVICE_SEARCH_ONLINE)
+                                    {
+                                        PhSearchOnlineString(hwnd, PhGetString(searchId));
+                                    }
+                                    else
+                                    {
+                                        PPH_STRING encodedId = PhpEncodeDeviceQuery(searchId);
+                                        PPH_STRING url = PhFormatString(L"https://www.catalog.update.microsoft.com/search.aspx?q=%s", PhGetString(encodedId));
+                                        PhShellExecute(hwnd, PhGetString(url), NULL);
+                                        PhDereferenceObject(url);
+                                        PhDereferenceObject(encodedId);
+                                    }
+                                }
                             }
                         }
                         break;
@@ -1071,7 +1111,7 @@ VOID DevicesTreeImageListInitialize(
 
     if (DeviceImageList)
     {
-        PhImageListAddIcon(DeviceImageList, PhGetApplicationIcon(TRUE));
+        PhImageListAddIcon(DeviceImageList, PhGetApplicationIcon(TRUE, dpi));
 
         TreeNew_SetImageList(DeviceTreeHandle, DeviceImageList);
     }
@@ -1718,6 +1758,8 @@ VOID NTAPI DeviceTreeProcessesUpdatedCallback(
     _In_opt_ PVOID Context
     )
 {
+    BOOLEAN fullyInvalidated = FALSE;
+
     if (PtrToUlong(Parameter) < 2)
         return;
 
@@ -1733,8 +1775,8 @@ VOID NTAPI DeviceTreeProcessesUpdatedCallback(
         DeviceHighlightingDuration,
         DeviceTreeHandle,
         TRUE,
-        NULL,
-        NULL
+        &fullyInvalidated,
+        Context
         );
 }
 

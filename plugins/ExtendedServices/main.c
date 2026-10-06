@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2015-2023
+ *     dmex    2015-2026
  *
  */
 
@@ -35,6 +35,7 @@ VOID NTAPI MenuItemCallback(
         {
             SystemInformer_SelectTabPage(1);
             SystemInformer_SelectServiceItem((PPH_SERVICE_ITEM)menuItem->Context);
+            SystemInformer_ToggleVisible(TRUE);
         }
         break;
     case ID_SERVICE_START:

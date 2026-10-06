@@ -54,7 +54,8 @@ static CONST PPHSVC_API_PROCEDURE PhSvcApiCallTable[] =
     PhSvcApiCreateProcessIgnoreIfeoDebugger,
     PhSvcApiSetServiceSecurity,
     PhSvcApiWriteMiniDumpProcess,
-    PhSvcApiQueryProcessHeapInformation
+    PhSvcApiQueryProcessHeapInformation,
+    PhSvcApiCreateProcessForKsi,
 };
 static_assert(RTL_NUMBER_OF(PhSvcApiCallTable) == PhSvcMaximumApiNumber - 1, "SvcApiCallTable must equal MaximumApiNumber");
 
@@ -992,6 +993,7 @@ NTSTATUS PhSvcApiChangeServiceConfig2(
     case SERVICE_CONFIG_FAILURE_ACTIONS:
         {
             LPSERVICE_FAILURE_ACTIONS failureActions;
+            ULONG actionsLength;
 
             if (!NT_SUCCESS(status = PhSvcpUnpackRoot(&packedData, info, sizeof(SERVICE_FAILURE_ACTIONS), &failureActions)))
                 goto CleanupExit;
@@ -999,8 +1001,15 @@ NTSTATUS PhSvcApiChangeServiceConfig2(
                 goto CleanupExit;
             if (!NT_SUCCESS(status = PhSvcpUnpackStringZ(&packedData, info, &failureActions->lpCommand, FALSE, TRUE)))
                 goto CleanupExit;
-            if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &failureActions->lpsaActions, failureActions->cActions * sizeof(SC_ACTION), __alignof(SC_ACTION), TRUE)))
+            if (!NT_SUCCESS(status = RtlULongMult(failureActions->cActions, (ULONG)sizeof(SC_ACTION), &actionsLength)))
                 goto CleanupExit;
+            if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &failureActions->lpsaActions, actionsLength, __alignof(SC_ACTION), TRUE)))
+                goto CleanupExit;
+            if (failureActions->cActions != 0 && !failureActions->lpsaActions)
+            {
+                status = STATUS_INVALID_PARAMETER;
+                goto CleanupExit;
+            }
 
             if (failureActions->lpsaActions)
             {
@@ -1046,16 +1055,25 @@ NTSTATUS PhSvcApiChangeServiceConfig2(
     case SERVICE_CONFIG_TRIGGER_INFO:
         {
             PSERVICE_TRIGGER_INFO triggerInfo;
+            ULONG triggersLength;
             ULONG i;
             PSERVICE_TRIGGER trigger;
             ULONG j;
             PSERVICE_TRIGGER_SPECIFIC_DATA_ITEM dataItem;
             ULONG alignment;
+            ULONG dataItemsLength;
 
             if (!NT_SUCCESS(status = PhSvcpUnpackRoot(&packedData, info, sizeof(SERVICE_TRIGGER_INFO), &triggerInfo)))
                 goto CleanupExit;
-            if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &triggerInfo->pTriggers, triggerInfo->cTriggers * sizeof(SERVICE_TRIGGER), __alignof(SERVICE_TRIGGER), TRUE)))
+            if (!NT_SUCCESS(status = RtlULongMult(triggerInfo->cTriggers, (ULONG)sizeof(SERVICE_TRIGGER), &triggersLength)))
                 goto CleanupExit;
+            if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &triggerInfo->pTriggers, triggersLength, __alignof(SERVICE_TRIGGER), TRUE)))
+                goto CleanupExit;
+            if (triggerInfo->cTriggers != 0 && !triggerInfo->pTriggers)
+            {
+                status = STATUS_INVALID_PARAMETER;
+                goto CleanupExit;
+            }
 
             if (triggerInfo->pTriggers)
             {
@@ -1065,8 +1083,15 @@ NTSTATUS PhSvcApiChangeServiceConfig2(
 
                     if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &trigger->pTriggerSubtype, sizeof(GUID), __alignof(GUID), TRUE)))
                         goto CleanupExit;
-                    if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &trigger->pDataItems, trigger->cDataItems * sizeof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM), __alignof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM), TRUE)))
+                    if (!NT_SUCCESS(status = RtlULongMult(trigger->cDataItems, (ULONG)sizeof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM), &dataItemsLength)))
                         goto CleanupExit;
+                    if (!NT_SUCCESS(status = PhSvcpUnpackBuffer(&packedData, info, &trigger->pDataItems, dataItemsLength, __alignof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM), TRUE)))
+                        goto CleanupExit;
+                    if (trigger->cDataItems != 0 && !trigger->pDataItems)
+                    {
+                        status = STATUS_INVALID_PARAMETER;
+                        goto CleanupExit;
+                    }
 
                     if (trigger->pDataItems)
                     {
@@ -1520,8 +1545,9 @@ NTSTATUS PhSvcApiQueryProcessHeapInformation(
 {
     NTSTATUS status;
     PVOID dataBuffer;
-    PPH_PROCESS_DEBUG_HEAP_INFORMATION heapInfo;
-    PPH_STRING heapInfoHexBuffer;
+    PPH_PROCESS_DEBUG_HEAP_INFORMATION heapInfo = NULL;
+    PPH_STRING heapInfoHexBuffer = NULL;
+    SIZE_T heapInfoLength;
 
     if (!NT_SUCCESS(status = PhSvcProbeBuffer(&Payload->u.QueryProcessHeap.i.Data, sizeof(WCHAR), FALSE, &dataBuffer)))
         return status;
@@ -1529,10 +1555,24 @@ NTSTATUS PhSvcApiQueryProcessHeapInformation(
     if (!NT_SUCCESS(status = PhQueryProcessHeapInformation(UlongToHandle(Payload->u.QueryProcessHeap.i.ProcessId), &heapInfo)))
         return status;
 
+    if ((SIZE_T)heapInfo->NumberOfHeaps > (((SIZE_T)-1) - sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION)) / sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY))
+    {
+        status = STATUS_INTEGER_OVERFLOW;
+        goto CleanupExit;
+    }
+
+    heapInfoLength = sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + (SIZE_T)heapInfo->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY);
+
     heapInfoHexBuffer = PhBufferToHexString(
         (PUCHAR)heapInfo,
-        sizeof(PH_PROCESS_DEBUG_HEAP_INFORMATION) + heapInfo->NumberOfHeaps * sizeof(PH_PROCESS_DEBUG_HEAP_ENTRY)
+        heapInfoLength
         );
+
+    if (!heapInfoHexBuffer)
+    {
+        status = STATUS_NO_MEMORY;
+        goto CleanupExit;
+    }
 
     if (Payload->u.QueryProcessHeap.i.Data.Length < heapInfoHexBuffer->Length)
     {
@@ -1548,6 +1588,105 @@ CleanupExit:
         PhDereferenceObject(heapInfoHexBuffer);
     if (heapInfo)
         PhFree(heapInfo);
+
+    return status;
+}
+
+NTSTATUS PhSvcApiCreateProcessForKsi(
+    _In_ PPHSVC_CLIENT Client,
+    _Inout_ PPHSVC_API_PAYLOAD Payload
+    )
+{
+    NTSTATUS status;
+    PPH_STRING commandLine = NULL;
+    PPROC_THREAD_ATTRIBUTE_LIST attributeList = NULL;
+    STARTUPINFOEX startupInfoEx;
+    HANDLE processHandle = NULL;
+    HANDLE tokenHandle = NULL;
+    PVOID environment = NULL;
+
+    if (!NT_SUCCESS(status = PhSvcCaptureString(&Payload->u.CreateProcessForKsi.i.CommandLine, TRUE, &commandLine)))
+        goto CleanupExit;
+
+    if (Payload->u.CreateProcessForKsi.i.MitigationFlags[0] || Payload->u.CreateProcessForKsi.i.MitigationFlags[1])
+    {
+        status = PhInitializeProcThreadAttributeList(&attributeList, 1);
+
+        if (!NT_SUCCESS(status))
+            goto CleanupExit;
+
+        if (WindowsVersion >= WINDOWS_10_22H2)
+        {
+            status = PhUpdateProcThreadAttribute(
+                attributeList,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                Payload->u.CreateProcessForKsi.i.MitigationFlags,
+                sizeof(ULONG64) * 2
+                );
+        }
+        else
+        {
+            status = PhUpdateProcThreadAttribute(
+                attributeList,
+                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                Payload->u.CreateProcessForKsi.i.MitigationFlags,
+                sizeof(ULONG64) * 1
+                );
+        }
+    }
+
+    memset(&startupInfoEx, 0, sizeof(STARTUPINFOEX));
+    startupInfoEx.StartupInfo.cb = sizeof(STARTUPINFOEX);
+    startupInfoEx.lpAttributeList = attributeList;
+
+    // ClientId is verified to be System Informer, see: PhSvcHandleConnectionRequest
+    if (!NT_SUCCESS(status = PhOpenProcess(
+        &processHandle,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        Client->ClientId.UniqueProcess
+        )))
+        goto CleanupExit;
+
+    if (!NT_SUCCESS(status = PhOpenProcessToken(
+        processHandle,
+        TOKEN_ALL_ACCESS,
+        &tokenHandle
+        )))
+        goto CleanupExit;
+
+    if (!NT_SUCCESS(status = PhCreateEnvironmentBlock(&environment, tokenHandle, FALSE)))
+        goto CleanupExit;
+
+    status = PhCreateProcessWin32Ex(
+        NULL,
+        PhGetString(commandLine),
+        environment,
+        NULL,
+        &startupInfoEx,
+        (PH_CREATE_PROCESS_DEFAULT_ERROR_MODE |
+         PH_CREATE_PROCESS_EXTENDED_STARTUPINFO |
+         PH_CREATE_PROCESS_UNICODE_ENVIRONMENT),
+        tokenHandle,
+        NULL,
+        NULL,
+        NULL
+        );
+
+CleanupExit:
+
+    if (environment)
+        PhDestroyEnvironmentBlock(environment);
+
+    if (tokenHandle)
+        NtClose(tokenHandle);
+
+    if (processHandle)
+        NtClose(processHandle);
+
+    if (attributeList)
+        PhDeleteProcThreadAttributeList(attributeList);
+
+    PhClearReference(&commandLine);
 
     return status;
 }

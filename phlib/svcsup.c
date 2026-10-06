@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2012
- *     dmex    2019-2024
+ *     dmex    2019-2026
  *
  */
 
@@ -1415,7 +1415,7 @@ PPH_STRING PhGetServiceNameFromTag(
 
     if (!QueryTagInformation_I)
     {
-        QueryTagInformation_I = PhGetDllProcedureAddress(L"sechost.dll", "I_QueryTagInformation", 0);
+        QueryTagInformation_I = PhGetDllProcedureAddressZ(L"sechost.dll", "I_QueryTagInformation", 0);
     }
 
     if (!QueryTagInformation_I)
@@ -1456,11 +1456,11 @@ PPH_STRING PhGetServiceNameForModuleReference(
     {
         if (WindowsVersion >= WINDOWS_8_1)
         {
-            QueryTagInformation_I = PhGetDllProcedureAddress(L"sechost.dll", "I_QueryTagInformation", 0);
+            QueryTagInformation_I = PhGetDllProcedureAddressZ(L"sechost.dll", "I_QueryTagInformation", 0);
         }
 
         if (!QueryTagInformation_I)
-            QueryTagInformation_I = PhGetDllProcedureAddress(L"advapi32.dll", "I_QueryTagInformation", 0);
+            QueryTagInformation_I = PhGetDllProcedureAddressZ(L"advapi32.dll", "I_QueryTagInformation", 0);
     }
 
     if (!QueryTagInformation_I)
@@ -1566,7 +1566,7 @@ PPH_STRING PhGetServiceParametersKeyName(
  */
 PPH_STRING PhGetServiceConfigFileName(
     _In_ ULONG ServiceType,
-    _In_ PCWSTR ServicePathName,
+    _In_opt_ PCWSTR ServicePathName,
     _In_ PPH_STRINGREF ServiceName
     )
 {
@@ -1577,7 +1577,7 @@ PPH_STRING PhGetServiceConfigFileName(
 
     if (!NT_SUCCESS(status))
     {
-        if (ServicePathName[0])
+        if (ServicePathName && ServicePathName[0])
         {
             PPH_STRING commandLine = PhCreateString(ServicePathName);
 
@@ -1621,7 +1621,7 @@ PPH_STRING PhGetServiceConfigFileName(
  */
 NTSTATUS PhGetServiceConfigFileName2(
     _In_ ULONG ServiceType,
-    _In_ PCWSTR ServicePathName,
+    _In_opt_ PCWSTR ServicePathName,
     _In_ PPH_STRINGREF ServiceName,
     _Out_ PPH_STRING* ServiceFileName
     )
@@ -1633,7 +1633,7 @@ NTSTATUS PhGetServiceConfigFileName2(
 
     if (!NT_SUCCESS(status))
     {
-        if (ServicePathName[0])
+        if (ServicePathName && ServicePathName[0])
         {
             PPH_STRING commandLine = PhCreateString(ServicePathName);
 
@@ -1993,6 +1993,36 @@ ULONG PhGetServiceBootFlags(
 }
 
 /**
+ * Retrieves the UserServiceFlags value for a service from the registry.
+ *
+ * \param ServiceName The service name as a string reference.
+ * \return The UserServiceFlags value, or 0 if not found.
+ */
+ULONG PhGetServiceUserFlags(
+    _In_ PPH_STRINGREF ServiceName
+    )
+{
+    ULONG userServiceFlags = 0;
+    HANDLE keyHandle;
+
+    if (NT_SUCCESS(PhOpenServiceKey(
+        &keyHandle,
+        KEY_READ,
+        ServiceName
+        )))
+    {
+        userServiceFlags = PhQueryRegistryUlongZ(keyHandle, L"UserServiceFlags");
+
+        NtClose(keyHandle);
+    }
+
+    if (userServiceFlags == ULONG_MAX)
+        userServiceFlags = 0;
+
+    return userServiceFlags;
+}
+
+/**
  * Retrieves the PackageFullName value for a service.
  *
  * \param ServiceName Name of the service.
@@ -2017,6 +2047,149 @@ PPH_STRING PhGetServicePackageFullName(
     }
 
     return servicePackageName;
+}
+
+/**
+ * Queries the Group value for a service.
+ *
+ * \param ServiceName Name of the service.
+ * \return A PPH_STRING containing the GroupName, or NULL if not found.
+ */
+PPH_STRING PhGetServiceGroupName(
+    _In_ PPH_STRINGREF ServiceName
+    )
+{
+    PPH_STRING groupName = NULL;
+    HANDLE keyHandle;
+
+    if (NT_SUCCESS(PhOpenServiceKey(
+        &keyHandle,
+        KEY_READ,
+        ServiceName
+        )))
+    {
+        groupName = PhQueryRegistryStringZ(keyHandle, L"Group");
+        NtClose(keyHandle);
+    }
+
+    return groupName;
+}
+
+PPH_STRING PhGetEarlyStartServices(
+    VOID
+    )
+{
+    static CONST PH_STRINGREF servicesKeyName = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Control");
+    PPH_STRING earlyStartServices = NULL;
+    NTSTATUS status;
+    HANDLE keyHandle;
+
+    status = PhOpenKey(
+        &keyHandle,
+        KEY_READ,
+        PH_KEY_LOCAL_MACHINE,
+        &servicesKeyName,
+        0
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        earlyStartServices = PhQueryRegistryStringZ(keyHandle, L"EarlyStartServices");
+
+        NtClose(keyHandle);
+    }
+
+    return earlyStartServices;
+}
+
+PPH_STRING PhGetSvchostGroup(
+    _In_ PPH_STRINGREF GroupName
+    )
+{
+    static CONST PH_STRINGREF servicesKeyName = PH_STRINGREF_INIT(L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Svchost");
+    PPH_STRING string = NULL;
+    NTSTATUS status;
+    HANDLE keyHandle;
+
+    status = PhOpenKey(
+        &keyHandle,
+        KEY_READ,
+        PH_KEY_LOCAL_MACHINE,
+        &servicesKeyName,
+        0
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        string = PhQueryRegistryString(keyHandle, GroupName);
+
+        NtClose(keyHandle);
+    }
+
+    return string;
+}
+
+PPH_STRING PhGetSvchostGroupKeyName(
+    _In_ PPH_STRINGREF GroupName
+    )
+{
+    static CONST PH_STRINGREF servicesKeyName = PH_STRINGREF_INIT(L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Svchost");
+    static CONST PH_STRINGREF servicesKeySeperatorName = PH_STRINGREF_INIT(L"\\");
+
+    return PhConcatStringRef3(&servicesKeyName, &servicesKeySeperatorName, GroupName);
+}
+
+PPH_SVC_HOST_POLICY_INFO PhGetSvchostGroupPolicy(
+    _In_ PPH_STRINGREF ServiceName
+    )
+{
+    PPH_SVC_HOST_POLICY_INFO policyInfo = NULL;
+    PPH_STRING keyName;
+    NTSTATUS status;
+    HANDLE keyHandle;
+
+    keyName = PhGetServiceKeyName(ServiceName);
+
+    status = PhOpenKey(
+        &keyHandle,
+        KEY_READ,
+        PH_KEY_LOCAL_MACHINE,
+        &keyName->sr,
+        0
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        policyInfo = PhAllocateZero(sizeof(PH_SVC_HOST_POLICY_INFO));
+
+        policyInfo->AuthenticationCapabilities = PhQueryRegistryUlongZ(keyHandle, L"AuthenticationCapabilities");
+        policyInfo->AuthenticationLevel = PhQueryRegistryUlongZ(keyHandle, L"AuthenticationLevel");
+        policyInfo->BinarySignaturePolicy = PhQueryRegistryUlongZ(keyHandle, L"BinarySignaturePolicy");
+        policyInfo->CoInitializeSecurityAllowComCapability = PhQueryRegistryUlongZ(keyHandle, L"CoInitializeSecurityAllowComCapability");
+        policyInfo->CoInitializeSecurityAllowCrossContainer = PhQueryRegistryUlongZ(keyHandle, L"CoInitializeSecurityAllowInteractiveUsers");
+        policyInfo->CoInitializeSecurityAllowLowBox = PhQueryRegistryUlongZ(keyHandle, L"CoInitializeSecurityAllowLowBox");
+        policyInfo->CoInitializeSecurityParam = PhQueryRegistryUlongZ(keyHandle, L"CoInitializeSecurityParam");
+        policyInfo->COM_UnmarshalingPolicy = PhQueryRegistryUlongZ(keyHandle, L"COM_UnmarshalingPolicy");
+        policyInfo->DefaultRpcStackSize = PhQueryRegistryUlongZ(keyHandle, L"DefaultRpcStackSize");
+        policyInfo->DynamicCodePolicy = PhQueryRegistryUlongZ(keyHandle, L"DynamicCodePolicy");
+        policyInfo->ImpersonationLevel = PhQueryRegistryUlongZ(keyHandle, L"ImpersonationLevel");
+        policyInfo->RedirectionTrustPolicy = PhQueryRegistryUlongZ(keyHandle, L"RedirectionTrustPolicy");
+        policyInfo->RpcExceptionFilterMode = PhQueryRegistryUlongZ(keyHandle, L"RpcExceptionFilterMode");
+
+        //KEY_VALUE_PARTIAL_INFORMATION keyValueInfo;
+        //status = PhQueryValueKeyZ(
+        //    keyHandle,
+        //    L"COMAccessPermissionsSD",
+        //    KeyValuePartialInformation,
+        //    &keyValueInfo
+        //    );
+
+        NtClose(keyHandle);
+    }
+
+    PhDereferenceObject(keyName);
+
+    return policyInfo;
 }
 
 NTSTATUS PhWaitForServiceStatus(

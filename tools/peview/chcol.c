@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2017-2021
+ *     dmex    2017-2026
  *
  */
 
@@ -155,7 +155,7 @@ VOID PvColumnsResetListBox(
     _In_ HWND ListBoxHandle,
     _In_ ULONG_PTR SearchMatchHandle,
     _In_ PPH_LIST Array,
-    _In_ PVOID CompareFunction
+    _In_opt_ PVOID CompareFunction
     )
 {
     SendMessage(ListBoxHandle, WM_SETREDRAW, FALSE, 0);
@@ -202,10 +202,11 @@ VOID PvSetListHeight(
 
     dpiValue = PhGetWindowDpi(hwndDlg);
 
-    ListBox_SetItemHeight(context->InactiveWindowHandle, 0, PhGetDpi(16, dpiValue));
-    ListBox_SetItemHeight(context->ActiveWindowHandle, 0, PhGetDpi(16, dpiValue));
+    ListBox_SetItemHeight(context->InactiveWindowHandle, 0, PhScaleToDisplay(16, dpiValue));
+    ListBox_SetItemHeight(context->ActiveWindowHandle, 0, PhScaleToDisplay(16, dpiValue));
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PvpInactiveColumnsSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -223,6 +224,7 @@ VOID NTAPI PvpInactiveColumnsSearchControlCallback(
         );
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PvpActiveColumnsSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -416,6 +418,11 @@ INT_PTR CALLBACK PvColumnsDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT controlFont;
+
+            if (controlFont = PvColumnsGetCurrentFont(hwndDlg))
+                PhSwapReferenceFont(&context->ControlFont, NULL, controlFont, FALSE);
+
             PvSetListHeight(context, hwndDlg);
         }
         break;

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -730,7 +730,7 @@ Done:
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
-            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerUpdate(&context->LayoutManager, PhGetWindowDpi(WindowHandle));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;

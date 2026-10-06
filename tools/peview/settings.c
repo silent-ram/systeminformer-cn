@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -29,6 +29,7 @@ VOID PvAddDefaultSettings(
     PhpAddIntegerSetting(L"EnableThemeAcrylicWindowSupport", L"0");
     PhpAddIntegerSetting(L"EnableThemeAnimation", L"1");
     PhpAddIntegerSetting(L"EnableThemeNativeButtons", L"0");
+    PhpAddIntegerSetting(L"EnableWindowBorderColor", L"1");
     PhpAddIntegerSetting(L"ThemeWindowForegroundColor", L"1c1c1c"); // RGB(28, 28, 28)
     PhpAddIntegerSetting(L"ThemeWindowBackgroundColor", L"2b2b2b"); // RGB(43, 43, 43)
     PhpAddIntegerSetting(L"ThemeWindowBackground2Color", L"414141"); // RGB(65, 65, 65)
@@ -76,6 +77,7 @@ VOID PvAddDefaultSettings(
     PhpAddStringSetting(L"ImagePropertiesListViewColumns", L"");
     PhpAddStringSetting(L"ImageRelocationsListViewColumns", L"");
     PhpAddStringSetting(L"ImageDynamicRelocationsListViewColumns", L"");
+    PhpAddStringSetting(L"ImageDynamicRelocationsTreeColumns", L"");
     PhpAddStringSetting(L"ImageMuiListViewColumns", L"");
     PhpAddStringSetting(L"ImageSecurityListViewColumns", L"");
     PhpAddStringSetting(L"ImageSecurityListViewSort", L"");
@@ -107,6 +109,7 @@ VOID PvAddDefaultSettings(
     PhpAddIntegerSetting(L"StringsTreeListFlags", L"1b");
     PhpAddIntegerSetting(L"StringsMinimumLength", L"4");
     PhpAddIntegerSetting(L"TreeListBorderEnable", L"0");
+    PhpAddIntegerSetting(L"TreeListCustomRowSize", L"0");
     PhpAddStringSetting(L"CHPEListViewColumns", L"");
     // Wsl properties
     PhpAddStringSetting(L"GeneralWslTreeListColumns", L"");
@@ -122,6 +125,7 @@ VOID PvUpdateCachedSettings(
     PhMaxSizeUnit = PhGetIntegerSetting(L"MaxSizeUnit");
     PhEnableSecurityAdvancedDialog = !!PhGetIntegerSetting(L"EnableSecurityAdvancedDialog");
     PhEnableThemeSupport = !!PhGetIntegerSetting(L"EnableThemeSupport");
+    PhEnableWindowBorderColor = !!PhGetIntegerSetting(L"EnableWindowBorderColor");
     PhThemeWindowForegroundColor = PhGetIntegerSetting(L"ThemeWindowForegroundColor");
     PhThemeWindowBackgroundColor = PhGetIntegerSetting(L"ThemeWindowBackgroundColor");
     PhThemeWindowBackground2Color = PhGetIntegerSetting(L"ThemeWindowBackground2Color");
@@ -135,45 +139,21 @@ VOID PvInitializeSettings(
     VOID
     )
 {
-    NTSTATUS status;
-    PPH_STRING appFileName;
-    PPH_STRING tempFileName;
+    NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+    PPH_STRING settingsPath = NULL;
 
     PvAddDefaultSettings();
 
-    // There are three possible locations for the settings file:
-    // 1. A file named peview.exe.settings.xml in the program directory. (This changes
-    //    based on the executable file name.)
-    // 2. The default location.
+    // 1. Default locations (Portable, AppData or Registry)
+    status = PhLoadSettingsAutoDetect(NULL, L"peview", &settingsPath, NULL, NULL);
 
-    // 1. File in program directory
-
-    if (appFileName = PhGetApplicationFileName())
+    if (NT_SUCCESS(status) || status == STATUS_OBJECT_NAME_NOT_FOUND)
     {
-        tempFileName = PhConcatStringRefZ(&appFileName->sr, L".settings.xml");
-
-        if (PhDoesFileExist(&tempFileName->sr))
-        {
-            PvSettingsFileName = tempFileName;
-        }
-        else
-        {
-            PhDereferenceObject(tempFileName);
-        }
-
-        PhDereferenceObject(appFileName);
+        PhMoveReference(&PvSettingsFileName, settingsPath);
     }
 
-    // 2. Default location
-    if (PhIsNullOrEmptyString(PvSettingsFileName))
+    if (PvSettingsFileName)
     {
-        PvSettingsFileName = PhGetRoamingAppDataDirectoryZ(L"peview.xml", TRUE);
-    }
-
-    if (!PhIsNullOrEmptyString(PvSettingsFileName))
-    {
-        status = PhLoadSettings(&PvSettingsFileName->sr);
-
         // If we didn't find the file, it will be created. Otherwise,
         // there was probably a parsing error and we don't want to
         // change anything.
@@ -187,25 +167,7 @@ VOID PvInitializeSettings(
                 L"If you select No, the settings system will not function properly."
                 ) == IDYES)
             {
-                HANDLE fileHandle;
-                IO_STATUS_BLOCK isb;
-                CHAR data[] = "<settings></settings>";
-
-                // This used to delete the file. But it's better to keep the file there
-                // and overwrite it with some valid XML, especially with case (2) above.
-                if (NT_SUCCESS(PhCreateFile(
-                    &fileHandle,
-                    &PvSettingsFileName->sr,
-                    FILE_GENERIC_WRITE,
-                    FILE_ATTRIBUTE_NORMAL,
-                    FILE_SHARE_READ | FILE_SHARE_DELETE,
-                    FILE_OVERWRITE,
-                    FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT
-                    )))
-                {
-                    NtWriteFile(fileHandle, NULL, NULL, NULL, &isb, data, sizeof(data) - 1, NULL, NULL);
-                    NtClose(fileHandle);
-                }
+                PhResetSettingsFile(&PvSettingsFileName->sr);
             }
             else
             {

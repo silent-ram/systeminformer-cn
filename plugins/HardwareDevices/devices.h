@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *     jxy-s   2022
  *
  */
@@ -94,7 +94,7 @@ __has_include (<d3dkmthk.h>)
 #include "resource.h"
 #include "prpsh.h"
 
-extern PPH_PLUGIN PluginInstance;
+EXTERN_C PPH_PLUGIN PluginInstance;
 extern BOOLEAN NetAdapterEnableNdis;
 extern ULONG NetWindowsVersion;
 extern ULONG NetUpdateInterval;
@@ -118,6 +118,11 @@ extern PH_QUEUED_LOCK GraphicsDevicesListLock;
 #ifdef _DEBUG
 //#define FORCE_DELAY_LABEL_WORKQUEUE
 #endif
+
+#define ID_DEVICE_SEARCH_ONLINE 109
+#define ID_DEVICE_SEARCH_DRIVER_UPDATE 110
+#define ID_DEVICE_PROPERTIES_NATIVE 111
+#define ID_DEVICE_SECURITY 112
 
 // main.c
 
@@ -157,6 +162,10 @@ BOOLEAN HardwareDeviceOpenKey(
     _In_ HWND ParentWindow,
     _In_ PPH_STRING DeviceInstance,
     _In_ ULONG KeyIndex
+    );
+
+PPH_STRING PhpEncodeDeviceQuery(
+    _In_ PPH_STRING String
     );
 
 VOID ShowDeviceMenu(
@@ -231,6 +240,7 @@ typedef struct _DV_NETADAPTER_SYSINFO_CONTEXT
     PPH_SYSINFO_SECTION SysinfoSection;
     PH_LAYOUT_MANAGER LayoutManager;
     RECT GraphMargin;
+    RECT GraphMarginScaled;
     LONG GraphPadding;
 
     PH_GRAPH_STATE GraphSendState;
@@ -525,19 +535,29 @@ BOOLEAN NetworkAdapterQueryInterfaceRow(
     _Out_ PMIB_IF_ROW2 InterfaceRow
     );
 
+PVOID NetworkAdapterGetAddresses(
+    _In_ ULONG Family,
+    _In_ ULONG Flags
+    );
+
 PCWSTR MediumTypeToString(
     _In_ NDIS_PHYSICAL_MEDIUM MediumType
     );
 
-PPH_STRING NetAdapterFormatBitratePrefix(
+PPH_STRING NetworkAdapterFormatBitratePrefix(
     _In_ ULONG64 Value
+    );
+
+NTSTATUS NetworkAdapterConvertLengthToIpv4Mask(
+    _In_ ULONG MaskLength,
+    _Out_ PULONG Mask
     );
 
 // netoptions.c
 
 INT_PTR CALLBACK NetworkAdapterOptionsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
@@ -545,8 +565,8 @@ INT_PTR CALLBACK NetworkAdapterOptionsDlgProc(
 // diskoptions.c
 
 INT_PTR CALLBACK DiskDriveOptionsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
@@ -620,6 +640,7 @@ typedef struct _DV_DISK_SYSINFO_CONTEXT
     PPH_SYSINFO_SECTION SysinfoSection;
     PH_LAYOUT_MANAGER LayoutManager;
     RECT GraphMargin;
+    RECT GraphMarginScaled;
     LONG GraphPadding;
 
     PH_GRAPH_STATE GraphReadState;
@@ -863,6 +884,10 @@ PPH_LIST DiskDriveQueryMountPointHandles(
     _In_ ULONG DeviceNumber
     );
 
+VOID DiskDriveCloseMountPointHandles(
+    _In_ PPH_LIST MountPointHandles
+    );
+
 NTSTATUS DiskDriveQueryDeviceInformation(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PPH_STRING* DiskVendor,
@@ -878,6 +903,11 @@ NTSTATUS DiskDriveQueryDeviceTypeAndNumber(
     );
 
 NTSTATUS DiskDriveQueryStatistics(
+    _In_ HANDLE DeviceHandle,
+    _Out_ PDISK_PERFORMANCE Info
+    );
+
+NTSTATUS DiskDriveQueryStatisticsWmi(
     _In_ HANDLE DeviceHandle,
     _Out_ PDISK_PERFORMANCE Info
     );
@@ -905,7 +935,7 @@ typedef DECLSPEC_ALIGN(64) struct _NTFS_FILESYSTEM_STATISTICS
 typedef DECLSPEC_ALIGN(64) struct _FAT_FILESYSTEM_STATISTICS
 {
     FILESYSTEM_STATISTICS FileSystemStatistics;
-    NTFS_STATISTICS FatStatistics;
+    FAT_STATISTICS FatStatistics;
 } FAT_FILESYSTEM_STATISTICS, *PFAT_FILESYSTEM_STATISTICS;
 
 typedef DECLSPEC_ALIGN(64) struct _EXFAT_FILESYSTEM_STATISTICS
@@ -930,7 +960,7 @@ typedef DECLSPEC_ALIGN(64) struct _NTFS_FILESYSTEM_STATISTICS_EX
 typedef DECLSPEC_ALIGN(64) struct _FAT_FILESYSTEM_STATISTICS_EX
 {
     FILESYSTEM_STATISTICS_EX FileSystemStatistics;
-    NTFS_STATISTICS_EX FatStatistics;
+    FAT_STATISTICS FatStatistics;
 } FAT_FILESYSTEM_STATISTICS_EX, *PFAT_FILESYSTEM_STATISTICS_EX;
 
 typedef DECLSPEC_ALIGN(64) struct _EXFAT_FILESYSTEM_STATISTICS_EX
@@ -973,6 +1003,11 @@ NTSTATUS DiskDriveQueryUniqueId(
     _In_ HANDLE DeviceHandle,
     _Out_ PPH_STRING* UniqueId,
     _Out_ PPH_STRING* PartitionId
+    );
+
+NTSTATUS DiskDriveQueryPartitionList(
+    _In_ HANDLE DeviceHandle,
+    _Out_ PPH_LIST *Partitions
     );
 
 // https://en.wikipedia.org/wiki/Self-Monitoring,_Analysis_and_Reporting_Technology#Known_ATA_S.M.A.R.T._attributes
@@ -1065,7 +1100,7 @@ typedef enum _SMART_ATTRIBUTE_ID
     SMART_ATTRIBUTE_ID_HOST_PROGRAM_PAGE_COUNT = 0xF7,
     SMART_ATTRIBUTE_ID_BACKGROUND_PROGRAM_PAGE_COUNT = 0xF8,
     SMART_ATTRIBUTE_ID_NAND_WRITES = 0xF9,
-    SMART_ATTRIBUTE_ID_READ_ERROR_RETY_RATE = 0xFA,
+    SMART_ATTRIBUTE_ID_READ_ERROR_RETRY_RATE = 0xFA,
     SMART_ATTRIBUTE_ID_MIN_SPARES_REMAINING = 0xFB,
     SMART_ATTRIBUTE_ID_NEWLY_ADDED_BAD_FLASH_BLOCK = 0xFC,
     // TODO: Add value 253
@@ -1165,6 +1200,7 @@ typedef struct _EV_MEASUREMENT_DATA
 typedef struct _DV_RAPL_ID
 {
     PPH_STRING DevicePath;
+    PPH_STRING DeviceInstance;
 } DV_RAPL_ID, *PDV_RAPL_ID;
 
 typedef struct _DV_RAPL_ENTRY
@@ -1202,6 +1238,9 @@ typedef struct _DV_RAPL_ENTRY
     ULONG ChannelDataBufferLength;
     ULONG ChannelIndex[EV_EMI_DEVICE_INDEX_MAX];
     EV_MEASUREMENT_DATA ChannelData[EV_EMI_DEVICE_INDEX_MAX];
+    ULONG NumberOfCoreChannels;
+    PULONG CoreChannelIndexes;
+    EV_MEASUREMENT_DATA* CoreChannelData;
 } DV_RAPL_ENTRY, *PDV_RAPL_ENTRY;
 
 typedef struct _DV_RAPL_SYSINFO_CONTEXT
@@ -1222,6 +1261,7 @@ typedef struct _DV_RAPL_SYSINFO_CONTEXT
     PPH_SYSINFO_SECTION SysinfoSection;
     PH_LAYOUT_MANAGER LayoutManager;
     RECT GraphMargin;
+    RECT GraphMarginScaled;
     LONG GraphPadding;
 
     PH_GRAPH_STATE ProcessorGraphState;
@@ -1312,10 +1352,46 @@ VOID RaplDeviceSysInfoInitializing(
 
 // gpu.c
 
-// Undocumented device properties (Win10 only)
-DEFINE_DEVPROPKEY(DEVPKEY_Gpu_Luid, 0x60b193cb, 0x5276, 0x4d0f, 0x96, 0xfc, 0xf1, 0x73, 0xab, 0xad, 0x3e, 0xc6, 2); // DEVPROP_TYPE_UINT64
-DEFINE_DEVPROPKEY(DEVPKEY_Gpu_PhysicalAdapterIndex, 0x60b193cb, 0x5276, 0x4d0f, 0x96, 0xfc, 0xf1, 0x73, 0xab, 0xad, 0x3e, 0xc6, 3); // DEVPROP_TYPE_UINT32
-DEFINE_GUID(GUID_COMPUTE_DEVICE_ARRIVAL, 0x1024e4c9, 0x47c9, 0x48d3, 0xb4, 0xa8, 0xf9, 0xdf, 0x78, 0x52, 0x3b, 0x53);
+// Maximum VidPN sources supported for per-source present tracking
+#define GX_PRESENT_STATS_SOURCE_MAX 16
+
+// Number of detail-dialog rows emitted per VidPN display source
+#define GX_DISPLAY_ROWS_PER_SOURCE  4
+#define GX_DISPLAY_ROW_FPS          0
+#define GX_DISPLAY_ROW_PRESENT_MODE 1
+#define GX_DISPLAY_ROW_DIRECT_FLIP  2
+#define GX_DISPLAY_ROW_DROPPED_FLIP 3
+
+// Row index in the details list view for source S, row type R
+#define GX_DISPLAY_ROW_IDX(S, R) \
+    (GPUADAPTER_DETAILS_INDEX_COUNT + (S) * GX_DISPLAY_ROWS_PER_SOURCE + (R))
+
+// Batch size (in tokens) used for each D3DKMTGetPresentHistory call
+#define GX_PRESENT_HISTORY_BATCH_TOKENS 512
+
+/**
+ * Per-VidPN-source (or per-adapter) present token statistics.
+ * All fields are ULONG64 monotonically increasing accumulators;
+ * take a delta snapshot each sample interval to obtain rates.
+ */
+typedef struct _GX_PRESENT_STATS
+{
+    // Present model counts
+    ULONG64 RedirectedFlipCount;  // D3DKMT_PM_REDIRECTED_FLIP tokens
+    ULONG64 RedirectedBltCount;   // PM_REDIRECTED_BLT / GDI / GDI_SYSMEM / VISTABLT
+    ULONG64 CompositionCount;     // PM_REDIRECTED_COMPOSITION + PM_SURFACECOMPLETE
+    ULONG64 FlipManagerCount;     // PM_FLIPMANAGER (DX12 / DirectComposition)
+
+    // Flip-token flag breakdown (subset of flip tokens)
+    ULONG64 IndependentFlipCount; // Flags.IndependentFlip set — DWM bypassed
+    ULONG64 FlipRestartCount;     // Flags.FlipRestart set — frame cancelled/restarted
+    ULONG64 VrrEligibleCount;     // Flags.VariableRefreshOverrideEligible — VRR candidate
+
+    // Flip interval distribution (subset of flip tokens)
+    ULONG64 Interval0Count;       // D3DDDI_FLIPINTERVAL_IMMEDIATE / ALLOW_TEARING
+    ULONG64 Interval1Count;       // D3DDDI_FLIPINTERVAL_ONE (standard vsync)
+    ULONG64 Interval2PlusCount;   // Interval >= 2 (throttled, e.g. 30fps cap on 60Hz)
+} GX_PRESENT_STATS, * PGX_PRESENT_STATS;
 
 typedef struct _DV_GPU_ID
 {
@@ -1346,6 +1422,7 @@ typedef struct _DV_GPU_ENTRY
 
     PH_UINT64_DELTA TotalRunningTimeDelta;
     PPH_UINT64_DELTA TotalRunningTimeNodesDelta;
+    PPH_UINT64_DELTA SystemRunningTimeNodesDelta;
     PPH_CIRCULAR_BUFFER_FLOAT GpuNodesHistory;
 
     FLOAT CurrentGpuUsage;
@@ -1399,6 +1476,7 @@ typedef struct _DV_GPU_SYSINFO_CONTEXT
     HWND GpuDialog;
     PH_LAYOUT_MANAGER GpuLayoutManager;
     RECT GpuGraphMargin;
+    RECT GpuGraphMarginScaled;
     HWND GpuGraphHandle;
     PH_GRAPH_STATE GpuGraphState;
     HWND DedicatedGraphHandle;
@@ -1495,8 +1573,8 @@ FLOAT GraphicsDevicePluginInterfaceGetGpuAdapterEngineUtilization(
 // gpuoptions.c
 
 INT_PTR CALLBACK GraphicsDeviceOptionsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
@@ -1519,15 +1597,15 @@ BOOLEAN GraphicsDeviceSectionCallback(
     );
 
 INT_PTR CALLBACK GraphicsDeviceDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
 
 INT_PTR CALLBACK GraphicsDevicePanelDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
@@ -1541,16 +1619,11 @@ VOID GraphicsDeviceUpdatePanel(
     );
 
 PPH_STRING GraphicsQueryDeviceDescription(
-    _In_ DEVINST DeviceHandle
+    _In_ PCWSTR DeviceInstanceId
     );
 
 PPH_STRING GraphicsQueryDeviceInterfaceDescription(
     _In_opt_ PWSTR DeviceInterface
-    );
-
-PPH_STRING GraphicsQueryDevicePropertyString(
-    _In_ DEVINST DeviceHandle,
-    _In_ CONST DEVPROPKEY* DeviceProperty
     );
 
 _Success_(return)
@@ -1616,25 +1689,6 @@ NTSTATUS GraphicsQueryAdapterAttributes(
 
 // graphics.c
 
-typedef struct _D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION_V1
-{
-    ULONG CommitLimit;
-    ULONG BytesCommitted;
-    ULONG BytesResident;
-    D3DKMT_QUERYSTATISTICS_MEMORY Memory;
-    ULONG Aperture; // boolean
-    ULONGLONG TotalBytesEvictedByPriority[D3DKMT_MaxAllocationPriorityClass];
-    ULONG64 SystemMemoryEndAddress;
-    struct
-    {
-        ULONG64 PreservedDuringStandby : 1;
-        ULONG64 PreservedDuringHibernate : 1;
-        ULONG64 PartiallyPreservedDuringHibernate : 1;
-        ULONG64 Reserved : 61;
-    } PowerFlags;
-    ULONG64 Reserved[7];
-} D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION_V1, *PD3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION_V1;
-
 NTSTATUS GraphicsOpenAdapterFromDeviceName(
     _Out_ D3DKMT_HANDLE* AdapterHandle,
     _Out_opt_ PLUID AdapterLuid,
@@ -1672,7 +1726,8 @@ NTSTATUS GraphicsQueryAdapterSegmentLimits(
 NTSTATUS GraphicsQueryAdapterNodeRunningTime(
     _In_ LUID AdapterLuid,
     _In_ ULONG NodeId,
-    _Out_ PULONG64 RunningTime
+    _Out_ PULONG64 RunningTime,
+    _Out_ PULONG64 SystemRunningTime
     );
 
 NTSTATUS GraphicsQueryAdapterDevicePerfData(

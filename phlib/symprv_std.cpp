@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2023
+ *     dmex    2023-2026
  *
  */
 
@@ -39,7 +39,7 @@ EXTERN_C PPH_STRING PhGetStacktraceAsString(
 
     return PhConvertUtf8ToUtf16(result.c_str());
 #else
-    return NULL;
+    return nullptr;
 #endif
 }
 
@@ -58,7 +58,7 @@ EXTERN_C PPH_STRING PhGetStacktraceSymbolFromAddress(
 
     return PhConvertUtf8ToUtf16(result.c_str());
 #else
-    return NULL;
+    return nullptr;
 #endif
 }
 
@@ -79,6 +79,6 @@ EXTERN_C PPH_STRING PhGetObjectTypeStacktraceToString(
 
     return PhConvertUtf8ToUtf16(result.c_str());
 #else
-    return NULL;
+    return nullptr;
 #endif
 }

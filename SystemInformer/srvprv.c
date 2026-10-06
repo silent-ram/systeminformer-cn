@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2015
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -465,7 +465,7 @@ VOID PhServiceQueryStage1(
     {
         if (!FlagOn(serviceItem->Type, SERVICE_DRIVER)) // Skip icons for kernel drivers (dmex)
         {
-            Data->IconEntry = PhImageListExtractIcon(fileName, FALSE, SYSTEM_IDLE_PROCESS_ID, NULL, PhSystemDpi);
+            Data->IconEntry = PhImageListExtractIcon(fileName, FALSE, SYSTEM_IDLE_PROCESS_ID, NULL, PhProcessImageListWindowDpi);
         }
 
         if (!PhEnableProcessQueryStage2)
@@ -752,6 +752,7 @@ VOID PhServiceProviderUpdate(
     static PPHP_SERVICE_NAME_ENTRY nameEntries = NULL;
     static ULONG nameEntriesCount;
     static ULONG nameEntriesAllocated = 0;
+    PH_PROVIDER_UPDATED_EVENT updatedEvent;
     NTSTATUS status;
     LPENUM_SERVICE_STATUS_PROCESS services;
     ULONG numberOfServices;
@@ -1099,7 +1100,10 @@ UpdateStart:
     PhFree(services);
 
 UpdateEnd:
-    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackServiceProviderUpdatedEvent), UlongToPtr(runCount));
+    updatedEvent.RunCount = runCount;
+    updatedEvent.UpdateInterval = PhCsUpdateInterval;
+
+    PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackServiceProviderUpdatedEvent), &updatedEvent);
 
     PhTraceFuncExit("Service provider run count: %lu", runCount);
 
@@ -1178,7 +1182,9 @@ VOID PhDestroyServiceNotifyContext(
     if (NotifyContext->Buffer.pszServiceNames)
         LocalFree(NotifyContext->Buffer.pszServiceNames);
 
-    PhCloseServiceHandle(NotifyContext->ServiceHandle);
+    if (!NotifyContext->IsServiceManager)
+        PhCloseServiceHandle(NotifyContext->ServiceHandle);
+
     PhClearReference(&NotifyContext->ServiceName);
     PhFree(NotifyContext);
 }

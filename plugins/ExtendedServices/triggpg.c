@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2015
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -204,7 +204,7 @@ INT_PTR CALLBACK EspServiceTriggersDlgProc(
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
-            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerUpdate(&context->LayoutManager, PhGetWindowDpi(WindowHandle));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;

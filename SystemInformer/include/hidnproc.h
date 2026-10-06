@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2015
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -36,6 +36,8 @@ typedef struct _PH_ZOMBIE_PROCESS_ENTRY
     HANDLE ProcessId;
     PPH_STRING FileName;
     PH_ZOMBIE_PROCESS_TYPE Type;
+    ULONG HandleCount;
+    BOOLEAN HasHandleCount;
 } PH_ZOMBIE_PROCESS_ENTRY, *PPH_ZOMBIE_PROCESS_ENTRY;
 
 typedef struct _PH_CSR_HANDLE_INFO

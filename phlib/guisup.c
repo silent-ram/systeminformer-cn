@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -59,10 +59,7 @@ typedef struct _PH_WINDOW_PROPERTY_CONTEXT
 HFONT PhApplicationFont = NULL;
 HFONT PhTreeWindowFont = NULL;
 HFONT PhMonospaceFont = NULL;
-LONG PhFontQuality = 0;
-LONG PhSystemDpi = USER_DEFAULT_SCREEN_DPI;
-PH_INTEGER_PAIR PhSmallIconSize = { 16, 16 };
-PH_INTEGER_PAIR PhLargeIconSize = { 32, 32 };
+LONG PhFontQuality = CLEARTYPE_QUALITY;
 
 static PH_INITONCE SharedIconCacheInitOnce = PH_INITONCE_INIT;
 static PPH_HASHTABLE SharedIconCacheHashtable;
@@ -71,12 +68,15 @@ static PH_QUEUED_LOCK SharedIconCacheLock = PH_QUEUED_LOCK_INIT;
 static PPH_HASHTABLE WindowCallbackHashTable = NULL;
 static PH_QUEUED_LOCK WindowCallbackListLock = PH_QUEUED_LOCK_INIT;
 static ULONG WindowCallbackFlsIndex = FLS_OUT_OF_INDEXES;
+static ULONG_PTR WindowCallbackCookie = 0;
+static ULONG PhBufferedPaintFlsIndex = FLS_OUT_OF_INDEXES;
 
 static typeof(&OpenThemeDataForDpi) OpenThemeDataForDpi_I = NULL;
 static typeof(&OpenThemeData) OpenThemeData_I = NULL;
 static typeof(&CloseThemeData) CloseThemeData_I = NULL;
 static typeof(&SetWindowTheme) SetWindowTheme_I = NULL;
 static typeof(&IsThemeActive) IsThemeActive_I = NULL;
+static typeof(&IsAppThemed) IsAppThemed_I = NULL;
 static typeof(&IsThemePartDefined) IsThemePartDefined_I = NULL;
 static _GetThemeClass GetThemeClass_I = NULL;
 static typeof(&GetThemeColor) GetThemeColor_I = NULL;
@@ -84,12 +84,17 @@ static typeof(&GetThemeInt) GetThemeInt_I = NULL;
 static typeof(&GetThemePartSize) GetThemePartSize_I = NULL;
 static typeof(&GetThemeMargins) GetThemeMargins_I = NULL;
 static typeof(&DrawThemeBackground) DrawThemeBackground_I = NULL;
+static typeof(&DrawThemeBackgroundEx) DrawThemeBackgroundEx_I = NULL;
+static typeof(&DrawThemeParentBackground) DrawThemeParentBackground_I = NULL;
+static typeof(&IsThemeBackgroundPartiallyTransparent) IsThemeBackgroundPartiallyTransparent_I = NULL;
 static _AllowDarkModeForWindow AllowDarkModeForWindow_I = NULL; // Win10-RS5 (uxtheme.dll ordinal 133)
 static _IsDarkModeAllowedForWindow IsDarkModeAllowedForWindow_I = NULL; // Win10-RS5 (uxtheme.dll ordinal 137)
+static typeof(&GetDpiForShellUIComponent) GetDpiForShellUIComponent_I = NULL; // win81+
 static typeof(&GetDpiForMonitor) GetDpiForMonitor_I = NULL; // win81+
 static typeof(&GetDpiForWindow) GetDpiForWindow_I = NULL; // win10rs1+
 static typeof(&GetDpiForSystem) GetDpiForSystem_I = NULL; // win10rs1+
 //static _GetDpiForSession GetDpiForSession_I = NULL; // ordinal 2713
+static typeof(&GetSystemDpiForProcess) GetSystemDpiForProcess_I = NULL;
 static typeof(&GetSystemMetricsForDpi) GetSystemMetricsForDpi_I = NULL;
 static typeof(&SystemParametersInfoForDpi) SystemParametersInfoForDpi_I = NULL;
 static _CreateMRUList CreateMRUList_I = NULL;
@@ -97,12 +102,21 @@ static _AddMRUString AddMRUString_I = NULL;
 static _EnumMRUList EnumMRUList_I = NULL;
 static _FreeMRUList FreeMRUList_I = NULL;
 
+/**
+ * Initializes the GUI support layer used by the support library.
+ *
+ * Loads optional GUI-related DLLs (uxtheme, shcore, user32 variants) and
+ * resolves optional function pointers used for theme/DPI operations.
+ * Also initializes internal structures such as the WindowCallback FLS slot
+ * and the shared icon cache.
+ */
 VOID PhGuiSupportInitialization(
     VOID
     )
 {
     PVOID baseAddress;
 
+    WindowCallbackCookie = (ULONG_PTR)PhGenerateRandomNumber64();
     WindowCallbackFlsIndex = FlsAlloc(PhWindowFlsCallback);
     WindowCallbackHashTable = PhCreateHashtable(
         sizeof(PH_PLUGIN_WINDOW_CALLBACK_REGISTRATION),
@@ -118,12 +132,16 @@ VOID PhGuiSupportInitialization(
         CloseThemeData_I = PhGetDllBaseProcedureAddress(baseAddress, "CloseThemeData", 0);
         SetWindowTheme_I = PhGetDllBaseProcedureAddress(baseAddress, "SetWindowTheme", 0);
         IsThemeActive_I = PhGetDllBaseProcedureAddress(baseAddress, "IsThemeActive", 0);
+        IsAppThemed_I = PhGetDllBaseProcedureAddress(baseAddress, "IsAppThemed", 0);
         IsThemePartDefined_I = PhGetDllBaseProcedureAddress(baseAddress, "IsThemePartDefined", 0);
+        IsThemeBackgroundPartiallyTransparent_I = PhGetDllBaseProcedureAddress(baseAddress, "IsThemeBackgroundPartiallyTransparent", 0);
         GetThemeColor_I = PhGetDllBaseProcedureAddress(baseAddress, "GetThemeColor", 0);
         GetThemeInt_I = PhGetDllBaseProcedureAddress(baseAddress, "GetThemeInt", 0);
         GetThemePartSize_I = PhGetDllBaseProcedureAddress(baseAddress, "GetThemePartSize", 0);
         GetThemeMargins_I = PhGetDllBaseProcedureAddress(baseAddress, "GetThemeMargins", 0);
         DrawThemeBackground_I = PhGetDllBaseProcedureAddress(baseAddress, "DrawThemeBackground", 0);
+        DrawThemeBackgroundEx_I = PhGetDllBaseProcedureAddress(baseAddress, "DrawThemeBackgroundEx", 0);
+        DrawThemeParentBackground_I = PhGetDllBaseProcedureAddress(baseAddress, "DrawThemeParentBackground", 0);
 
         if (WindowsVersion >= WINDOWS_11)
         {
@@ -141,6 +159,7 @@ VOID PhGuiSupportInitialization(
         if (baseAddress = PhLoadLibrary(L"shcore.dll"))
         {
             GetDpiForMonitor_I = PhGetDllBaseProcedureAddress(baseAddress, "GetDpiForMonitor", 0);
+            //GetDpiForShellUIComponent_I = PhGetDllBaseProcedureAddress(baseAddress, "GetDpiForShellUIComponent", 0);
         }
     }
 
@@ -154,25 +173,11 @@ VOID PhGuiSupportInitialization(
             SystemParametersInfoForDpi_I = PhGetDllBaseProcedureAddress(baseAddress, "SystemParametersInfoForDpi", 0);
         }
     }
-
-    PhGuiSupportUpdateSystemMetrics(NULL, 0);
-}
-
-VOID PhGuiSupportUpdateSystemMetrics(
-    _In_opt_ HWND WindowHandle,
-    _In_opt_ LONG WindowDpi
-    )
-{
-    PhSystemDpi = WindowDpi ? WindowDpi : (WindowHandle ? PhGetWindowDpi(WindowHandle) : PhGetSystemDpi());
-    PhSmallIconSize.X = PhGetSystemMetrics(SM_CXSMICON, PhSystemDpi);
-    PhSmallIconSize.Y = PhGetSystemMetrics(SM_CYSMICON, PhSystemDpi);
-    PhLargeIconSize.X = PhGetSystemMetrics(SM_CXICON, PhSystemDpi);
-    PhLargeIconSize.Y = PhGetSystemMetrics(SM_CYICON, PhSystemDpi);
 }
 
 /**
  * Maps a font quality setting to the corresponding GDI constant.
- * 
+ *
  * \param FontQuality The font quality setting (0-6).
  * \return The corresponding GDI font quality constant.
  */
@@ -196,15 +201,15 @@ LONG PhGetFontQualitySetting(
 
 /**
  * Creates a font with specified properties.
- * 
+ *
  * \param Name Optional pointer to the font name (typeface).
  * \param Size The desired font size in points.
- * \param Weight The font weight (e.g., FW_NORMAL, FW_BOLD). 
+ * \param Weight The font weight (e.g., FW_NORMAL, FW_BOLD).
  * \param PitchAndFamily The pitch and family of the font.
  * \param Dpi The dots per inch (DPI) value for scaling.
  * \return Handle to the created font, or NULL if creation fails.
  */
-HFONT PhCreateFont(
+HFONT PhCreateFontHandle(
     _In_opt_ PCWSTR Name,
     _In_ LONG Size,
     _In_ LONG Weight,
@@ -213,7 +218,7 @@ HFONT PhCreateFont(
     )
 {
     return CreateFont(
-        -(LONG)PhMultiplyDivide(Size, Dpi, 72),
+        PhMultiplyDivideSigned(-Size, Dpi, 72),
         0,
         0,
         0,
@@ -345,14 +350,14 @@ HFONT PhDuplicateFontWithNewWeight(
 HFONT PhDuplicateFontWithNewHeight(
     _In_ HFONT Font,
     _In_ LONG NewHeight,
-    _In_ LONG dpiValue
+    _In_ LONG DpiValue
     )
 {
     LOGFONT logFont;
 
     if (GetObject(Font, sizeof(LOGFONT), &logFont))
     {
-        logFont.lfHeight = PhGetDpi(NewHeight, dpiValue);
+        logFont.lfHeight = PhScaleToDisplay(NewHeight, DpiValue);
         logFont.lfQuality = (UCHAR)PhFontQuality;
         return CreateFontIndirect(&logFont);
     }
@@ -360,6 +365,34 @@ HFONT PhDuplicateFontWithNewHeight(
     return NULL;
 }
 
+HFONT PhDuplicateFontUpdateDpi(
+    _In_ HFONT Font,
+    _In_ LONG WindowDpi
+    )
+{
+    return PhDuplicateFontUpdateDpiEx(Font, WindowDpi, USER_DEFAULT_SCREEN_DPI);
+}
+
+HFONT PhDuplicateFontUpdateDpiEx(
+    _In_ HFONT Font,
+    _In_ LONG NewDpi,
+    _In_ LONG OldDpi
+    )
+{
+    LOGFONT logFont;
+
+    if (GetObject(Font, sizeof(LOGFONT), &logFont))
+    {
+        if (OldDpi != 0 && OldDpi != NewDpi)
+            logFont.lfHeight = PhMultiplyDivideSigned(logFont.lfHeight, NewDpi, OldDpi);
+
+        logFont.lfQuality = (UCHAR)PhFontQuality;
+
+        return CreateFontIndirect(&logFont);
+    }
+
+    return NULL;
+}
 
 HFONT PhInitializeFont(
     _In_ LONG WindowDpi
@@ -404,13 +437,65 @@ HFONT PhInitializeMonospaceFont(
 
     LOGFONT logFont;
 
-    if (GetObject(GetStockFont(SYSTEM_FIXED_FONT), sizeof(LOGFONT), &logFont))
+    fontHandle = GetStockFont(SYSTEM_FIXED_FONT);
+
+    if (GetObject(fontHandle, sizeof(LOGFONT), &logFont))
     {
-        logFont.lfWeight = -(LONG)PhMultiplyDivide(logFont.lfWeight, WindowDpi, 72);
+        logFont.lfWeight = PhMultiplyDivideSigned(-logFont.lfWeight, WindowDpi, 72);
         return CreateFontIndirect(&logFont);
     }
 
-    return GetStockFont(SYSTEM_FIXED_FONT);
+    return fontHandle;
+}
+
+static HFONT PhpCreateFontFromSetting(
+    _In_ PCWSTR SettingName,
+    _In_ LONG WindowDpi,
+    _In_opt_ HFONT (*Fallback)(LONG)
+    )
+{
+    PPH_STRING fontHexString;
+    LOGFONT font;
+    HFONT fontHandle;
+
+    fontHexString = PhaGetStringSetting(SettingName);
+
+    if (
+        fontHexString->Length / sizeof(WCHAR) / 2 == sizeof(LOGFONT) &&
+        PhHexStringToBuffer(&fontHexString->sr, (PUCHAR)&font)
+        )
+    {
+        font.lfQuality = (UCHAR)PhFontQuality;
+
+        if (fontHandle = CreateFontIndirect(&font))
+            return fontHandle;
+    }
+
+    if (Fallback)
+        return Fallback(WindowDpi);
+
+    return NULL;
+}
+
+HFONT PhCreateApplicationFont(
+    _In_ LONG WindowDpi
+    )
+{
+    return PhInitializeFont(WindowDpi);
+}
+
+HFONT PhCreateTreeWindowFont(
+    _In_ LONG WindowDpi
+    )
+{
+    return PhpCreateFontFromSetting(L"Font", WindowDpi, PhCreateIconTitleFont);
+}
+
+HFONT PhCreateMonospaceFont(
+    _In_ LONG WindowDpi
+    )
+{
+    return PhpCreateFontFromSetting(L"FontMonospace", WindowDpi, PhInitializeMonospaceFont);
 }
 
 /**
@@ -424,6 +509,12 @@ HDC PhGetDC(
     return GetDC(WindowHandle);
 }
 
+/**
+ * Releases a device context previously obtained via PhGetDC.
+ *
+ * \param WindowHandle The window handle associated with the DC; may be NULL to indicate the desktop.
+ * \param Hdc The HDC to release. After this call the handle is no longer valid for the caller.
+ */
 VOID PhReleaseDC(
     _In_opt_ HWND WindowHandle,
     _In_ _Frees_ptr_ HDC Hdc
@@ -472,6 +563,11 @@ HTHEME PhOpenThemeData(
     return NULL;
 }
 
+/**
+ * Closes theme data opened with PhOpenThemeData.
+ *
+ * \param ThemeHandle Theme handle previously returned by PhOpenThemeData.
+ */
 VOID PhCloseThemeData(
     _In_ HTHEME ThemeHandle
     )
@@ -482,6 +578,12 @@ VOID PhCloseThemeData(
     }
 }
 
+/**
+ * Applies a theme class to a control (wrapper around SetWindowTheme).
+ *
+ * \param Handle Handle to the control window.
+ * \param Theme Optional class list string to apply, or NULL to remove theme.
+ */
 VOID PhSetControlTheme(
     _In_ HWND Handle,
     _In_opt_ PCWSTR Theme
@@ -493,6 +595,11 @@ VOID PhSetControlTheme(
     }
 }
 
+/**
+ * Queries whether visual themes are active on the system.
+ *
+ * \return TRUE if themes are active, otherwise FALSE.
+ */
 BOOLEAN PhIsThemeActive(
     VOID
     )
@@ -503,6 +610,24 @@ BOOLEAN PhIsThemeActive(
     return !!IsThemeActive_I();
 }
 
+BOOLEAN PhIsAppThemed(
+    VOID
+    )
+{
+    if (!IsAppThemed_I)
+        return FALSE;
+
+    return !!IsAppThemed_I();
+}
+
+/**
+ * Determines whether a theme part/state is defined for the given theme data.
+ *
+ * \param ThemeHandle Theme handle returned by PhOpenThemeData.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \return TRUE if the part/state is defined, otherwise FALSE.
+ */
 BOOLEAN PhIsThemePartDefined(
     _In_ HTHEME ThemeHandle,
     _In_ LONG PartId,
@@ -515,6 +640,14 @@ BOOLEAN PhIsThemePartDefined(
     return !!IsThemePartDefined_I(ThemeHandle, PartId, StateId);
 }
 
+/**
+ * Retrieves the class name associated with theme data.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param Class Buffer that receives the class name (null-terminated).
+ * \param ClassLength Length of the Class buffer in characters.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 _Success_(return)
 BOOLEAN PhGetThemeClass(
     _In_ HTHEME ThemeHandle,
@@ -528,6 +661,16 @@ BOOLEAN PhGetThemeClass(
     return SUCCEEDED(GetThemeClass_I(ThemeHandle, Class, ClassLength));
 }
 
+/**
+ * Retrieves a color value from theme data.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param PropId Property identifier to query.
+ * \param Color Receives the COLORREF value on success.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 _Success_(return)
 BOOLEAN PhGetThemeColor(
     _In_ HTHEME ThemeHandle,
@@ -543,6 +686,16 @@ BOOLEAN PhGetThemeColor(
     return SUCCEEDED(GetThemeColor_I(ThemeHandle, PartId, StateId, PropId, Color));
 }
 
+/**
+ * Retrieves an integer property from theme data.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param PropId Property identifier to query.
+ * \param Value Receives the integer value on success.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 _Success_(return)
 BOOLEAN PhGetThemeInt(
     _In_ HTHEME ThemeHandle,
@@ -558,6 +711,18 @@ BOOLEAN PhGetThemeInt(
     return SUCCEEDED(GetThemeInt_I(ThemeHandle, PartId, StateId, PropId, (PLONG)Value));
 }
 
+/**
+ * Retrieves the size of a theme part.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Optional device context for size calculation.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param Rect Optional bounding rect used by some parts.
+ * \param Flags THEMEPARTSIZE selector (min/actual/true).
+ * \param Size Receives the part size on success.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 _Success_(return)
 BOOLEAN PhGetThemePartSize(
     _In_ HTHEME ThemeHandle,
@@ -575,6 +740,18 @@ BOOLEAN PhGetThemePartSize(
     return SUCCEEDED(GetThemePartSize_I(ThemeHandle, hdc, PartId, StateId, Rect, (enum THEMESIZE)Flags, Size));
 }
 
+/**
+ * Retrieves theme margins for a part/property.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Optional device context.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param PropId Margin property identifier.
+ * \param Rect Optional bounding rect used by some margin queries.
+ * \param Margins Receives the THEMEMARGINS on success.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 _Success_(return)
 BOOLEAN PhGetThemeMargins(
     _In_ HTHEME ThemeHandle,
@@ -592,6 +769,17 @@ BOOLEAN PhGetThemeMargins(
     return SUCCEEDED(GetThemeMargins_I(ThemeHandle, hdc, PartId, StateId, PropId, Rect, (PMARGINS)Margins));
 }
 
+/**
+ * Draws a themed background for a part/state into the specified DC.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Destination device context.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param Rect Destination rectangle.
+ * \param ClipRect Optional clip rectangle.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 BOOLEAN PhDrawThemeBackground(
     _In_ HTHEME ThemeHandle,
     _In_ HDC hdc,
@@ -607,12 +795,53 @@ BOOLEAN PhDrawThemeBackground(
     return SUCCEEDED(DrawThemeBackground_I(ThemeHandle, hdc, PartId, StateId, Rect, ClipRect));
 }
 
+/**
+ * Draws a themed background using extended drawing options.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Destination device context.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param Rect Destination rectangle.
+ * \param Options Extended drawing options.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
+BOOLEAN PhDrawThemeBackgroundEx(
+    _In_ HTHEME ThemeHandle,
+    _In_ HDC hdc,
+    _In_ LONG PartId,
+    _In_ LONG StateId,
+    _In_ LPCRECT Rect,
+    _In_ PVOID Options
+    )
+{
+    const DTBGOPTS* options = (const DTBGOPTS*)Options;
+
+    if (!DrawThemeBackgroundEx_I)
+        return FALSE;
+
+    return SUCCEEDED(DrawThemeBackgroundEx_I(ThemeHandle, hdc, PartId, StateId, Rect, Options));
+}
+
+/**
+ * Draws themed text for a part/state.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Destination device context.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param Text Pointer to the text buffer.
+ * \param cchText Number of characters in Text.
+ * \param TextFlags Text drawing flags for DrawThemeText.
+ * \param Rect Destination rectangle.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 BOOLEAN PhDrawThemeText(
     _In_ HTHEME ThemeHandle,
     _In_ HDC hdc,
     _In_ LONG PartId,
     _In_ LONG StateId,
-    _In_reads_(cchText) LPCWSTR Text,
+    _In_reads_(cchText) PCWSTR Text,
     _In_ LONG cchText,
     _In_ ULONG TextFlags,
     _In_ LPCRECT Rect
@@ -629,12 +858,26 @@ BOOLEAN PhDrawThemeText(
     return HR_SUCCESS(DrawThemeText_I(ThemeHandle, hdc, PartId, StateId, Text, cchText, TextFlags, 0, Rect));
 }
 
+/**
+ * Draws themed text for a part/state with extended options (DrawThemeTextEx).
+ *
+ * \param ThemeHandle Theme handle.
+ * \param hdc Destination device context.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \param Text Pointer to the text buffer.
+ * \param cchText Number of characters in Text.
+ * \param TextFlags Text drawing flags.
+ * \param Rect In/out destination rectangle; may be modified by the call.
+ * \param Options Optional pointer to DTTOPTS structure.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 BOOLEAN PhDrawThemeTextEx(
     _In_ HTHEME ThemeHandle,
     _In_ HDC hdc,
     _In_ LONG PartId,
     _In_ LONG StateId,
-    _In_reads_(cchText) LPCWSTR Text,
+    _In_reads_(cchText) PCWSTR Text,
     _In_ LONG cchText,
     _In_ ULONG TextFlags,
     _Inout_ LPRECT Rect,
@@ -652,40 +895,53 @@ BOOLEAN PhDrawThemeTextEx(
     return HR_SUCCESS(DrawThemeTextEx_I(ThemeHandle, hdc, PartId, StateId, Text, cchText, TextFlags, Rect, Options));
 }
 
+/**
+ * Tests whether a theme background is partially transparent for a given part/state.
+ *
+ * \param ThemeHandle Theme handle.
+ * \param PartId Part identifier.
+ * \param StateId State identifier.
+ * \return TRUE if the theme background is partially transparent, otherwise FALSE.
+ */
 BOOLEAN PhIsThemeBackgroundPartiallyTransparent(
     _In_ HTHEME ThemeHandle,
     _In_ LONG PartId,
     _In_ LONG StateId
     )
 {
-    static typeof(&IsThemeBackgroundPartiallyTransparent) IsThemeBackgroundPartiallyTransparent_I = NULL;
-
-    if (!IsThemeBackgroundPartiallyTransparent_I)
-        IsThemeBackgroundPartiallyTransparent_I = PhGetModuleProcAddress(L"uxtheme.dll", "IsThemeBackgroundPartiallyTransparent");
-
     if (!IsThemeBackgroundPartiallyTransparent_I)
         return FALSE;
 
     return !!IsThemeBackgroundPartiallyTransparent_I(ThemeHandle, PartId, StateId);
 }
 
+/**
+ * Draws the parent background for a window using theme APIs.
+ *
+ * \param WindowHandle Window handle whose parent background will be drawn.
+ * \param Hdc Destination device context.
+ * \param Rect Optional rectangle within the window to draw.
+ * \return TRUE on success, FALSE on failure or if API not present.
+ */
 BOOLEAN PhDrawThemeParentBackground(
     _In_ HWND WindowHandle,
     _In_ HDC Hdc,
     _In_opt_ const PRECT Rect
     )
 {
-    static typeof(&DrawThemeParentBackground) DrawThemeParentBackground_I = NULL;
-
-    if (!DrawThemeParentBackground_I)
-        DrawThemeParentBackground_I = PhGetModuleProcAddress(L"uxtheme.dll", "DrawThemeParentBackground");
-
     if (!DrawThemeParentBackground_I)
         return FALSE;
 
     return HR_SUCCESS(DrawThemeParentBackground_I(WindowHandle, Hdc, Rect));
 }
 
+/**
+ * Enables or disables dark mode for a window (when supported).
+ *
+ * \param WindowHandle Handle of the window.
+ * \param Enabled TRUE to enable dark mode, FALSE to disable.
+ * \return TRUE on success, FALSE if API not present or call failed.
+ */
 BOOLEAN PhAllowDarkModeForWindow(
     _In_ HWND WindowHandle,
     _In_ BOOL Enabled
@@ -697,6 +953,12 @@ BOOLEAN PhAllowDarkModeForWindow(
     return !!AllowDarkModeForWindow_I(WindowHandle, Enabled);
 }
 
+/**
+ * Queries whether dark mode is allowed for a given window.
+ *
+ * \param WindowHandle Handle of the window to test.
+ * \return TRUE if dark mode is allowed, otherwise FALSE.
+ */
 BOOLEAN PhIsDarkModeAllowedForWindow(
     _In_ HWND WindowHandle
     )
@@ -735,6 +997,13 @@ BOOLEAN PhIsDarkModeAllowedForWindow(
 //    return dpi;
 //}
 
+/**
+ * Retrieves the client rectangle adjusted for scroll range/position.
+ *
+ * \param WindowHandle The window whose client rectangle is queried.
+ * \param ClientRect Receives the adjusted client rectangle.
+ * \return TRUE on success, FALSE on failure or empty client rect.
+ */
 BOOLEAN PhGetClientRectOffsetScroll(
     _In_ HWND WindowHandle,
     _Out_ PRECT ClientRect
@@ -750,7 +1019,7 @@ BOOLEAN PhGetClientRectOffsetScroll(
     if (!(ClientRect->right && ClientRect->bottom))
         return FALSE;
 
-    LONG_PTR windowStyle = PhGetWindowStyle(WindowHandle);
+    ULONG windowStyle = PhGetWindowStyle(WindowHandle);
 
     if (FlagOn(windowStyle, WS_HSCROLL))
     {
@@ -775,6 +1044,12 @@ BOOLEAN PhGetClientRectOffsetScroll(
     return TRUE;
 }
 
+/**
+ * Determines whether a window belongs to a hung (non-responsive) application.
+ *
+ * \param WindowHandle Handle to the window to test. May be NULL (result will be FALSE).
+ * \return TRUE if the system reports the window is hung (not responding), otherwise FALSE.
+ */
 BOOLEAN PhIsHungAppWindow(
     _In_ HWND WindowHandle
     )
@@ -782,6 +1057,11 @@ BOOLEAN PhIsHungAppWindow(
     return !!IsHungAppWindow(WindowHandle);
 }
 
+/**
+ * Returns the shell (desktop) window handle.
+ *
+ * \return HWND of the shell window (may be NULL).
+ */
 HWND PhGetShellWindow(
     VOID
     )
@@ -789,6 +1069,13 @@ HWND PhGetShellWindow(
     return GetShellWindow();
 }
 
+/**
+ * Marks a child window so it doesn't activate when created.
+ *
+ * \param WindowHandle Child window handle.
+ * \param ThreadId Currently ignored; retained for compatibility.
+ * \return TRUE on success, FALSE if API not present or call fails.
+ */
 BOOLEAN PhSetChildWindowNoActivate(
     _In_ HWND WindowHandle,
     _In_ HANDLE ThreadId
@@ -818,6 +1105,13 @@ BOOLEAN PhSetChildWindowNoActivate(
     return !!SetChildWindowNoActivate_I(WindowHandle);
 }
 
+/**
+ * Checks whether the given window belongs to the specified thread's desktop.
+ *
+ * \param WindowHandle The window to check.
+ * \param ThreadId Thread id owning the desktop to check.
+ * \return TRUE if the window belongs to the thread's desktop, otherwise FALSE.
+ */
 BOOLEAN PhCheckWindowThreadDesktop(
     _In_ HWND WindowHandle,
     _In_ HANDLE ThreadId
@@ -848,6 +1142,13 @@ BOOLEAN PhCheckWindowThreadDesktop(
     return !!CheckWindowThreadDesktop_I(WindowHandle, HandleToUlong(ThreadId));
 }
 
+/**
+ * Gets an effective DPI for a monitor/window rectangle.
+ *
+ * \param WindowHandle Optional window handle used to locate a monitor.
+ * \param WindowRect Optional rectangle used to locate a monitor.
+ * \return DPI (horizontal) for the monitor or USER_DEFAULT_SCREEN_DPI on failure.
+ */
 LONG PhGetMonitorDpi(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PRECT WindowRect
@@ -877,57 +1178,14 @@ LONG PhGetMonitorDpi(
     return USER_DEFAULT_SCREEN_DPI;
 }
 
-LONG PhGetSystemDpi(
-    VOID
-    )
-{
-    LONG dpi;
-
-    if (dpi = PhGetTaskbarDpi())
-        return dpi;
-
-    if (dpi = PhGetDpiValue(NULL, NULL))
-        return dpi;
-
-    return USER_DEFAULT_SCREEN_DPI;
-}
-
-// rev from GetDpiForShellUIComponent (dmex)
-//LONG PhGetShellDpi(
-//    VOID
-//    )
-//{
-//    static HWND trayWindow = NULL;
-//    HWND windowHandle;
-//    LONG dpi = 0;
-//
-//    if (IsWindow(trayWindow))
-//    {
-//        windowHandle = trayWindow;
-//    }
-//    else
-//    {
-//        windowHandle = trayWindow = FindWindow(L"Shell_TrayWnd", NULL);
-//    }
-//
-//    if (windowHandle)
-//    {
-//        dpi = HandleToLong(GetProp(windowHandle, L"TaskbarDPI_NotificationArea"));
-//    }
-//
-//    //if (dpi == 0)
-//    //{
-//    //    dpi = GetDpiForShellUIComponent(SHELL_UI_COMPONENT_NOTIFICATIONAREA);
-//    //}
-//
-//    if (dpi == 0)
-//    {
-//        dpi = USER_DEFAULT_SCREEN_DPI;
-//    }
-//
-//    return dpi;
-//}
-
+/**
+ * Retrieves an effective DPI for the taskbar area (used as a reasonable
+ * approximation for shell UI DPI). The function attempts several fallbacks
+ * shell window bounds -> monitor DPI, then DpiValue from other sources,
+ * and finally USER_DEFAULT_SCREEN_DPI.
+ *
+ * \return Effective taskbar DPI (pixels per inch) or USER_DEFAULT_SCREEN_DPI on failure.
+ */
 LONG PhGetTaskbarDpi(
     VOID
     )
@@ -982,6 +1240,16 @@ LONG PhGetTaskbarDpi(
     return dpi;
 }
 
+/**
+ * Retrieves the DPI for the specified window.
+ *
+ * Uses multiple strategies depending on OS version:
+ * - On Windows 10+: queries per-window/per-monitor values.
+ * - On older systems: queries device context LOGPIXELSX.
+ *
+ * \param WindowHandle Window handle to query DPI for.
+ * \return DPI (horizontal) for the window or USER_DEFAULT_SCREEN_DPI on failure.
+ */
 LONG PhGetWindowDpi(
     _In_ HWND WindowHandle
     )
@@ -1016,6 +1284,13 @@ LONG PhGetWindowDpi(
     return USER_DEFAULT_SCREEN_DPI;
 }
 
+/**
+ * Attempts to determine DPI using modern APIs and fallbacks.
+ *
+ * \param WindowHandle Optional window handle to query.
+ * \param WindowRect Optional rectangle used to locate a monitor.
+ * \return Determined DPI or USER_DEFAULT_SCREEN_DPI on failure.
+ */
 LONG PhGetDpiValue(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PRECT WindowRect
@@ -1066,6 +1341,31 @@ LONG PhGetDpiValue(
     return USER_DEFAULT_SCREEN_DPI;
 }
 
+//LONG PhGetSystemMetrics(
+//    _In_ LONG Index,
+//    _In_opt_ LONG DpiValue
+//    )
+//{
+//    if (DpiValue > 0 && GetSystemMetricsForDpi_I)
+//    {
+//        return GetSystemMetricsForDpi_I(Index, DpiValue);
+//    }
+//
+//    return GetSystemMetrics(Index);
+//}
+
+#define PH_SYS_METRICS_MAX_INDEX 100
+#define PH_SYS_METRICS_MAX_DPI_SLOTS 8 // Supports 8 different DPI scales
+
+typedef struct _PH_SYS_METRIC_ENTRY
+{
+    LONG Dpi;
+    LONG Metrics[PH_SYS_METRICS_MAX_INDEX];
+} PH_SYS_METRIC_ENTRY, *PPH_SYS_METRIC_ENTRY;
+
+static PH_SYS_METRIC_ENTRY PhpSystemMetricsCache[PH_SYS_METRICS_MAX_DPI_SLOTS] = { 0 };
+static volatile LONG PhpNextFreeDpiSlot = 0;
+
 /**
  * Retrieves the system metrics for the specified index.
  *
@@ -1078,14 +1378,93 @@ LONG PhGetSystemMetrics(
     _In_opt_ LONG DpiValue
     )
 {
-    if (DpiValue > 0 && GetSystemMetricsForDpi_I)
+    LONG dpi = (DpiValue > 0) ? DpiValue : USER_DEFAULT_SCREEN_DPI; // Default to 96 DPI
+
+    if (Index < 0 || Index >= PH_SYS_METRICS_MAX_INDEX)
+        goto SkipCache;
+
+    // 1. Search for existing DPI slot (Lock-free read)
+    for (LONG i = 0; i < PH_SYS_METRICS_MAX_DPI_SLOTS; i++)
     {
-        return GetSystemMetricsForDpi_I(Index, DpiValue);
+        if (PhpSystemMetricsCache[i].Dpi == dpi)
+        {
+            LONG value = PhpSystemMetricsCache[i].Metrics[Index];
+            if (value != 0) return value;
+
+            // Slot exists but index not yet populated
+            value = (DpiValue > 0 && GetSystemMetricsForDpi_I) ?
+                    GetSystemMetricsForDpi_I(Index, dpi) : GetSystemMetrics(Index);
+
+            PhpSystemMetricsCache[i].Metrics[Index] = value;
+            return value;
+        }
     }
+
+    // 2. DPI not cached, attempt to claim a new slot atomically
+    LONG slot = InterlockedIncrement(&PhpNextFreeDpiSlot) - 1;
+    if (slot < PH_SYS_METRICS_MAX_DPI_SLOTS)
+    {
+        PhpSystemMetricsCache[slot].Dpi = dpi;
+
+        if ((DpiValue > 0 && GetSystemMetricsForDpi_I))
+        {
+            LONG value = GetSystemMetricsForDpi_I(Index, dpi);
+            PhpSystemMetricsCache[slot].Metrics[Index] = value;
+            return value;
+        }
+        else
+        {
+            LONG value = GetSystemMetrics(Index);
+            PhpSystemMetricsCache[slot].Metrics[Index] = value;
+            return value;
+        }
+    }
+
+SkipCache:
+    if (DpiValue > 0 && GetSystemMetricsForDpi_I)
+        return GetSystemMetricsForDpi_I(Index, DpiValue);
 
     return GetSystemMetrics(Index);
 }
 
+/**
+ * Retrieves the system DPI for a process.
+ *
+ * \param ProcessHandle Handle to the target process.
+ * \return The return value will be dependent based upon the process passed as a parameter.
+ * If the specified process has a DPI_AWARENESS value of DPI_AWARENESS_UNAWARE, the return value will be 96.
+ * That is because the current context always assumes a DPI of 96. For any other DPI_AWARENESS value,
+ * the return value will be the actual system DPI of the given process.
+ */
+LONG PhGetSystemDpiForProcess(
+    _In_ HANDLE ProcessHandle
+    )
+{
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        PVOID user32Handle;
+
+        if (user32Handle = PhLoadLibrary(L"user32.dll"))
+        {
+            GetSystemDpiForProcess_I = PhGetDllBaseProcedureAddress(user32Handle, "GetSystemDpiForProcess", 0);
+        }
+
+        PhEndInitOnce(&initOnce);
+    }
+
+    if (!GetSystemDpiForProcess_I)
+        return USER_DEFAULT_SCREEN_DPI;
+
+    return GetSystemDpiForProcess_I(ProcessHandle);
+}
+
+/**
+ * Queries whether the system is running in Safe Boot (clean boot) mode.
+ *
+ * \return TRUE if the system is in Safe Boot mode, otherwise FALSE.
+ */
 BOOLEAN PhGetSystemSafeBootMode(
     VOID
     )
@@ -1098,6 +1477,15 @@ BOOLEAN PhGetSystemSafeBootMode(
     return !!PhGetSystemMetrics(SM_CLEANBOOT, 0);
 }
 
+/**
+ * Wrapper for SystemParametersInfo that supports a DPI-aware variant when available.
+ *
+ * \param Action The SPI_* action to perform.
+ * \param Param1 Additional parameter for the action (see SystemParametersInfo docs).
+ * \param Param2 Pointer to or buffer for action-specific data.
+ * \param DpiValue Optional DPI to pass to SystemParametersInfoForDpi when supported (>0).
+ * \return BOOL nonzero on success, zero on failure.
+ */
 BOOL PhGetSystemParametersInfo(
     _In_ LONG Action,
     _In_ ULONG Param1,
@@ -1113,6 +1501,14 @@ BOOL PhGetSystemParametersInfo(
     return SystemParametersInfo(Action, Param1, Param2, 0);
 }
 
+/**
+ * Inserts a tab into a tab control at the specified index with given text.
+ *
+ * \param TabControlHandle Handle to the tab control.
+ * \param Index Zero-based index to insert the new tab at.
+ * \param Text Text label for the new tab.
+ * \return Index of the inserted item on success, or an error value on failure.
+ */
 LONG PhAddTabControlTab(
     _In_ HWND TabControlHandle,
     _In_ LONG Index,
@@ -1127,6 +1523,15 @@ LONG PhAddTabControlTab(
     return TabCtrl_InsertItem(TabControlHandle, Index, &item);
 }
 
+/**
+ * Retrieves the window text as a referenced PPH_STRING object.
+ *
+ * This is a convenience wrapper around PhGetWindowTextEx that requests
+ * the default behavior (no special flags).
+ *
+ * \param WindowHandle Window handle whose text is requested.
+ * \return A reference to a PPH_STRING. Caller should PhDereferenceObject when done.
+ */
 PPH_STRING PhGetWindowText(
     _In_ HWND WindowHandle
     )
@@ -1137,6 +1542,17 @@ PPH_STRING PhGetWindowText(
     return text;
 }
 
+/**
+ * Retrieves window text with extended options.
+ *
+ * If PH_GET_WINDOW_TEXT_INTERNAL is specified the function uses InternalGetWindowText.
+ * If PH_GET_WINDOW_TEXT_LENGTH_ONLY is specified only the length is retrieved.
+ *
+ * \param WindowHandle Window handle to query.
+ * \param Flags Combination of PH_GET_WINDOW_TEXT_* flags that control behavior.
+ * \param Text Optional out parameter that receives a referenced PPH_STRING when provided.
+ * \return Number of characters in the retrieved text (not including terminating NULL).
+ */
 ULONG PhGetWindowTextEx(
     _In_ HWND WindowHandle,
     _In_ ULONG Flags,
@@ -1204,6 +1620,16 @@ ULONG PhGetWindowTextEx(
     }
 }
 
+/**
+ * Retrieves window text into a caller-supplied buffer.
+ *
+ * \param WindowHandle Window handle to query.
+ * \param Flags PH_GET_WINDOW_TEXT_INTERNAL to use internal API; otherwise uses GetWindowText.
+ * \param Buffer Buffer that receives the text (may be NULL if BufferLength is 0).
+ * \param BufferLength Size of Buffer in characters.
+ * \param ReturnLength Optional receives the number of characters written (not including NULL).
+ * \return STATUS_SUCCESS on success or an appropriate NTSTATUS error code.
+ */
 NTSTATUS PhGetWindowTextToBuffer(
     _In_ HWND WindowHandle,
     _In_ ULONG Flags,
@@ -1231,6 +1657,46 @@ NTSTATUS PhGetWindowTextToBuffer(
     return status;
 }
 
+/**
+ * Retrieves the class name of a window.
+ *
+ * \param WindowHandle Window handle to query.
+ * \param Buffer Buffer that receives the class name (wide string).
+ * \param BufferLength Length of Buffer in characters.
+ * \param ReturnLength Optional receives the number of characters written (not including NULL).
+ * \return STATUS_SUCCESS on success or an NTSTATUS error on failure.
+ */
+NTSTATUS PhGetClassName(
+    _In_ HWND WindowHandle,
+    _Out_writes_bytes_(BufferLength) PWSTR Buffer,
+    _In_ ULONG BufferLength,
+    _Out_opt_ PULONG ReturnLength
+    )
+{
+    NTSTATUS status;
+    LONG length;
+
+    length = GetClassName(WindowHandle, Buffer, BufferLength);
+
+    if (length == 0)
+        status = PhGetLastWin32ErrorAsNtStatus();
+    else
+        status = STATUS_SUCCESS;
+
+    if (ReturnLength)
+        *ReturnLength = length;
+
+    return status;
+}
+
+/**
+ * Retrieves the string for a combobox item.
+ *
+ * \param WindowHandle Handle of the combobox control.
+ * \param Index Zero-based item index or INT_ERROR to use current selection.
+ * \return A referenced PPH_STRING on success, PhReferenceEmptyString() for empty string, or NULL on error.
+ * \remarks If Index is INT_ERROR the current selection is used.
+ */
 PPH_STRING PhGetComboBoxString(
     _In_ HWND WindowHandle,
     _In_ LONG Index
@@ -1267,6 +1733,14 @@ PPH_STRING PhGetComboBoxString(
     }
 }
 
+/**
+ * Selects a string in a combobox.
+ *
+ * \param WindowHandle Handle of the combobox control.
+ * \param String String to select.
+ * \param Partial If TRUE, selects the first item that matches partially; otherwise performs exact match.
+ * \return Index of the selected item, or CB_ERR if not found.
+ */
 LONG PhSelectComboBoxString(
     _In_ HWND WindowHandle,
     _In_ PCWSTR String,
@@ -1288,12 +1762,18 @@ LONG PhSelectComboBoxString(
 
         ComboBox_SetCurSel(WindowHandle, index);
 
-        InvalidateRect(WindowHandle, NULL, TRUE);
+        InvalidateRect(WindowHandle, NULL, FALSE);
 
         return index;
     }
 }
 
+/**
+ * Deletes all strings from a combobox.
+ *
+ * \param ComboBoxHandle Handle to the combobox control.
+ * \param ResetContent If TRUE, calls ComboBox_ResetContent after deleting individual strings.
+ */
 VOID PhDeleteComboBoxStrings(
     _In_ HWND ComboBoxHandle,
     _In_ BOOLEAN ResetContent
@@ -1315,7 +1795,14 @@ VOID PhDeleteComboBoxStrings(
     }
 }
 
-
+/**
+ * Retrieves the string for a listbox item.
+ *
+ * \param WindowHandle Handle of the listbox control.
+ * \param Index Zero-based item index or INT_ERROR to use current selection.
+ * \return A newly created PPH_STRING on success, or NULL on error/empty. Caller must PhDereferenceObject when done.
+ * \remarks If Index is INT_ERROR the current selection is used.
+ */
 PPH_STRING PhGetListBoxString(
     _In_ HWND WindowHandle,
     _In_ LONG Index
@@ -1352,6 +1839,14 @@ PPH_STRING PhGetListBoxString(
     }
 }
 
+/**
+ * Loads a bitmap resource and replaces the specified imagelist entry with it.
+ *
+ * \param ImageList HIMAGELIST to update.
+ * \param Index Index of the image to replace.
+ * \param InstanceHandle Module instance handle containing the bitmap.
+ * \param BitmapName Resource name of the bitmap.
+ */
 VOID PhSetImageListBitmap(
     _In_ HIMAGELIST ImageList,
     _In_ LONG Index,
@@ -1370,6 +1865,16 @@ VOID PhSetImageListBitmap(
     }
 }
 
+/**
+ * Hashtable equality function used for shared icon cache.
+ *
+ * Compares two icon cache entries by instance handle, dimensions, DPI and
+ * resource/name. Handles both string and integer resource identifiers.
+ *
+ * \param Entry1 Pointer to first PHP_ICON_ENTRY.
+ * \param Entry2 Pointer to second PHP_ICON_ENTRY.
+ * \return TRUE if entries represent the same icon lookup key, otherwise FALSE.
+ */
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 static BOOLEAN SharedIconCacheHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -1403,6 +1908,15 @@ static BOOLEAN SharedIconCacheHashtableEqualFunction(
     }
 }
 
+/**
+ * Hashtable hash function used for shared icon cache.
+ *
+ * Computes a hash for a PHP_ICON_ENTRY by mixing the name (or resource id),
+ * instance handle, dimensions and DPI value.
+ *
+ * \param Entry Pointer to PHP_ICON_ENTRY.
+ * \return Computed hash value.
+ */
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
 static ULONG SharedIconCacheHashtableHashFunction(
     _In_ PVOID Entry
@@ -1419,13 +1933,28 @@ static ULONG SharedIconCacheHashtableHashFunction(
     return nameHash ^ (PtrToUlong(entry->InstanceHandle) >> 5) ^ (entry->Width << 3) ^ entry->Height ^ entry->DpiValue;
 }
 
+/**
+ * Loads or returns a shared icon from cache.
+ *
+ * If PH_LOAD_ICON_SHARED is specified the function will attempt to return
+ * a cached shared icon handle. If not found it will load, possibly scale,
+ * and optionally insert the icon into the shared cache.
+ *
+ * \param ImageBaseAddress Optional module base to load the icon from.
+ * \param Name The resource name or identifier.
+ * \param Flags Flags controlling loading behavior (size, shared, strict, ...).
+ * \param Width Desired width (or 0 to use defaults).
+ * \param Height Desired height (or 0 to use defaults).
+ * \param Dpi DPI value for scaling.
+ * \return Handle to an HICON on success, otherwise NULL.
+ */
 HICON PhLoadIcon(
     _In_opt_ PVOID ImageBaseAddress,
     _In_ PCWSTR Name,
     _In_ ULONG Flags,
-    _In_opt_ LONG Width,
-    _In_opt_ LONG Height,
-    _In_opt_ LONG SystemDpi
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ LONG Dpi
     )
 {
     PHP_ICON_ENTRY entry;
@@ -1449,7 +1978,7 @@ HICON PhLoadIcon(
         entry.Name = Name;
         entry.Width = PhpGetIconEntrySize(Width, Flags);
         entry.Height = PhpGetIconEntrySize(Height, Flags);
-        entry.DpiValue = SystemDpi;
+        entry.DpiValue = Dpi;
         actualEntry = PhFindEntryHashtable(SharedIconCacheHashtable, &entry);
 
         if (actualEntry)
@@ -1464,13 +1993,13 @@ HICON PhLoadIcon(
     {
         if (Flags & PH_LOAD_ICON_SIZE_SMALL)
         {
-            width = PhGetSystemMetrics(SM_CXSMICON, SystemDpi);
-            height = PhGetSystemMetrics(SM_CYSMICON, SystemDpi);
+            width = PhGetSystemMetrics(SM_CXSMICON, Dpi);
+            height = PhGetSystemMetrics(SM_CYSMICON, Dpi);
         }
         else
         {
-            width = PhGetSystemMetrics(SM_CXICON, SystemDpi);
-            height = PhGetSystemMetrics(SM_CYICON, SystemDpi);
+            width = PhGetSystemMetrics(SM_CXICON, Dpi);
+            height = PhGetSystemMetrics(SM_CYICON, Dpi);
         }
 
         LoadIconWithScaleDown(ImageBaseAddress, Name, width, height, &icon);
@@ -1484,13 +2013,13 @@ HICON PhLoadIcon(
     {
         if (Flags & PH_LOAD_ICON_SIZE_SMALL)
         {
-            width = PhGetSystemMetrics(SM_CXSMICON, SystemDpi);
-            height = PhGetSystemMetrics(SM_CYSMICON, SystemDpi);
+            width = PhGetSystemMetrics(SM_CXSMICON, Dpi);
+            height = PhGetSystemMetrics(SM_CYSMICON, Dpi);
         }
         else
         {
-            width = PhGetSystemMetrics(SM_CXICON, SystemDpi);
-            height = PhGetSystemMetrics(SM_CYICON, SystemDpi);
+            width = PhGetSystemMetrics(SM_CXICON, Dpi);
+            height = PhGetSystemMetrics(SM_CYICON, Dpi);
         }
 
         icon = LoadImage(ImageBaseAddress, Name, IMAGE_ICON, width, height, 0);
@@ -1519,30 +2048,131 @@ HICON PhLoadIcon(
  * icon using DestroyIcon(); it is shared between callers.
  * \param LargeIcon A variable which receives the large default executable icon. Do not destroy the
  * icon using DestroyIcon(); it is shared between callers.
+ * \param Dpi The DPI used for sizing the returned icons.
  */
-VOID PhGetStockApplicationIcon(
+BOOLEAN PhGetStockApplicationIconEx(
     _Out_opt_ HICON *SmallIcon,
-    _Out_opt_ HICON *LargeIcon
+    _Out_opt_ HICON *LargeIcon,
+    _In_ LONG Dpi
     )
 {
-    static HICON smallIcon = NULL;
-    static HICON largeIcon = NULL;
-    static LONG systemDpi = 0;
+    HICON smallIcon = NULL;
+    HICON largeIcon = NULL;
 
-    if (systemDpi != PhSystemDpi)
+    // imageres,11 (Windows 10 and above), user32,0 (Vista and above) or shell32,2 (XP) contains
+    // the default application icon.
+
+    if (WindowsVersion < WINDOWS_10)
     {
-        if (smallIcon)
+        static CONST PH_STRINGREF imageFileName = PH_STRINGREF_INIT(L"\\SystemRoot\\System32\\user32.dll");
+
+        PhExtractIconEx(
+            &imageFileName,
+            TRUE,
+            0,
+            PhGetSystemMetrics(SM_CXICON, Dpi),
+            PhGetSystemMetrics(SM_CYICON, Dpi),
+            PhGetSystemMetrics(SM_CXSMICON, Dpi),
+            PhGetSystemMetrics(SM_CYSMICON, Dpi),
+            &largeIcon,
+            &smallIcon
+            );
+    }
+    else
+    {
+        static CONST PH_STRINGREF imageFileName = PH_STRINGREF_INIT(L"\\SystemRoot\\System32\\imageres.dll");
+
+        PhExtractIconEx(
+            &imageFileName,
+            TRUE,
+            11,
+            PhGetSystemMetrics(SM_CXICON, Dpi),
+            PhGetSystemMetrics(SM_CYICON, Dpi),
+            PhGetSystemMetrics(SM_CXSMICON, Dpi),
+            PhGetSystemMetrics(SM_CYSMICON, Dpi),
+            &largeIcon,
+            &smallIcon
+            );
+    }
+
+    if (!smallIcon)
+        smallIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_SMALL, 0, 0, Dpi);
+    if (!largeIcon)
+        largeIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_LARGE, 0, 0, Dpi);
+
+    if (LargeIcon && SmallIcon)
+    {
+        if (largeIcon && smallIcon)
         {
-            DestroyIcon(smallIcon);
-            smallIcon = NULL;
-        }
-        if (largeIcon)
-        {
-            DestroyIcon(largeIcon);
-            largeIcon = NULL;
+            *LargeIcon = largeIcon;
+            *SmallIcon = smallIcon;
+            return TRUE;
         }
 
-        systemDpi = PhSystemDpi;
+        if (largeIcon)
+            DestroyIcon(largeIcon);
+        if (smallIcon)
+            DestroyIcon(smallIcon);
+
+        return FALSE;
+    }
+
+    if (LargeIcon && largeIcon)
+    {
+        *LargeIcon = largeIcon;
+        return TRUE;
+    }
+
+    if (SmallIcon && smallIcon)
+    {
+        *SmallIcon = smallIcon;
+        return TRUE;
+    }
+
+    if (largeIcon)
+        DestroyIcon(largeIcon);
+    if (smallIcon)
+        DestroyIcon(smallIcon);
+
+    return FALSE;
+}
+
+/**
+ * Gets the default icon used for executable files at the caller-supplied DPI.
+ *
+ * \param SmallIcon A variable which receives the small default executable icon. Do not destroy the
+ * icon using DestroyIcon(); it is shared between callers.
+ * \param LargeIcon A variable which receives the large default executable icon. Do not destroy the
+ * icon using DestroyIcon(); it is shared between callers.
+ * \param WindowDpi The DPI to size the icons for; typically PhGetWindowDpi(hwnd) of the consumer.
+ */
+NTSTATUS PhGetStockApplicationIcon(
+    _Out_opt_ HICON *SmallIcon,
+    _Out_opt_ HICON *LargeIcon,
+    _In_ LONG WindowDpi
+    )
+{
+    // Cache one entry per distinct DPI seen so the shared icon contract holds across monitors.
+    static struct
+    {
+        LONG Dpi;
+        HICON SmallIcon;
+        HICON LargeIcon;
+    } cache[4] = { 0 };
+    static ULONG cacheNext = 0;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    HICON smallIcon = NULL;
+    HICON largeIcon = NULL;
+    ULONG slot;
+
+    for (slot = 0; slot < RTL_NUMBER_OF(cache); slot++)
+    {
+        if (cache[slot].Dpi == WindowDpi && (cache[slot].SmallIcon || cache[slot].LargeIcon))
+        {
+            smallIcon = cache[slot].SmallIcon;
+            largeIcon = cache[slot].LargeIcon;
+            break;
+        }
     }
 
     // This no longer uses SHGetFileInfo because it is *very* slow and causes many other DLLs to be
@@ -1556,53 +2186,94 @@ VOID PhGetStockApplicationIcon(
     {
         if (WindowsVersion < WINDOWS_10)
         {
-            PPH_STRING systemDirectory;
-            PPH_STRING dllFileName;
-
             // imageres,11 (Windows 10 and above), user32,0 (Vista and above) or shell32,2 (XP) contains
             // the default application icon.
 
-            if (systemDirectory = PhGetSystemDirectory())
-            {
-                dllFileName = PhConcatStringRefZ(&systemDirectory->sr, L"\\user32.dll");
+            static CONST PH_STRINGREF imageFileName = PH_STRINGREF_INIT(L"\\SystemRoot\\System32\\user32.dll");
 
-                PhExtractIcon(
-                    dllFileName->Buffer,
-                    &largeIcon,
-                    &smallIcon
-                    );
-
-                PhDereferenceObject(dllFileName);
-                PhDereferenceObject(systemDirectory);
-            }
+            status = PhExtractIconEx(
+                &imageFileName,
+                TRUE,
+                11,
+                PhGetSystemMetrics(SM_CXICON, WindowDpi),
+                PhGetSystemMetrics(SM_CYICON, WindowDpi),
+                PhGetSystemMetrics(SM_CXSMICON, WindowDpi),
+                PhGetSystemMetrics(SM_CYSMICON, WindowDpi),
+                &largeIcon,
+                &smallIcon
+                );
         }
         else
         {
             static CONST PH_STRINGREF imageFileName = PH_STRINGREF_INIT(L"\\SystemRoot\\System32\\imageres.dll");
 
-            PhExtractIconEx(
+            status = PhExtractIconEx(
                 &imageFileName,
                 TRUE,
                 11,
-                PhGetSystemMetrics(SM_CXICON, systemDpi),
-                PhGetSystemMetrics(SM_CYICON, systemDpi),
-                PhGetSystemMetrics(SM_CXSMICON, systemDpi),
-                PhGetSystemMetrics(SM_CYSMICON, systemDpi),
+                PhGetSystemMetrics(SM_CXICON, WindowDpi),
+                PhGetSystemMetrics(SM_CYICON, WindowDpi),
+                PhGetSystemMetrics(SM_CXSMICON, WindowDpi),
+                PhGetSystemMetrics(SM_CYSMICON, WindowDpi),
                 &largeIcon,
                 &smallIcon
                 );
         }
+
+        if (!smallIcon)
+            smallIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_SMALL, 0, 0, WindowDpi);
+        if (!largeIcon)
+            largeIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_LARGE, 0, 0, WindowDpi);
+
+        // Insert into the next round-robin slot, freeing whatever was there.
+        slot = cacheNext % RTL_NUMBER_OF(cache);
+        cacheNext++;
+
+        if (cache[slot].SmallIcon)
+            DestroyIcon(cache[slot].SmallIcon);
+        if (cache[slot].LargeIcon)
+            DestroyIcon(cache[slot].LargeIcon);
+
+        cache[slot].Dpi = WindowDpi;
+        cache[slot].SmallIcon = smallIcon;
+        cache[slot].LargeIcon = largeIcon;
     }
 
-    if (!smallIcon)
-        smallIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_SMALL, 0, 0, systemDpi);
-    if (!largeIcon)
-        largeIcon = PhLoadIcon(NULL, IDI_APPLICATION, PH_LOAD_ICON_SIZE_LARGE, 0, 0, systemDpi);
+    if (LargeIcon && SmallIcon)
+    {
+        if (largeIcon && smallIcon)
+        {
+            *LargeIcon = largeIcon;
+            *SmallIcon = smallIcon;
+            return STATUS_SUCCESS;
+        }
 
-    if (SmallIcon)
-        *SmallIcon = smallIcon;
-    if (LargeIcon)
+        if (largeIcon)
+            DestroyIcon(largeIcon);
+        if (smallIcon)
+            DestroyIcon(smallIcon);
+
+        return status;
+    }
+
+    if (LargeIcon && largeIcon)
+    {
         *LargeIcon = largeIcon;
+        return STATUS_SUCCESS;
+    }
+
+    if (SmallIcon && smallIcon)
+    {
+        *SmallIcon = smallIcon;
+        return STATUS_SUCCESS;
+    }
+
+    if (largeIcon)
+        DestroyIcon(largeIcon);
+    if (smallIcon)
+        DestroyIcon(smallIcon);
+
+    return status;
 }
 
 //HICON PhGetFileShellIcon(
@@ -1676,6 +2347,13 @@ VOID PhGetStockApplicationIcon(
 //    return icon;
 //}
 
+/**
+ * Sets clipboard data for the specified format.
+ *
+ * \param WindowHandle Owner window for OpenClipboard (may be NULL).
+ * \param Format Clipboard format identifier (e.g. CF_UNICODETEXT).
+ * \param Data Handle to  the data to place on the clipboard.
+ */
 VOID PhpSetClipboardData(
     _In_ HWND WindowHandle,
     _In_ ULONG Format,
@@ -1699,6 +2377,12 @@ Fail:
     GlobalFree(Data);
 }
 
+/**
+ * Copies a unicode string into the clipboard as CF_UNICODETEXT.
+ *
+ * \param WindowHandle Owner window used for OpenClipboard (may be NULL).
+ * \param String Pointer to a PH_STRINGREF describing the unicode buffer and length in bytes.
+ */
 VOID PhSetClipboardString(
     _In_ HWND WindowHandle,
     _In_ PCPH_STRINGREF String
@@ -1718,6 +2402,13 @@ VOID PhSetClipboardString(
     PhpSetClipboardData(WindowHandle, CF_UNICODETEXT, data);
 }
 
+/**
+ * Retrieves a unicode string from the clipboard (CF_UNICODETEXT). If the clipboard does not
+ * contain CF_UNICODETEXT, or it cannot be opened, a reference to the empty string is returned.
+ *
+ * \param WindowHandle Owner window used for OpenClipboard (may be NULL).
+ * \return Referenced PPH_STRING containing the clipboard text.
+ */
 PPH_STRING PhGetClipboardString(
     _In_ HWND WindowHandle
     )
@@ -1751,6 +2442,21 @@ PPH_STRING PhGetClipboardString(
     return string;
 }
 
+/**
+ * Creates a dialog from a dialog-template resource copying the template.
+ *
+ * This allows modifying the copied template (style) prior to creating the
+ * dialog. The allocated template copy is freed after CreateDialogIndirectParam
+ * returns.
+ *
+ * \param Parent Parent window handle for the dialog.
+ * \param Style Style bits to apply to the dialog template.
+ * \param Instance Module instance whose resources contain the template.
+ * \param Template Resource name of the dialog template.
+ * \param DialogProc Dialog procedure for the new dialog.
+ * \param Parameter Optional parameter passed to DialogProc via lParam.
+ * \return HWND of the created dialog on success, or NULL on failure.
+ */
 HWND PhCreateDialogFromTemplate(
     _In_ HWND Parent,
     _In_ ULONG Style,
@@ -1788,6 +2494,16 @@ HWND PhCreateDialogFromTemplate(
     return dialogHandle;
 }
 
+/**
+ * Creates a dialog from a dialog-template resource.
+ *
+ * \param Instance Module instance whose resources contain the dialog template.
+ * \param Template Resource name of the dialog template.
+ * \param ParentWindow Optional parent window handle.
+ * \param DialogProc Dialog procedure for the dialog.
+ * \param Parameter Optional parameter passed to DialogProc via lParam.
+ * \return HWND of the created dialog on success, or NULL on failure.
+ */
 HWND PhCreateDialog(
     _In_ PVOID Instance,
     _In_ PCWSTR Template,
@@ -1813,6 +2529,23 @@ HWND PhCreateDialog(
     return dialogHandle;
 }
 
+/**
+ * Creates a window with extended styles.
+ *
+ * \param ClassName Window class name.
+ * \param WindowName Window title (may be NULL).
+ * \param Style Window style flags.
+ * \param ExStyle Extended window style flags.
+ * \param X Initial x position.
+ * \param Y Initial y position.
+ * \param Width Initial width.
+ * \param Height Initial height.
+ * \param ParentWindow Optional parent or owner window handle.
+ * \param MenuHandle Optional menu or child-control identifier.
+ * \param InstanceHandle Optional module instance handle.
+ * \param Parameter Optional creation parameter passed to WM_CREATE.
+ * \return HWND of the created window, or NULL on failure.
+ */
 HWND PhCreateWindowEx(
     _In_ PCWSTR ClassName,
     _In_opt_ PCWSTR WindowName,
@@ -1848,6 +2581,11 @@ HWND PhCreateWindowEx(
     return windowHandle;
 }
 
+/**
+ * Creates a message-only window.
+ *
+ * \return HWND of the created message window or NULL on failure.
+ */
 HWND PhCreateMessageWindow(
     VOID
     )
@@ -1869,6 +2607,16 @@ HWND PhCreateMessageWindow(
     return windowHandle;
 }
 
+/**
+ * Displays a modal dialog box from a dialog-template resource.
+ *
+ * \param Instance Module instance whose resources contain the dialog template.
+ * \param Template Resource name of the dialog template.
+ * \param ParentWindow Optional parent window handle.
+ * \param DialogProc Dialog procedure for the dialog.
+ * \param Parameter Optional parameter passed to DialogProc via lParam.
+ * \return Dialog result (as returned by DialogBoxIndirectParam) or INT_ERROR on failure.
+ */
 INT_PTR PhDialogBox(
     _In_ PVOID Instance,
     _In_ PCWSTR Template,
@@ -1894,7 +2642,13 @@ INT_PTR PhDialogBox(
     return dialogResult;
 }
 
-// rev from LoadMenuW
+/**
+ * Loads a menu resource by name from a module.
+ *
+ * \param DllBase Module base (mapped image or HMODULE) containing the menu resource.
+ * \param MenuName Resource name of the menu to load.
+ * \return HMENU created from the menu template, or NULL on failure.
+ */
 HMENU PhLoadMenu(
     _In_ PVOID DllBase,
     _In_ PCWSTR MenuName
@@ -1916,7 +2670,22 @@ HMENU PhLoadMenu(
     return NULL;
 }
 
-LRESULT CALLBACK PhpGeneralPropSheetWndProc(
+/**
+ * Property-sheet window procedure used to provide consistent behaviour across
+ * property-sheets created by the library.
+ *
+ * This procedure is installed as a wrapper that:
+ * - Restores the previous window procedure on WM_NCDESTROY.
+ * - Forwards WM_KEYDOWN messages to the current page to allow page-level key handling.
+ * - Prevents the hidden OK button from closing the dialog when activated.
+ *
+ * \param hwnd Property sheet window handle.
+ * \param uMsg Window message.
+ * \param wParam WPARAM.
+ * \param lParam LPARAM.
+ * \return Result from the original window procedure or message-specific result.
+ */
+LRESULT CALLBACK PhDefaultPropSheetWindowProcedure(
     _In_ HWND hwnd,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
@@ -1934,8 +2703,8 @@ LRESULT CALLBACK PhpGeneralPropSheetWndProc(
     {
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwnd, 0xF);
             PhSetWindowProcedure(hwnd, oldWndProc);
+            PhRemoveWindowContext(hwnd, 0xF);
         }
         break;
     case WM_SYSCOMMAND:
@@ -1945,6 +2714,7 @@ LRESULT CALLBACK PhpGeneralPropSheetWndProc(
             case SC_CLOSE:
                 {
                     PostMessage(hwnd, WM_CLOSE, 0, 0);
+                    return 0;
                 }
                 break;
             }
@@ -1975,12 +2745,44 @@ LRESULT CALLBACK PhpGeneralPropSheetWndProc(
             }
         }
         break;
+    case WM_DPICHANGED:
+        {
+            // The COMCTL32 propsheet wndproc does not reliably apply the OS-suggested rect on
+            // a cross-monitor drag — for service-properties-style propsheets this collapses the
+            // window to a near-degenerate size (~28x31 px going 144 DPI -> 96 DPI). Apply the
+            // suggested rect ourselves. (dmex)
+            PRECT CONST newRect = (PRECT)lParam;
+
+            CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
+
+            SetWindowPos(
+                hwnd,
+                NULL,
+                newRect->left,
+                newRect->top,
+                newRect->right - newRect->left,
+                newRect->bottom - newRect->top,
+                SWP_NOZORDER | SWP_NOACTIVATE
+                );
+
+            return 0;
+        }
+        break;
     }
 
     return CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
 }
 
-INT CALLBACK PhpGeneralPropSheetProc(
+/**
+ * Property-sheet callback used to initialise property-sheets created by the
+ * library. Sets up the wrapper window procedure and hides the OK button.
+ *
+ * \param hwndDlg Property sheet window handle.
+ * \param uMsg Callback message (PSCB_INITIALIZED expected).
+ * \param lParam Additional parameter (unused).
+ * \return 0 always.
+ */
+INT CALLBACK PhModalPropSheetWindowProcedure(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
     _In_ LPARAM lParam
@@ -1991,7 +2793,7 @@ INT CALLBACK PhpGeneralPropSheetProc(
     case PSCB_INITIALIZED:
         {
             PhSetWindowContext(hwndDlg, 0xF, (PVOID)PhGetWindowProcedure(hwndDlg));
-            PhSetWindowProcedure(hwndDlg, PhpGeneralPropSheetWndProc);
+            PhSetWindowProcedure(hwndDlg, PhDefaultPropSheetWindowProcedure);
 
             // Hide the OK button.
             ShowWindow(GetDlgItem(hwndDlg, IDOK), SW_HIDE);
@@ -2004,6 +2806,17 @@ INT CALLBACK PhpGeneralPropSheetProc(
     return 0;
 }
 
+/**
+ * Displays a property sheet using a custom message loop to avoid a known
+ * PropertySheet bug which may discard WM_QUIT in rare cases.
+ *
+ * The function temporarily disables/enables the top level owner window and
+ * pumps messages until the sheet closes. An automatic pool is created and
+ * drained on each loop iteration to manage transient allocations.
+ *
+ * \param Header Pointer to a PROPSHEETHEADER structure describing the property sheet.
+ * \return TRUE on success, FALSE on failure.
+ */
 BOOLEAN PhModalPropertySheet(
     _Inout_ PROPSHEETHEADER *Header
     )
@@ -2028,7 +2841,7 @@ BOOLEAN PhModalPropertySheet(
     oldFocus = GetFocus();
     topLevelOwner = Header->hwndParent;
 
-    while (topLevelOwner && (GetWindowLongPtr(topLevelOwner, GWL_STYLE) & WS_CHILD))
+    while (topLevelOwner && (PhGetWindowStyle(topLevelOwner) & WS_CHILD))
         topLevelOwner = GetParent(topLevelOwner);
 
     if (topLevelOwner && (topLevelOwner == GetDesktopWindow() || EnableWindow(topLevelOwner, FALSE)))
@@ -2040,8 +2853,9 @@ BOOLEAN PhModalPropertySheet(
     if (!Header->pfnCallback)
     {
         Header->dwFlags |= PSH_USECALLBACK;
-        Header->pfnCallback = PhpGeneralPropSheetProc;
+        Header->pfnCallback = PhModalPropSheetWindowProcedure;
     }
+
     hwnd = (HWND)PropertySheet(Header);
 
     if (!hwnd)
@@ -2054,18 +2868,13 @@ BOOLEAN PhModalPropertySheet(
 
     while (result = GetMessage(&message, NULL, 0, 0))
     {
-        BOOLEAN processed = FALSE;
-
         if (result == INT_ERROR)
             break;
 
-        if (!processed)
+        if (!PropSheet_IsDialogMessage(hwnd, &message))
         {
-            if (!PropSheet_IsDialogMessage(hwnd, &message))
-            {
-                TranslateMessage(&message);
-                DispatchMessage(&message);
-            }
+            TranslateMessage(&message);
+            DispatchMessage(&message);
         }
 
         PhDrainAutoPool(&autoPool);
@@ -2090,14 +2899,41 @@ BOOLEAN PhModalPropertySheet(
     return TRUE;
 }
 
+/**
+ * Initializes a the root layout item instance for the specified window.
+ *
+ * \param Manager Pointer to the PH_LAYOUT_MANAGER to initialize.
+ * \param RootWindowHandle Handle of the root window for layout operations.
+ * \return TRUE on success, FALSE on failure.
+ */
 BOOLEAN PhInitializeLayoutManager(
     _Out_ PPH_LAYOUT_MANAGER Manager,
     _In_ HWND RootWindowHandle
     )
 {
+    return PhInitializeLayoutManagerEx(Manager, RootWindowHandle, 0);
+}
+
+/**
+ * Initializes the root layout item with optional behavior flags.
+ *
+ * \param Manager Pointer to the PH_LAYOUT_MANAGER to initialize.
+ * \param RootWindowHandle Handle of the root window for layout operations.
+ * \param Flags Bitwise combination of PH_LAYOUT_INIT_* flags.
+ * \return TRUE on success, FALSE on failure.
+ */
+BOOLEAN PhInitializeLayoutManagerEx(
+    _Out_ PPH_LAYOUT_MANAGER Manager,
+    _In_ HWND RootWindowHandle,
+    _In_ ULONG Flags
+    )
+{
     memset(Manager, 0, sizeof(PH_LAYOUT_MANAGER));
 
     Manager->List = PhCreateList(4);
+    if (!Manager->List)
+        return FALSE;
+
     Manager->WindowDpi = PhGetWindowDpi(RootWindowHandle);
 
     Manager->RootItem.Handle = RootWindowHandle;
@@ -2106,6 +2942,16 @@ BOOLEAN PhInitializeLayoutManager(
     Manager->RootItem.LayoutNumber = 0;
     Manager->RootItem.NumberOfChildren = 0;
     Manager->RootItem.DeferHandle = NULL;
+
+    if (Flags & PH_LAYOUT_INIT_CLIP_CHILDREN)
+    {
+        ULONG style = PhGetWindowStyle(RootWindowHandle);
+
+        if (style && !(style & WS_CLIPCHILDREN))
+        {
+            PhSetWindowStyle(RootWindowHandle, WS_CLIPCHILDREN | WS_CLIPSIBLINGS, WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+        }
+    }
 
     if (PhGetClientRect(RootWindowHandle, &Manager->RootItem.Rect))
     {
@@ -2116,6 +2962,10 @@ BOOLEAN PhInitializeLayoutManager(
     return FALSE;
 }
 
+/**
+ * Destroys a layout manager created by PhInitializeLayoutManager.
+ * \param Manager Pointer to the PH_LAYOUT_MANAGER to delete.
+ */
 VOID PhDeleteLayoutManager(
     _Inout_ PPH_LAYOUT_MANAGER Manager
     )
@@ -2128,8 +2978,17 @@ VOID PhDeleteLayoutManager(
     PhDereferenceObject(Manager->List);
 }
 
-// HACK: The math below is all horribly broken, especially the HACK for multiline tab controls.
-
+/**
+ * Adds a layout item for a window using default margin (zero).
+ *
+ * Convenience wrapper around PhAddLayoutItemEx which passes a zero margin.
+ *
+ * \param Manager Pointer to the layout manager.
+ * \param Handle Window handle to manage.
+ * \param ParentItem Optional parent layout item; if NULL the root item is used.
+ * \param Anchor Anchor flags controlling layout behaviour.
+ * \return Pointer to the newly created PPH_LAYOUT_ITEM, or NULL on failure (e.g. the window rect could not be queried).
+ */
 PPH_LAYOUT_ITEM PhAddLayoutItem(
     _Inout_ PPH_LAYOUT_MANAGER Manager,
     _In_ HWND Handle,
@@ -2148,6 +3007,9 @@ PPH_LAYOUT_ITEM PhAddLayoutItem(
         &dummy
         );
 
+    if (!layoutItem)
+        return NULL;
+
     layoutItem->Margin = layoutItem->Rect;
     PhConvertRect(&layoutItem->Margin, &layoutItem->ParentItem->Rect);
 
@@ -2164,6 +3026,16 @@ PPH_LAYOUT_ITEM PhAddLayoutItem(
     return layoutItem;
 }
 
+/**
+ * Adds a layout item with explicit margin values.
+ *
+ * \param Manager Pointer to the layout manager.
+ * \param Handle Window handle to manage.
+ * \param ParentItem Optional parent layout item; if NULL the root item is used.
+ * \param Anchor Anchor flags controlling layout behaviour.
+ * \param Margin Pointer to a RECT that specifies the margin for the item.
+ * \return Pointer to the newly created PPH_LAYOUT_ITEM.
+ */
 PPH_LAYOUT_ITEM PhAddLayoutItemEx(
     _Inout_ PPH_LAYOUT_MANAGER Manager,
     _In_ HWND Handle,
@@ -2180,25 +3052,30 @@ PPH_LAYOUT_ITEM PhAddLayoutItemEx(
     item = PhAllocateZero(sizeof(PH_LAYOUT_ITEM));
     item->Handle = Handle;
     item->ParentItem = ParentItem;
+    item->LayoutParentItem = ParentItem;
     item->LayoutNumber = Manager->LayoutNumber;
     item->NumberOfChildren = 0;
     item->DeferHandle = NULL;
     item->Anchor = Anchor;
 
-    item->LayoutParentItem = item->ParentItem;
-
-    while ((item->LayoutParentItem->Anchor & PH_LAYOUT_DUMMY_MASK) &&
-        item->LayoutParentItem->LayoutParentItem)
+    while (FlagOn(item->LayoutParentItem->Anchor, PH_LAYOUT_DUMMY_MASK) && item->LayoutParentItem->LayoutParentItem)
     {
         item->LayoutParentItem = item->LayoutParentItem->LayoutParentItem;
     }
 
+    if (!PhGetWindowRect(Handle, &item->Rect))
+    {
+        // Window is in an unexpected state (e.g. already destroyed).
+        // Caller cannot do anything sensible with an item that has no rect.
+        PhFree(item);
+        return NULL;
+    }
+
     item->LayoutParentItem->NumberOfChildren++;
 
-    PhGetWindowRect(Handle, &item->Rect);
     MapWindowRect(HWND_DESKTOP, item->LayoutParentItem->Handle, &item->Rect);
 
-    if (item->Anchor & PH_LAYOUT_TAB_CONTROL)
+    if (FlagOn(item->Anchor, PH_LAYOUT_TAB_CONTROL))
     {
         // We want to convert the tab control rectangle to the tab page display rectangle.
         TabCtrl_AdjustRect(Handle, FALSE, &item->Rect);
@@ -2206,13 +3083,57 @@ PPH_LAYOUT_ITEM PhAddLayoutItemEx(
 
     PhGetSizeDpiValue(&item->Rect, Manager->WindowDpi, FALSE);
     item->Margin = *Margin;
-    PhGetSizeDpiValue(&item->Margin, Manager->WindowDpi, FALSE);
+    PhGetMarginDpiValue(&item->Margin, Manager->WindowDpi, FALSE);
 
     PhAddItemList(Manager->List, item);
 
     return item;
 }
 
+/**
+ * Adds the two layout items required to manage a tab control.
+ *
+ * This adds:
+ *  - The tab control itself with PH_ANCHOR_ALL | PH_LAYOUT_IMMEDIATE_RESIZE
+ *    so the window is resized synchronously and subsequent TabCtrl_AdjustRect
+ *    calls return the updated content rect.
+ *  - A dummy item (PH_LAYOUT_TAB_CONTROL) whose Rect tracks the tab page
+ *    client area. Use this as the ParentItem when adding child controls
+ *    that live on tab pages.
+ *
+ * Order is critical: the IMMEDIATE_RESIZE item must precede the dummy so
+ * that SetWindowPos on the tab control happens before the dummy's
+ * TabCtrl_AdjustRect query during PhLayoutManagerLayout.
+ *
+ * \param Manager Pointer to the layout manager.
+ * \param TabControlHandle Handle of the SysTabControl32 window.
+ * \param TabControlItem Optionally receives the layout item for the tab control window.
+ * \param TabPageItem Receives the dummy parent item for tab page children.
+ */
+VOID PhAddTabControlLayoutItem(
+    _Inout_ PPH_LAYOUT_MANAGER Manager,
+    _In_ HWND TabControlHandle,
+    _Out_opt_ PPH_LAYOUT_ITEM *TabControlItem,
+    _Out_ PPH_LAYOUT_ITEM *TabPageItem
+    )
+{
+    PPH_LAYOUT_ITEM tabControlItem;
+    PPH_LAYOUT_ITEM tabPageItem;
+
+    tabControlItem = PhAddLayoutItem(Manager, TabControlHandle, NULL, PH_ANCHOR_ALL | PH_LAYOUT_IMMEDIATE_RESIZE);
+    tabPageItem = PhAddLayoutItem(Manager, TabControlHandle, NULL, PH_LAYOUT_TAB_CONTROL);
+
+    if (TabControlItem)
+        *TabControlItem = tabControlItem;
+    *TabPageItem = tabPageItem;
+}
+
+/**
+ * Performs layout calculations for a single layout item and its parents.
+ *
+ * \param Manager Pointer to the layout manager.
+ * \param Item Pointer to the layout item to layout.
+ */
 VOID PhpLayoutItemLayout(
     _Inout_ PPH_LAYOUT_MANAGER Manager,
     _Inout_ PPH_LAYOUT_ITEM Item
@@ -2220,7 +3141,7 @@ VOID PhpLayoutItemLayout(
 {
     RECT margin;
     RECT rect;
-    ULONG diff;
+    LONG diff;
     BOOLEAN hasDummyParent;
 
     if (Item->NumberOfChildren > 0 && !Item->DeferHandle)
@@ -2245,8 +3166,7 @@ VOID PhpLayoutItemLayout(
         hasDummyParent = FALSE;
     }
 
-    if (!PhGetWindowRect(Item->Handle, &Item->Rect))
-        return;
+    PhGetWindowRect(Item->Handle, &Item->Rect);
 
     MapWindowRect(HWND_DESKTOP, Item->LayoutParentItem->Handle, &Item->Rect);
 
@@ -2269,8 +3189,21 @@ VOID PhpLayoutItemLayout(
 
         if (!(Item->Anchor & (PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT)))
         {
-            // TODO
-            PhRaiseStatus(STATUS_NOT_IMPLEMENTED);
+            // Neither side anchored: keep the item horizontally centered
+            // within the parent's new width while preserving the item's
+            // current width.
+            LONG parentWidth = Item->LayoutParentItem->Rect.right - Item->LayoutParentItem->Rect.left;
+            LONG itemWidth = parentWidth - rect.left - rect.right;
+            LONG newLeft;
+
+            if (itemWidth < 0)
+                itemWidth = 0;
+
+            newLeft = (hasDummyParent ? Item->ParentItem->Rect.left : 0)
+                + (parentWidth - itemWidth) / 2;
+
+            rect.left = newLeft;
+            rect.right = parentWidth - (newLeft + itemWidth);
         }
         else if (Item->Anchor & PH_ANCHOR_RIGHT)
         {
@@ -2290,8 +3223,21 @@ VOID PhpLayoutItemLayout(
 
         if (!(Item->Anchor & (PH_ANCHOR_TOP | PH_ANCHOR_BOTTOM)))
         {
-            // TODO
-            PhRaiseStatus(STATUS_NOT_IMPLEMENTED);
+            // Neither side anchored: keep the item vertically centered
+            // within the parent's new height while preserving the item's
+            // current height.
+            LONG parentHeight = Item->LayoutParentItem->Rect.bottom - Item->LayoutParentItem->Rect.top;
+            LONG itemHeight = parentHeight - rect.top - rect.bottom;
+            LONG newTop;
+
+            if (itemHeight < 0)
+                itemHeight = 0;
+
+            newTop = (hasDummyParent ? Item->ParentItem->Rect.top : 0)
+                + (parentHeight - itemHeight) / 2;
+
+            rect.top = newTop;
+            rect.bottom = parentHeight - (newTop + itemHeight);
         }
         else if (Item->Anchor & PH_ANCHOR_BOTTOM)
         {
@@ -2321,18 +3267,20 @@ VOID PhpLayoutItemLayout(
                 Item->LayoutParentItem->DeferHandle, Item->Handle,
                 NULL, rect.left, rect.top,
                 rect.right - rect.left, rect.bottom - rect.top,
-                SWP_NOACTIVATE | SWP_NOZORDER
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER
                 );
         }
         else
         {
             // This is needed for tab controls, so that TabCtrl_AdjustRect will give us an
-            // up-to-date result.
+            // up-to-date result. SWP_NOREDRAW suppresses the tab-frame repaint that would
+            // otherwise flash before the deferred children settle into their new positions.
+            // A single RedrawWindow is issued in PhLayoutManagerLayout after the batch flushes.
             SetWindowPos(
                 Item->Handle,
                 NULL, rect.left, rect.top,
                 rect.right - rect.left, rect.bottom - rect.top,
-                SWP_NOACTIVATE | SWP_NOZORDER
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOREDRAW
                 );
         }
     }
@@ -2340,6 +3288,11 @@ VOID PhpLayoutItemLayout(
     Item->LayoutNumber = Manager->LayoutNumber;
 }
 
+/**
+ * Performs a layout pass for all items managed by the layout manager.
+ *
+ * \param Manager Pointer to the layout manager.
+ */
 VOID PhLayoutManagerLayout(
     _Inout_ PPH_LAYOUT_MANAGER Manager
     )
@@ -2375,6 +3328,12 @@ VOID PhLayoutManagerLayout(
         {
             InvalidateRect(item->Handle, NULL, FALSE);
         }
+        else if (item->Anchor & PH_LAYOUT_IMMEDIATE_RESIZE)
+        {
+            // Children have settled into their new positions inside the deferred batch.
+            // Repaint the tab frame in one shot to avoid the flash that SWP_NOREDRAW suppressed.
+            RedrawWindow(item->Handle, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        }
     }
 
     if (Manager->RootItem.DeferHandle)
@@ -2384,6 +3343,15 @@ VOID PhLayoutManagerLayout(
     }
 }
 
+/**
+ * Updates the layout manager's DPI value.
+ *
+ * If WindowDpi is non-zero it is used directly; otherwise the DPI for the
+ * manager's root window is queried.
+ *
+ * \param Manager Pointer to the layout manager.
+ * \param WindowDpi New DPI value or 0 to query the root window DPI.
+ */
 VOID PhLayoutManagerUpdate(
     _Inout_ PPH_LAYOUT_MANAGER Manager,
     _In_ LONG WindowDpi
@@ -2395,6 +3363,16 @@ VOID PhLayoutManagerUpdate(
         Manager->WindowDpi = PhGetWindowDpi(Manager->RootItem.Handle);
 }
 
+/**
+ * Window property context hashtable equality function.
+ *
+ * Compares two PH_WINDOW_PROPERTY_CONTEXT entries for equality by
+ * comparing the window handle and property hash.
+ *
+ * \param Entry1 First entry pointer.
+ * \param Entry2 Second entry pointer.
+ * \return TRUE if the entries are equal, otherwise FALSE.
+ */
 _Use_decl_annotations_
 BOOLEAN NTAPI PhpWindowContextHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -2409,6 +3387,15 @@ BOOLEAN NTAPI PhpWindowContextHashtableEqualFunction(
         entry1->PropertyHash == entry2->PropertyHash;
 }
 
+/**
+ * Window property context hashtable hash function.
+ *
+ * Produces a hash for a PH_WINDOW_PROPERTY_CONTEXT entry by combining
+ * the window handle and the property hash to produce an unsigned value.
+ *
+ * \param Entry Entry pointer.
+ * \return Computed hash value.
+ */
 _Use_decl_annotations_
 ULONG NTAPI PhpWindowContextHashtableHashFunction(
     _In_ PVOID Entry
@@ -2428,6 +3415,14 @@ VOID NTAPI PhWindowFlsCallback(
     PhClearReference(&hashtable);
 }
 
+/**
+ * Returns or creates the per-thread window-context hashtable stored in FLS.
+ *
+ * If the hashtable does not exist for the current thread it is created and
+ * stored in the thread's FLS slot. On failure the function will fail-fast.
+ *
+ * \return Pointer to the per-thread PPH_HASHTABLE.
+ */
 static PPH_HASHTABLE PhGetWindowContextHashTable(
     VOID
     )
@@ -2453,6 +3448,13 @@ static PPH_HASHTABLE PhGetWindowContextHashTable(
     return hashtable;
 }
 
+/**
+ * Retrieves a stored context pointer for a window and property hash.
+ *
+ * \param WindowHandle The window handle.
+ * \param PropertyHash The property hash key.
+ * \return The stored context pointer, or NULL if not found.
+ */
 PVOID PhGetWindowContext(
     _In_ HWND WindowHandle,
     _In_ ULONG PropertyHash
@@ -2472,6 +3474,16 @@ PVOID PhGetWindowContext(
         return NULL;
 }
 
+/**
+ * Stores a window context value associated with a property hash.
+ *
+ * If an entry for the given window/property pair already exists it will be
+ * updated by PhAddEntryHashtable semantics.
+ *
+ * \param WindowHandle The window handle.
+ * \param PropertyHash The property hash key.
+ * \param Context The context pointer to store.
+ */
 VOID PhSetWindowContext(
     _In_ HWND WindowHandle,
     _In_ ULONG PropertyHash,
@@ -2488,6 +3500,12 @@ VOID PhSetWindowContext(
     PhAddEntryHashtable(PhGetWindowContextHashTable(), &entry);
 }
 
+/**
+ * Removes a stored window context entry.
+ *
+ * \param WindowHandle The window handle.
+ * \param PropertyHash The property hash key to remove.
+ */
 VOID PhRemoveWindowContext(
     _In_ HWND WindowHandle,
     _In_ ULONG PropertyHash
@@ -2499,6 +3517,477 @@ VOID PhRemoveWindowContext(
     lookupEntry.PropertyHash = PropertyHash;
 
     PhRemoveEntryHashtable(PhGetWindowContextHashTable(), &lookupEntry);
+}
+
+/**
+ * Encodes a pointer using the window context cookie.
+ *
+ * \param[in] Pointer The pointer to encode.
+ * \return The encoded pointer.
+ */
+PVOID PhEncodePtr(
+    _In_opt_ PVOID Pointer
+    )
+{
+    return (PVOID)((ULONG_PTR)Pointer ^ WindowCallbackCookie);
+}
+
+/**
+ * Decodes a pointer using the window context cookie.
+ *
+ * \param[in] Pointer The pointer to decode.
+ * \return The decoded pointer.
+ */
+PVOID PhDecodePtr(
+    _In_opt_ PVOID Pointer
+    )
+{
+    return (PVOID)((ULONG_PTR)Pointer ^ WindowCallbackCookie);
+}
+
+/**
+ * Retrieves the window context pointer associated with a window handle.
+ *
+ * \param[in] WindowHandle A handle to the window from which to retrieve the context.
+ * \return A pointer to the window context, or NULL if no context has been set.
+ */
+PVOID PhGetWindowContextEx(
+    _In_ HWND WindowHandle
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    return PhGetWindowContext(WindowHandle, MAXCHAR);
+#else
+    LONG_PTR context;
+
+    //assert(GetClassLongPtr(WindowHandle, GCL_CBWNDEXTRA) == sizeof(PVOID));
+    context = GetWindowLongPtr(WindowHandle, 0);
+
+    if (!context)
+        return NULL;
+
+    return PhDecodePtr((PVOID)context);
+#endif
+}
+
+/**
+ * Sets the extended window context for a window handle.
+ *
+ * \param[in] WindowHandle The handle to the window for which to set the context.
+ * \param[in] Context A pointer to the context data to associate with the window.
+ * \return This function does not return a value.
+ * \remarks The window must have sufficient extra bytes allocated to store a PVOID
+ * if PHNT_WINDOW_CLASS_CONTEXT is not defined.
+ */
+VOID PhSetWindowContextEx(
+    _In_ HWND WindowHandle,
+    _In_ PVOID Context
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    PhSetWindowContext(WindowHandle, MAXCHAR, Context);
+#else
+    //assert(GetClassLongPtr(WindowHandle, GCL_CBWNDEXTRA) == sizeof(PVOID));
+    SetWindowLongPtr(WindowHandle, 0, (LONG_PTR)PhEncodePtr(Context));
+#endif
+}
+
+/**
+ * Removes the window context from a window handle.
+ *
+ * \param[in] WindowHandle The handle to the window from which to remove the context.
+ * \remarks
+ * If PHNT_WINDOW_CLASS_CONTEXT is defined, this function delegates to PhRemoveWindowContext
+ * with MAXCHAR as the context identifier. Otherwise, it clears the window's extra data by
+ * setting the window long pointer at offset 0 to NULL.
+ */
+VOID PhRemoveWindowContextEx(
+    _In_ HWND WindowHandle
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    PhRemoveWindowContext(WindowHandle, MAXCHAR);
+#else
+    //assert(GetClassLongPtr(WindowHandle, GCL_CBWNDEXTRA) == sizeof(PVOID));
+    SetWindowLongPtr(WindowHandle, 0, (LONG_PTR)NULL);
+#endif
+}
+
+PVOID PhGetDialogContext(
+    _In_ HWND WindowHandle
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    return PhGetWindowContext(WindowHandle, MAXCHAR);
+#else
+    LONG_PTR context;
+
+    context = GetWindowLongPtr(WindowHandle, DWLP_USER);
+
+    if (!context)
+        return NULL;
+
+    return PhDecodePtr((PVOID)context);
+#endif
+}
+
+VOID PhSetDialogContext(
+    _In_ HWND WindowHandle,
+    _In_ PVOID Context
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    PhSetWindowContext(WindowHandle, MAXCHAR, Context);
+#else
+    SetWindowLongPtr(WindowHandle, DWLP_USER, (LONG_PTR)PhEncodePtr(Context));
+#endif
+}
+
+VOID PhRemoveDialogContext(
+    _In_ HWND WindowHandle
+    )
+{
+#if defined(PHNT_WINDOW_CLASS_CONTEXT)
+    PhRemoveWindowContext(WindowHandle, MAXCHAR);
+#else
+    SetWindowLongPtr(WindowHandle, DWLP_USER, (LONG_PTR)NULL);
+#endif
+}
+
+//
+// Window and Desktop enumeration
+//
+
+typedef struct _PH_DESKTOP_ENUM_CONTEXT
+{
+    _Function_class_(PH_DESKTOP_ENUM_CALLBACK)
+    _In_ PPH_DESKTOP_ENUM_CALLBACK Callback;
+    _In_opt_ PVOID Context;
+    BOOLEAN StopSearch;
+} PH_DESKTOP_ENUM_CONTEXT, *PPH_DESKTOP_ENUM_CONTEXT;
+
+static BOOL CALLBACK PhEnumDesktopsCallback(
+    _In_ PWSTR DesktopName,
+    _In_opt_ LPARAM Context
+    )
+{
+    PPH_DESKTOP_ENUM_CONTEXT context = (PPH_DESKTOP_ENUM_CONTEXT)Context;
+
+    if (context->Callback(DesktopName, context->Context))
+        return TRUE;
+
+    context->StopSearch = TRUE;
+    return FALSE;
+}
+
+/**
+ * Enumerates all desktops of the specified window station.
+ *
+ * \param WindowStationHandle A handle to the window station to enumerate desktops of.
+ * If NULL, the current process window station is used.
+ * \param Callback The callback function to be called for each desktop.
+ * \param Context An optional context parameter to be passed to the callback function.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumDesktops(
+    _In_opt_ HWINSTA WindowStationHandle,
+    _In_ PPH_DESKTOP_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    )
+{
+    PH_DESKTOP_ENUM_CONTEXT context;
+    HWINSTA windowStationHandle;
+
+    memset(&context, 0, sizeof(PH_DESKTOP_ENUM_CONTEXT));
+    context.Callback = Callback;
+    context.Context = Context;
+
+    windowStationHandle = WindowStationHandle ? WindowStationHandle : GetProcessWindowStation();
+
+    if (EnumDesktops(windowStationHandle, PhEnumDesktopsCallback, (LPARAM)&context) || context.StopSearch)
+        return STATUS_SUCCESS;
+
+    return PhGetLastWin32ErrorAsNtStatus();
+}
+
+typedef struct _PH_WINDOWSTATION_ENUM_CONTEXT
+{
+    _Function_class_(PH_WINDOWSTATION_ENUM_CALLBACK)
+    _In_ PPH_WINDOWSTATION_ENUM_CALLBACK Callback;
+    _In_opt_ PVOID Context;
+    BOOLEAN StopSearch;
+    PPH_LIST SeenNames;
+} PH_WINDOWSTATION_ENUM_CONTEXT, *PPH_WINDOWSTATION_ENUM_CONTEXT;
+
+static BOOL CALLBACK PhEnumWindowStationsWin32Callback(
+    _In_ PWSTR WindowStationName,
+    _In_opt_ LPARAM Context
+    )
+{
+    PPH_WINDOWSTATION_ENUM_CONTEXT context = (PPH_WINDOWSTATION_ENUM_CONTEXT)Context;
+
+    PhAddItemList(context->SeenNames, PhCreateString(WindowStationName));
+
+    if (context->Callback(WindowStationName, context->Context))
+        return TRUE;
+
+    context->StopSearch = TRUE;
+    return FALSE;
+}
+
+_Function_class_(PH_ENUM_DIRECTORY_OBJECTS)
+static NTSTATUS NTAPI PhEnumWindowStationsDirectoryCallback(
+    _In_ HANDLE RootDirectory,
+    _In_ PPH_STRINGREF Name,
+    _In_ PPH_STRINGREF TypeName,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_WINDOWSTATION_ENUM_CONTEXT context = (PPH_WINDOWSTATION_ENUM_CONTEXT)Context;
+    static const PH_STRINGREF windowStationType = PH_STRINGREF_INIT(L"WindowStation");
+    PPH_STRING nameString;
+
+    if (!PhEqualStringRef(TypeName, &windowStationType, TRUE))
+        return STATUS_SUCCESS;
+
+    for (ULONG i = 0; i < context->SeenNames->Count; i++)
+    {
+        if (PhEqualStringRef(&((PPH_STRING)context->SeenNames->Items[i])->sr, Name, TRUE))
+            return STATUS_SUCCESS;
+    }
+
+    nameString = PhCreateString2(Name);
+    PhAddItemList(context->SeenNames, nameString);
+
+    if (!context->Callback(nameString->Buffer, context->Context))
+    {
+        context->StopSearch = TRUE;
+    }
+
+    return context->StopSearch ? STATUS_NO_MORE_ENTRIES : STATUS_SUCCESS;
+}
+
+/**
+ * Enumerates all window stations visible to the current session using both the Win32
+ * EnumWindowStations API and the object manager directory for comprehensive coverage.
+ * Results from both sources are deduplicated before the callback is invoked.
+ *
+ * Enumerates four sources:
+ * 1. Win32 EnumWindowStations (current session, access-filtered by the kernel).
+ * 2. Object directory \\Windows\\WindowStations (session 0 / global service stations).
+ * 3. Object directory \\Sessions\\N\\Windows\\WindowStations (current session, catches stations
+ *    hidden from EnumWindowStations by access filtering).
+ * 4. System-wide handle enumeration: duplicates all open window station handles to
+ *    discover stations from other sessions.
+ *
+ * \param Types Combination of PH_WINDOWSTATION_ENUM_TYPE flags specifying which enumeration
+ *        methods to use. Use PH_WINDOWSTATION_ENUM_ALL for comprehensive enumeration.
+ * \param Callback The callback function to be called for each window station.
+ * \param Context An optional context parameter to be passed to the callback function.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumWindowStations(
+    _In_ PH_WINDOWSTATION_ENUM_TYPE Types,
+    _In_ PPH_WINDOWSTATION_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    PH_WINDOWSTATION_ENUM_CONTEXT context;
+    HANDLE directoryHandle;
+    ULONG sessionId;
+
+    memset(&context, 0, sizeof(PH_WINDOWSTATION_ENUM_CONTEXT));
+    context.Callback = Callback;
+    context.Context = Context;
+    context.SeenNames = PhCreateList(8);
+
+    //
+    // Win32 EnumWindowStations (current session, access-filtered)
+    //
+
+    if (FlagOn(Types, PH_WINDOWSTATION_ENUM_WIN32))
+    {
+        EnumWindowStations(PhEnumWindowStationsWin32Callback, (LPARAM)&context);
+    }
+
+    if (context.StopSearch)
+        goto CleanupExit;
+
+    //
+    // Object directory \Windows\WindowStations (session 0 / global service stations)
+    //
+
+    if (FlagOn(Types, PH_WINDOWSTATION_ENUM_GLOBAL_DIRECTORY))
+    {
+        static const PH_STRINGREF globalPath = PH_STRINGREF_INIT(L"\\Windows\\WindowStations");
+
+        if (NT_SUCCESS(PhOpenDirectoryObject(
+            &directoryHandle,
+            DIRECTORY_QUERY,
+            NULL,
+            &globalPath
+            )))
+        {
+            PhEnumDirectoryObjects(
+                directoryHandle,
+                PhEnumWindowStationsDirectoryCallback,
+                &context
+                );
+            NtClose(directoryHandle);
+        }
+    }
+
+    if (context.StopSearch)
+        goto CleanupExit;
+
+    //
+    // Object directory \Sessions\N\Windows\WindowStations (filtered by EnumWindowStations)
+    // Skip for session 0 since \Windows\WindowStations is the same directory.
+    //
+
+    if (FlagOn(Types, PH_WINDOWSTATION_ENUM_SESSION_DIRECTORY))
+    {
+        if (NT_SUCCESS(PhGetProcessSessionId(NtCurrentProcess(), &sessionId)) && sessionId != 0)
+        {
+            PPH_STRING sessionPath;
+            PH_FORMAT format[3];
+
+            // \\Sessions\\%lu\\Windows\\WindowStations
+            PhInitFormatS(&format[0], L"\\Sessions\\");
+            PhInitFormatU(&format[1], sessionId);
+            PhInitFormatS(&format[2], L"\\Windows\\WindowStations");
+
+            sessionPath = PhFormat(format, RTL_NUMBER_OF(format), 0);
+
+            if (NT_SUCCESS(PhOpenDirectoryObject(
+                &directoryHandle,
+                DIRECTORY_QUERY,
+                NULL,
+                &sessionPath->sr
+                )))
+            {
+                PhEnumDirectoryObjects(
+                    directoryHandle,
+                    PhEnumWindowStationsDirectoryCallback,
+                    &context
+                    );
+                NtClose(directoryHandle);
+            }
+
+            PhDereferenceObject(sessionPath);
+        }
+    }
+
+    if (context.StopSearch)
+        goto CleanupExit;
+
+    //
+    // System handle enumeration. Duplicate all open window station handles to
+    // discover stations from sessions other than our own that were not visible via the
+    // object directory paths above.
+    //
+
+    //if (FlagOn(Types, PH_WINDOWSTATION_ENUM_SYSTEM_HANDLES))
+    //{
+    //    PSYSTEM_HANDLE_INFORMATION_EX handles;
+    //    ULONG windowStationTypeNumber;
+    //
+    //    windowStationTypeNumber = PhGetObjectTypeNumberZ(L"WindowStation");
+    //
+    //    if (windowStationTypeNumber != ULONG_MAX && NT_SUCCESS(PhEnumHandlesEx(&handles)))
+    //    {
+    //        HANDLE currentProcessId = NtCurrentProcessId();
+    //        HANDLE lastProcessId = NULL;
+    //        HANDLE processHandle = NULL;
+    //
+    //        for (ULONG_PTR i = 0; i < handles->NumberOfHandles && !context.StopSearch; i++)
+    //        {
+    //            PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX handle = &handles->Handles[i];
+    //
+    //            if (handle->ObjectTypeIndex != (USHORT)windowStationTypeNumber)
+    //                continue;
+    //
+    //            if (handle->UniqueProcessId != lastProcessId)
+    //            {
+    //                if (processHandle && processHandle != NtCurrentProcess())
+    //                    NtClose(processHandle);
+    //
+    //                lastProcessId = handle->UniqueProcessId;
+    //                processHandle = NULL;
+    //
+    //                if (lastProcessId == currentProcessId)
+    //                    processHandle = NtCurrentProcess();
+    //                else
+    //                    PhOpenProcess(&processHandle, PROCESS_DUP_HANDLE, lastProcessId);
+    //            }
+    //
+    //            if (!processHandle)
+    //                continue;
+    //
+    //            {
+    //                HANDLE dupHandle;
+    //                NTSTATUS dupStatus;
+    //
+    //                dupStatus = NtDuplicateObject(
+    //                    processHandle,
+    //                    (HANDLE)handle->HandleValue,
+    //                    NtCurrentProcess(),
+    //                    &dupHandle,
+    //                    WINSTA_READATTRIBUTES,
+    //                    0,
+    //                    0
+    //                    );
+    //
+    //                if (NT_SUCCESS(dupStatus))
+    //                {
+    //                    PPH_STRING nameString;
+    //
+    //                    if (NT_SUCCESS(PhGetUserObjectNameInformation(dupHandle, &nameString)))
+    //                    {
+    //                        BOOLEAN seen = FALSE;
+    //
+    //                        for (ULONG j = 0; j < context.SeenNames->Count; j++)
+    //                        {
+    //                            if (PhEqualString(
+    //                                (PPH_STRING)context.SeenNames->Items[j],
+    //                                nameString,
+    //                                TRUE
+    //                                ))
+    //                            {
+    //                                seen = TRUE;
+    //                                break;
+    //                            }
+    //                        }
+    //
+    //                        if (!seen)
+    //                        {
+    //                            PhAddItemList(context.SeenNames, PhReferenceObject(nameString));
+    //
+    //                            if (!context.Callback(nameString->Buffer, context.Context))
+    //                                context.StopSearch = TRUE;
+    //                        }
+    //
+    //                        PhDereferenceObject(nameString);
+    //                    }
+    //
+    //                    NtClose(dupHandle);
+    //                }
+    //            }
+    //        }
+    //
+    //        if (processHandle && processHandle != NtCurrentProcess())
+    //            NtClose(processHandle);
+    //
+    //        PhFree(handles);
+    //    }
+    //}
+
+CleanupExit:
+    PhDereferenceObjects(context.SeenNames->Items, context.SeenNames->Count);
+    PhDereferenceObject(context.SeenNames);
+
+    return STATUS_SUCCESS;
 }
 
 typedef struct _PH_WINDOW_ENUM_CONTEXT
@@ -2550,17 +4039,155 @@ NTSTATUS PhEnumWindows(
 }
 
 /**
+ * Enumerates windows using FindWindowEx.
+ * This function enumerates windows that EnumWindows may miss, such as UWP/Metro apps.
+ *
+ * \param ParentWindow The parent window to enumerate children of. If NULL, enumerates all top-level windows.
+ * \param Callback The callback function to be called for each window.
+ * \param Context An optional context parameter to be passed to the callback function.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumWindowsEx(
+    _In_opt_ HWND ParentWindow,
+    _In_ PH_WINDOW_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    )
+{
+    HWND windowHandle = NULL;
+    ULONG i = 0;
+
+    while (i < 0x8000 && (windowHandle = FindWindowEx(ParentWindow, windowHandle, NULL, NULL)))
+    {
+        if (!Callback(windowHandle, Context))
+            return STATUS_SUCCESS;
+
+        i++;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * Walks the window chain using GetWindow, enumerating windows in their exact Z-order.
+ * This is a flexible function that can enumerate windows using any command:
+ *
+ * - GW_HWNDFIRST - First sibling
+ * - GW_HWNDLAST - Last sibling
+ * - GW_HWNDNEXT - Next sibling
+ * - GW_HWNDPREV - Previous sibling
+ * - GW_OWNER - Owner window
+ * - GW_CHILD - First child
+ *
+ * Usage example:
+ *
+ * // Enumerate all siblings of a window
+ * PhEnumGetWindow(hwnd, GW_HWNDNEXT, 1000, MyCallback, context);
+ *
+ * // Enumerate children
+ * PhEnumGetWindow(hwnd, GW_CHILD, 1000, MyCallback, context);
+ *
+ * \param StartWindow The window to start enumeration from. If NULL, starts with the first top-level window.
+ * \param Command The GetWindow command (GW_HWNDFIRST, GW_HWNDLAST, GW_HWNDNEXT, GW_HWNDPREV, GW_OWNER, GW_CHILD).
+ * \param Callback The callback function to be called for each window.
+ * \param Context An optional context parameter to be passed to the callback function.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumGetWindow(
+    _In_opt_ HWND StartWindow,
+    _In_ ULONG Command,
+    _In_ PH_WINDOW_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    )
+{
+    HWND windowHandle;
+    ULONG i = 0;
+
+    if (StartWindow)
+    {
+        windowHandle = StartWindow;
+    }
+    else
+    {
+        // Get the first window if StartWindow is NULL
+        windowHandle = GetWindow(GetDesktopWindow(), GW_CHILD);
+    }
+
+    if (!windowHandle)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    while (i < 0x8000 && windowHandle)
+    {
+        HWND nextWindow;
+
+        if (!Callback(windowHandle, Context))
+            break;
+
+        // Get the next window before incrementing, in case callback modifies window
+        nextWindow = GetWindow(windowHandle, Command);
+
+        // Break if we've looped back to the start (shouldn't happen but safety check)
+        if (nextWindow == StartWindow || (i > 0 && nextWindow == windowHandle))
+            break;
+
+        windowHandle = nextWindow;
+        i++;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * Enumerates all top-level windows in Z-order (top to bottom).
+ * This is a convenience wrapper around PhEnumGetWindow that enumerates top-level windows.
+ *
+ * \param Callback The callback function to be called for each window.
+ * \param Context An optional context parameter to be passed to the callback function.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhEnumWindowsZOrder(
+    _In_ PH_WINDOW_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    )
+{
+    HWND windowHandle;
+    ULONG i = 0;
+
+    // Get the first top-level window
+    windowHandle = GetWindow(GetDesktopWindow(), GW_CHILD);
+
+    if (!windowHandle)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    // Enumerate all top-level windows in Z-order
+    while (i < 0x8000 && windowHandle)
+    {
+        HWND nextWindow;
+
+        if (!Callback(windowHandle, Context))
+            return STATUS_SUCCESS;
+
+        nextWindow = GetWindow(windowHandle, GW_HWNDNEXT);
+        windowHandle = nextWindow;
+        i++;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+/**
  * Enumerates the child windows of the specified window handle.
  *
  * \param WindowHandle The handle of the parent window.
- * \param Limit The maximum number of child windows to enumerate.
  * \param Callback The callback function to be called for each child window.
  * \param Context An optional context parameter to be passed to the callback function.
  * \return NTSTATUS Successful or errant status.
  */
 NTSTATUS PhEnumChildWindows(
     _In_opt_ HWND WindowHandle,
-    _In_ ULONG Limit,
     _In_ PH_WINDOW_ENUM_CALLBACK Callback,
     _In_opt_ PVOID Context
     )
@@ -2584,9 +4211,83 @@ NTSTATUS PhEnumChildWindows(
     //
     //    i++;
     //}
-   
+
     // Note: EnumChildWindows doesn't support GetLastError. (dmex)
     return STATUS_UNSUCCESSFUL;
+}
+
+/**
+ * Builds a list of window handles and returns a pointer to a contiguous array of HWND values.
+ *
+ * \param DesktopHandle Optional desktop handle. If NULL, the current desktop is used.
+ * \param ParentWindowHandle Optional parent window handle. If NULL, enumerates top-level windows.
+ * \param IncludeChildren When TRUE, includes child windows in the result list.
+ * \param ExcludeImmersive When TRUE, excludes immersive (UWP/Metro) windows.
+ * \param ThreadId Optional GUI thread identifier to filter results. If NULL, windows from all threads are returned.
+ * \param NumberOfHandles Receives the number of HWND entries in \a Handles.
+ * \param Handles Receives a pointer to an array of HWND values. The caller must free the returned buffer using PhFree().
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhBuildHwndList(
+    _In_opt_ HANDLE DesktopHandle,
+    _In_opt_ HWND ParentWindowHandle,
+    _In_ BOOLEAN IncludeChildren,
+    _In_ BOOLEAN ExcludeImmersive,
+    _In_opt_ HANDLE ThreadId,
+    _Out_ PULONG NumberOfHandles,
+    _Outptr_result_buffer_(*NumberOfHandles) HWND** Handles
+    )
+{
+    NTSTATUS status;
+    PVOID buffer = NULL;
+    ULONG bufferSize = 0x1000;
+    ULONG returnLength = 0;
+
+    if (!NtUserBuildHwndList_Import())
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    buffer = PhAllocate(bufferSize);
+
+    while (TRUE)
+    {
+        status = NtUserBuildHwndList_Import()(
+            DesktopHandle,
+            ParentWindowHandle,
+            IncludeChildren,
+            ExcludeImmersive,
+            HandleToUlong(ThreadId),
+            bufferSize,
+            buffer,
+            &returnLength
+            );
+
+        if (status == STATUS_BUFFER_TOO_SMALL)
+        {
+            PhFree(buffer);
+            bufferSize = returnLength;
+            buffer = PhAllocate(bufferSize);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if (!NT_SUCCESS(status) && status != STATUS_INVALID_HANDLE)
+    {
+        PhFree(buffer);
+        return status;
+    }
+
+    //if (returnLength < sizeof(HWND) || (returnLength % sizeof(HWND)) != 0)
+    //{
+    //    PhFree(buffer);
+    //    return STATUS_INVALID_THREAD;
+    //}
+
+    *NumberOfHandles = returnLength / sizeof(HWND);
+    *Handles = PTR_ADD_OFFSET(buffer, 0);
+    return STATUS_SUCCESS;
 }
 
 typedef struct _GET_PROCESS_MAIN_WINDOW_CONTEXT
@@ -2766,12 +4467,11 @@ BOOLEAN PhSetWindowText(
 {
     ULONG_PTR result = 0;
 
-    if (SendMessageTimeout(
+    if (PhSendMessageTimeout(
         WindowHandle,
         WM_SETTEXT,
         0,
         (LPARAM)WindowText,
-        SMTO_ABORTIFHUNG | SMTO_BLOCK,
         1000,
         &result
         ) && result > 0)
@@ -2854,6 +4554,15 @@ BOOLEAN PhSendMessageTimeout(
     return FALSE;
 }
 
+/**
+ * Window-callback registration equality function.
+ *
+ * Compares two  window-callback registration entries by window handle.
+ *
+ * \param Entry1 First entry pointer.
+ * \param Entry2 Second entry pointer.
+ * \return TRUE if the window handles match, otherwise FALSE.
+ */
 _Use_decl_annotations_
 BOOLEAN NTAPI PhpWindowCallbackHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -2865,6 +4574,14 @@ BOOLEAN NTAPI PhpWindowCallbackHashtableEqualFunction(
         ((PPH_PLUGIN_WINDOW_CALLBACK_REGISTRATION)Entry2)->WindowHandle;
 }
 
+/**
+ * Window-callback registration hash function.
+ *
+ * Returns a hash derived from the window handle member of the registration.
+ *
+ * \param Entry Entry pointer.
+ * \return Computed hash value.
+ */
 _Use_decl_annotations_
 ULONG NTAPI PhpWindowCallbackHashtableHashFunction(
     _In_ PVOID Entry
@@ -2936,12 +4653,12 @@ VOID PhWindowNotifyTopMostEvent(
 /**
  * Retrieves the environment variables for the specified user.
  *
- * \param Environment A pointer to the new environment block. 
+ * \param Environment A pointer to the new environment block.
  * \param TokenHandle Token to query for user environment variables.
  * If this is a primary token, the token must have TOKEN_QUERY and TOKEN_DUPLICATE access.
  * If the token is an impersonation token, it must have TOKEN_QUERY access.
  * If this parameter is NULL, the returned environment block contains system variables only.
- * \param Inherit Specifies whether to inherit variables from the current process' environment. If this value is TRUE, the process inherits the current process' environment. 
+ * \param Inherit Specifies whether to inherit variables from the current process' environment. If this value is TRUE, the process inherits the current process' environment.
  * \return A pointer to the imported procedure, or NULL if the procedure could not be imported.
  * \remarks User-specific environment variables such as %USERPROFILE% are set only when the user's profile is loaded. To load a user's profile, call the LoadUserProfile function.
  */
@@ -3075,7 +4792,7 @@ BOOLEAN PhIsImmersiveProcess(
     if (PhBeginInitOnce(&initOnce))
     {
         if (WindowsVersion >= WINDOWS_8)
-            IsImmersiveProcess_I = PhGetDllProcedureAddress(L"user32.dll", "IsImmersiveProcess", 0);
+            IsImmersiveProcess_I = PhGetDllProcedureAddressZ(L"user32.dll", "IsImmersiveProcess", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -3092,15 +4809,12 @@ BOOLEAN PhGetProcessUIContextInformation(
     )
 {
     static PH_INITONCE initOnce = PH_INITONCE_INIT;
-    static BOOL (WINAPI* GetProcessUIContextInformation_I)(
-        _In_ HANDLE ProcessHandle,
-        _Out_ PPROCESS_UICONTEXT_INFORMATION UIContext
-        ) = NULL;
+    static typeof(&GetProcessUIContextInformation) GetProcessUIContextInformation_I = NULL;
 
     if (PhBeginInitOnce(&initOnce))
     {
         if (WindowsVersion >= WINDOWS_8)
-            GetProcessUIContextInformation_I = PhGetDllProcedureAddress(L"user32.dll", "GetProcessUIContextInformation", 0);
+            GetProcessUIContextInformation_I = PhGetDllProcedureAddressZ(L"user32.dll", "GetProcessUIContextInformation", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -3212,7 +4926,7 @@ NTSTATUS PhGetPhysicallyInstalledSystemMemory(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        GetPhysicallyInstalledSystemMemory_I = PhGetDllProcedureAddress(L"kernel32.dll", "GetPhysicallyInstalledSystemMemory", 0);
+        GetPhysicallyInstalledSystemMemory_I = PhGetDllProcedureAddressZ(L"kernel32.dll", "GetPhysicallyInstalledSystemMemory", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -3223,8 +4937,8 @@ NTSTATUS PhGetPhysicallyInstalledSystemMemory(
 
     if (GetPhysicallyInstalledSystemMemory_I(&physicallyInstalledSystemMemory))
     {
-        *TotalMemory = physicallyInstalledSystemMemory * 1024ULL;
-        *ReservedMemory = physicallyInstalledSystemMemory * 1024ULL - UInt32x32To64(PhSystemBasicInformation.NumberOfPhysicalPages, PAGE_SIZE);
+        *TotalMemory = physicallyInstalledSystemMemory * ULONGLONG_C(1024);
+        *ReservedMemory = physicallyInstalledSystemMemory * ULONGLONG_C(1024)- UInt32x32To64(PhSystemBasicInformation.NumberOfPhysicalPages, PAGE_SIZE);
         return STATUS_SUCCESS;
     }
 
@@ -3314,7 +5028,7 @@ NTSTATUS PhGetSendMessageReceiver(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        GetSendMessageReceiver_I = PhGetDllProcedureAddress(L"user32.dll", "GetSendMessageReceiver", 0);
+        GetSendMessageReceiver_I = PhGetDllProcedureAddressZ(L"user32.dll", "GetSendMessageReceiver", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -3353,7 +5067,7 @@ BOOLEAN PhExtractIcon(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        PrivateExtractIconExW = PhGetDllProcedureAddress(L"user32.dll", "PrivateExtractIconExW", 0);
+        PrivateExtractIconExW = PhGetDllProcedureAddressZ(L"user32.dll", "PrivateExtractIconExW", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -3648,13 +5362,13 @@ NTSTATUS PhExtractIconEx(
         if (!NT_SUCCESS(status))
             goto CleanupExit;
 
-        resourceDirectory = PhMappedImageRvaToVa(
+        status = PhMappedImageRvaToVa(
             &mappedImage,
             dataDirectory->VirtualAddress,
-            NULL
+            &resourceDirectory
             );
 
-        if (!resourceDirectory)
+        if (!NT_SUCCESS(status))
             goto CleanupExit;
 
         status = PhGetMappedImageResourceIndex(
@@ -3998,6 +5712,54 @@ BOOLEAN PhImageListSetIconSize(
     return SUCCEEDED(IImageList2_SetIconSize((IImageList2*)ImageListHandle, cx, cy));
 }
 
+BOOLEAN PhImageListBeginDrag(
+    _In_ HIMAGELIST ImageListHandle,
+    _In_ LONG Track,
+    _In_ LONG HotspotX,
+    _In_ LONG HotspotY
+    )
+{
+    return !!ImageList_BeginDrag(ImageListHandle, Track, HotspotX, HotspotY);
+}
+
+BOOLEAN PhImageListDragEnter(
+    _In_ HWND LockWindowHandle,
+    _In_ LONG x,
+    _In_ LONG y
+    )
+{
+    return !!ImageList_DragEnter(LockWindowHandle, x, y);
+}
+
+BOOLEAN PhImageListDragShowNolock(
+    _In_ BOOLEAN Show
+    )
+{
+    return !!ImageList_DragShowNolock(Show);
+}
+
+BOOLEAN PhImageListDragMove(
+    _In_ LONG x,
+    _In_ LONG y
+    )
+{
+    return !!ImageList_DragMove(x, y);
+}
+
+BOOLEAN PhImageListDragLeave(
+    _In_ HWND LockWindowHandle
+    )
+{
+    return !!ImageList_DragLeave(LockWindowHandle);
+}
+
+VOID PhImageListEndDrag(
+    VOID
+    )
+{
+    ImageList_EndDrag();
+}
+
 static const PH_FLAG_MAPPING PhpInitiateShutdownMappings[] =
 {
     { PH_SHUTDOWN_RESTART, SHUTDOWN_RESTART },
@@ -4100,14 +5862,22 @@ VOID PhCustomDrawTreeTimeLine(
     }
 
     // Clamp percent between 0 and 100, avoid division by zero.
-    if (createTime.QuadPart > startTime.QuadPart || startTime.QuadPart == 0)
+    if (createTime.QuadPart > startTime.QuadPart || startTime.QuadPart <= 0)
     {
         SetFlag(Flags, PH_DRAW_TIMELINE_OVERFLOW);
         percent = 100;
     }
+    else if (createTime.QuadPart <= 0)
+    {
+        percent = 0;
+    }
     else
     {
-        percent = (LONG)((createTime.QuadPart * 100) / startTime.QuadPart);
+        percent = (LONG)(
+            ((ULONG64)createTime.QuadPart * 100 + ((ULONG64)startTime.QuadPart / 2)) /
+            (ULONG64)startTime.QuadPart
+            );
+
         if (percent < 0) percent = 0;
         else if (percent > 100) percent = 100;
     }
@@ -4151,7 +5921,7 @@ VOID PhCustomDrawTreeTimeLine(
     //    );
 
     LONG width = CellRect->right - CellRect->left;
-    LONG left = CellRect->right - ((width * percent) / 100);
+    LONG left = CellRect->right - PhMultiplyDivideSigned(width, percent, 100);
     PatBlt(
         Hdc,
         left,
@@ -4252,6 +6022,50 @@ static PCGUID PhpGetImageFormatDecoderType(
     return &GUID_ContainerFormatRaw;
 }
 
+HRESULT PhCreateImagingFactory(
+    _Out_ IWICImagingFactory** ImagingFactory
+    )
+{
+    typedef HRESULT (WINAPI* WICCreateImagingFactory_Proxy)(
+        _In_  UINT SDKVersion,
+        _Out_ IWICImagingFactory** ppIImagingFactory
+        );
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static WICCreateImagingFactory_Proxy CreateImagingFactory_I = NULL;
+    HRESULT status;
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        PVOID baseAddress;
+
+        if (baseAddress = PhLoadLibrary(L"windowscodecs.dll"))
+        {
+            CreateImagingFactory_I = PhGetDllBaseProcedureAddress(baseAddress, "WICCreateImagingFactory_Proxy", 0);
+        }
+
+        PhEndInitOnce(&initOnce);
+    }
+
+    if (CreateImagingFactory_I)
+    {
+        status = CreateImagingFactory_I(
+            WINCODEC_SDK_VERSION,
+            ImagingFactory
+            );
+    }
+    else
+    {
+        status = PhGetClassObject(
+            L"windowscodecs.dll",
+            &CLSID_WICImagingFactory,
+            &IID_IWICImagingFactory,
+            ImagingFactory
+            );
+    }
+
+    return status;
+}
+
 HBITMAP PhLoadImageFormatFromResource(
     _In_ PVOID DllBase,
     _In_ PCWSTR Name,
@@ -4278,13 +6092,13 @@ HBITMAP PhLoadImageFormatFromResource(
     if (!NT_SUCCESS(PhLoadResource(DllBase, Name, Type, &resourceLength, &resourceBuffer)))
         goto CleanupExit;
 
-    if (FAILED(PhGetClassObject(L"windowscodecs.dll", &CLSID_WICImagingFactory, &IID_IWICImagingFactory, &wicImagingFactory)))
+    if (FAILED(PhCreateImagingFactory(&wicImagingFactory)))
         goto CleanupExit;
     if (FAILED(IWICImagingFactory_CreateStream(wicImagingFactory, &wicBitmapStream)))
         goto CleanupExit;
     if (FAILED(IWICStream_InitializeFromMemory(wicBitmapStream, resourceBuffer, resourceLength)))
         goto CleanupExit;
-    if (FAILED(IWICImagingFactory_CreateDecoder(wicImagingFactory, PhpGetImageFormatDecoderType(Format), &GUID_VendorMicrosoft, &wicBitmapDecoder)))
+    if (FAILED(IWICImagingFactory_CreateDecoder(wicImagingFactory, PhpGetImageFormatDecoderType(Format), &GUID_VendorMicrosoftBuiltIn, &wicBitmapDecoder)))
         goto CleanupExit;
     if (FAILED(IWICBitmapDecoder_Initialize(wicBitmapDecoder, (IStream*)wicBitmapStream, WICDecodeMetadataCacheOnDemand)))
         goto CleanupExit;
@@ -4330,11 +6144,22 @@ HBITMAP PhLoadImageFormatFromResource(
 
     if (SUCCEEDED(IWICBitmapSource_GetSize(wicBitmapSource, &sourceWidth, &sourceHeight)) && sourceWidth == Width && sourceHeight == Height)
     {
+        UINT stride;
+        UINT pixelCount;
+        UINT size;
+
+        if (!NT_SUCCESS(RtlUIntMult(Width, sizeof(RGBQUAD), &stride)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(Width, Height, &pixelCount)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(pixelCount, sizeof(RGBQUAD), &size)))
+            goto CleanupExit;
+
         if (SUCCEEDED(IWICBitmapSource_CopyPixels(
             wicBitmapSource,
             NULL,
-            Width * sizeof(RGBQUAD),
-            Width * Height * sizeof(RGBQUAD),
+            stride,
+            size,
             bitmapBuffer
             )))
         {
@@ -4412,13 +6237,13 @@ HBITMAP PhLoadImageFromAddress(
     UINT sourceWidth = 0;
     UINT sourceHeight = 0;
 
-    if (FAILED(PhGetClassObject(L"windowscodecs.dll", &CLSID_WICImagingFactory1, &IID_IWICImagingFactory, &wicImagingFactory)))
+    if (FAILED(PhCreateImagingFactory(&wicImagingFactory)))
         goto CleanupExit;
     if (FAILED(IWICImagingFactory_CreateStream(wicImagingFactory, &wicBitmapStream)))
         goto CleanupExit;
     if (FAILED(IWICStream_InitializeFromMemory(wicBitmapStream, Buffer, BufferLength)))
         goto CleanupExit;
-    if (FAILED(IWICImagingFactory_CreateDecoderFromStream(wicImagingFactory, (IStream*)wicBitmapStream, &GUID_VendorMicrosoft, WICDecodeMetadataCacheOnDemand, &wicBitmapDecoder)))
+    if (FAILED(IWICImagingFactory_CreateDecoderFromStream(wicImagingFactory, (IStream*)wicBitmapStream, &GUID_VendorMicrosoftBuiltIn, WICDecodeMetadataCacheOnDemand, &wicBitmapDecoder)))
         goto CleanupExit;
     if (FAILED(IWICBitmapDecoder_GetFrame(wicBitmapDecoder, 0, &wicBitmapFrame)))
         goto CleanupExit;
@@ -4462,11 +6287,22 @@ HBITMAP PhLoadImageFromAddress(
 
     if (SUCCEEDED(IWICBitmapSource_GetSize(wicBitmapSource, &sourceWidth, &sourceHeight)) && sourceWidth == Width && sourceHeight == Height)
     {
+        UINT stride;
+        UINT pixelCount;
+        UINT size;
+
+        if (!NT_SUCCESS(RtlUIntMult(Width, sizeof(RGBQUAD), &stride)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(Width, Height, &pixelCount)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(pixelCount, sizeof(RGBQUAD), &size)))
+            goto CleanupExit;
+
         if (SUCCEEDED(IWICBitmapSource_CopyPixels(
             wicBitmapSource,
             NULL,
-            Width * sizeof(RGBQUAD),
-            Width * Height * sizeof(RGBQUAD),
+            stride,
+            size,
             bitmapBuffer
             )))
         {
@@ -4487,11 +6323,22 @@ HBITMAP PhLoadImageFromAddress(
                 WindowsVersion < WINDOWS_10 ? WICBitmapInterpolationModeFant : WICBitmapInterpolationModeHighQualityCubic
                 )))
             {
+                UINT stride;
+                UINT pixelCount;
+                UINT size;
+
+                if (!NT_SUCCESS(RtlUIntMult(Width, sizeof(RGBQUAD), &stride)))
+                    goto CleanupExit;
+                if (!NT_SUCCESS(RtlUIntMult(Width, Height, &pixelCount)))
+                    goto CleanupExit;
+                if (!NT_SUCCESS(RtlUIntMult(pixelCount, sizeof(RGBQUAD), &size)))
+                    goto CleanupExit;
+
                 if (SUCCEEDED(IWICBitmapScaler_CopyPixels(
                     wicBitmapScaler,
                     NULL,
-                    Width * sizeof(RGBQUAD),
-                    Width * Height * sizeof(RGBQUAD),
+                    stride,
+                    size,
                     bitmapBuffer
                     )))
                 {
@@ -4563,9 +6410,9 @@ HBITMAP PhLoadImageFromFile(
     UINT sourceWidth = 0;
     UINT sourceHeight = 0;
 
-    if (FAILED(PhGetClassObject(L"windowscodecs.dll", &CLSID_WICImagingFactory1, &IID_IWICImagingFactory, &wicImagingFactory)))
+    if (FAILED(PhCreateImagingFactory(&wicImagingFactory)))
         goto CleanupExit;
-    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename(wicImagingFactory, FileName, &GUID_VendorMicrosoft, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &wicBitmapDecoder)))
+    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename(wicImagingFactory, FileName, &GUID_VendorMicrosoftBuiltIn, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &wicBitmapDecoder)))
         goto CleanupExit;
     if (FAILED(IWICBitmapDecoder_GetFrame(wicBitmapDecoder, 0, &wicBitmapFrame)))
         goto CleanupExit;
@@ -4609,11 +6456,22 @@ HBITMAP PhLoadImageFromFile(
 
     if (SUCCEEDED(IWICBitmapSource_GetSize(wicBitmapSource, &sourceWidth, &sourceHeight)) && sourceWidth == Width && sourceHeight == Height)
     {
+        UINT stride;
+        UINT pixelCount;
+        UINT size;
+
+        if (!NT_SUCCESS(RtlUIntMult(Width, sizeof(RGBQUAD), &stride)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(Width, Height, &pixelCount)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(RtlUIntMult(pixelCount, sizeof(RGBQUAD), &size)))
+            goto CleanupExit;
+
         if (SUCCEEDED(IWICBitmapSource_CopyPixels(
             wicBitmapSource,
             NULL,
-            Width * sizeof(RGBQUAD),
-            Width * Height * sizeof(RGBQUAD),
+            stride,
+            size,
             bitmapBuffer
             )))
         {
@@ -4634,11 +6492,22 @@ HBITMAP PhLoadImageFromFile(
                 WindowsVersion < WINDOWS_10 ? WICBitmapInterpolationModeFant : WICBitmapInterpolationModeHighQualityCubic
                 )))
             {
+                UINT stride;
+                UINT pixelCount;
+                UINT size;
+
+                if (!NT_SUCCESS(RtlUIntMult(Width, sizeof(RGBQUAD), &stride)))
+                    goto CleanupExit;
+                if (!NT_SUCCESS(RtlUIntMult(Width, Height, &pixelCount)))
+                    goto CleanupExit;
+                if (!NT_SUCCESS(RtlUIntMult(pixelCount, sizeof(RGBQUAD), &size)))
+                    goto CleanupExit;
+
                 if (SUCCEEDED(IWICBitmapScaler_CopyPixels(
                     wicBitmapScaler,
                     NULL,
-                    Width * sizeof(RGBQUAD),
-                    Width * Height * sizeof(RGBQUAD),
+                    stride,
+                    size,
                     bitmapBuffer
                     )))
                 {
@@ -4683,7 +6552,7 @@ NTSTATUS PhGetWindowCompositionAttribute(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        GetWindowCompositionAttribute_I = PhGetDllProcedureAddress(L"user32.dll", "GetWindowCompositionAttribute", 0);
+        GetWindowCompositionAttribute_I = PhGetDllProcedureAddressZ(L"user32.dll", "GetWindowCompositionAttribute", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -4711,7 +6580,7 @@ NTSTATUS PhSetWindowCompositionAttribute(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        SetWindowCompositionAttribute_I = PhGetDllProcedureAddress(L"user32.dll", "SetWindowCompositionAttribute", 0);
+        SetWindowCompositionAttribute_I = PhGetDllProcedureAddressZ(L"user32.dll", "SetWindowCompositionAttribute", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -5161,7 +7030,7 @@ NTSTATUS PhTerminateWindow(
 
     if (PhBeginInitOnce(&initOnce))
     {
-        EndTask_I = PhGetDllProcedureAddress(L"user32.dll", "EndTask", 0);
+        EndTask_I = PhGetDllProcedureAddressZ(L"user32.dll", "EndTask", 0);
         PhEndInitOnce(&initOnce);
     }
 
@@ -5330,4 +7199,830 @@ NTSTATUS PhGetInputMessageSourceSM(
     }
 
     return STATUS_PROCEDURE_NOT_FOUND;
+}
+
+/**
+ * Registers the devices that supply the raw input data.
+ *
+ * \param Devices An array of RAWINPUTDEVICE structures that represent the devices that supply the raw input.
+ * \param Count The number of RAWINPUTDEVICE structures in the array.
+ *
+ * \return TRUE if the function succeeds, otherwise FALSE.
+ */
+BOOLEAN NTAPI PhRegisterRawInputDevices(
+    _In_reads_(Count) PCRAWINPUTDEVICE Devices,
+    _In_ ULONG Count
+    )
+{
+    return RegisterRawInputDevices(Devices, Count, sizeof(RAWINPUTDEVICE));
+}
+
+/**
+ * Retrieves the raw input from the specified device.
+ *
+ * \param RawInputHandle A handle to the RAWINPUT structure.
+ * \param Command The command flag.
+ * \param Buffer A pointer to the data that comes from the RAWINPUT structure.
+ * \param Size The size, in bytes, of the data in Buffer.
+ *
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS NTAPI PhGetRawInputData(
+    _In_ HRAWINPUT RawInputHandle,
+    _In_ ULONG Command,
+    _Out_opt_ PVOID Buffer,
+    _Inout_ PULONG Size
+    )
+{
+    if (GetRawInputData(RawInputHandle, Command, Buffer, Size, sizeof(RAWINPUTHEADER)) != UINT_ERROR) // UINT_ERROR
+    {
+        return STATUS_SUCCESS;
+    }
+
+    return PhGetLastWin32ErrorAsNtStatus();
+}
+
+/**
+ * Retrieves the raw input from the specified device and allocates a buffer for it.
+ *
+ * \param RawInputHandle A handle to the RAWINPUT structure.
+ * \return A pointer to the allocated RAWINPUT structure, or NULL if the operation failed.
+ */
+PRAWINPUT NTAPI PhGetRawInput(
+    _In_ HRAWINPUT RawInputHandle
+    )
+{
+    PRAWINPUT rawInput;
+    ULONG size;
+
+    if (!NT_SUCCESS(PhGetRawInputData(RawInputHandle, RID_INPUT, NULL, &size)))
+        return NULL;
+
+    rawInput = PhAllocate(size);
+
+    if (!NT_SUCCESS(PhGetRawInputData(RawInputHandle, RID_INPUT, rawInput, &size)))
+    {
+        PhFree(rawInput);
+        return NULL;
+    }
+
+    return rawInput;
+}
+
+/**
+ * Creates a reference-counted font from the supplied parameters and window DPI.
+ *
+ * Returns an HFONT pointing to the Body field of a private PH_FONT_OBJECT header.
+ * The font starts with a reference count of one and must be released with PhDereferenceFont.
+ * Use PhReferenceFont to take additional references. The wrapped GDI handle may be NULL if
+ * the underlying CreateFont call failed; callers should still dereference to release memory.
+ *
+ * \param Name Optional typeface name (e.g. L"Segoe UI"). NULL selects the system default.
+ * \param Size Point size.
+ * \param Weight Font weight (e.g. FW_NORMAL, FW_BOLD).
+ * \param PitchAndFamily Pitch and family value passed to CreateFont.
+ * \param WindowDpi Window DPI used to scale the font.
+ */
+HFONT PhCreateFont(
+    _In_opt_ PCWSTR Name,
+    _In_ LONG Size,
+    _In_ LONG Weight,
+    _In_ LONG PitchAndFamily,
+    _In_ LONG WindowDpi
+    )
+{
+    PPH_FONT_OBJECT fontObject;
+    HFONT font;
+
+    fontObject = PhAllocate(sizeof(PH_FONT_OBJECT));
+    fontObject->RefCount = 1;
+
+    font = PhFontObjectHeaderToObject(fontObject);
+    *(HFONT*)font = PhCreateFontHandle(Name, Size, Weight, PitchAndFamily, WindowDpi);
+
+    return font;
+}
+
+/**
+ * Adds a reference to a font previously created with PhCreateFont.
+ */
+VOID PhReferenceFont(
+    _In_ HFONT Font
+    )
+{
+    PPH_FONT_OBJECT fontObject;
+
+    fontObject = PhFontObjectToObjectHeader(Font);
+
+    _InterlockedIncrement(&fontObject->RefCount);
+}
+
+/**
+ * Releases a reference to a font previously created with PhCreateFont. When the last
+ * reference is released the underlying GDI handle is destroyed and the wrapper is freed.
+ */
+VOID PhDereferenceFont(
+    _In_ _Post_invalid_ HFONT Font
+    )
+{
+    PPH_FONT_OBJECT fontObject;
+    HFONT fontHandle;
+
+    fontObject = PhFontObjectToObjectHeader(Font);
+
+    if (_InterlockedDecrement(&fontObject->RefCount) == 0)
+    {
+        fontHandle = *(HFONT*)Font;
+
+        if (fontHandle)
+            DeleteFont(fontHandle);
+
+        PhFree(fontObject);
+    }
+}
+
+// Buffered paint
+//
+// Implements a UxTheme-free buffered paint API using per-thread FLS caching for
+// zero-allocation repaint paths. Each thread owns one cache slot holding a
+// memory DC and a 32-bpp top-down DIB section. PhBeginBufferedPaint reuses the
+// cached bitmap when it is large enough and reallocates only when a larger
+// surface is needed. Oversized rectangles (larger than PH_BP_MAX_CACHE_AREA)
+// and GDI failures fall back to transient per-call allocations.
+//
+// Each thread has its own FLS slot, so no locking is required. Nested
+// PhBeginBufferedPaint calls on the same thread are asserted against in debug
+// builds.
+
+#define PH_BP_MIN_DIM 64                    // never shrink the cache below this
+#define PH_BP_MAX_CACHE_AREA (4096 * 2160)  // larger rects allocate per-call
+
+/**
+ * Per-thread buffered paint cache, stored in FLS. The PH_BP_CACHE and
+ * PPH_BP_CACHE typedefs are declared in guisup.h; this completes the tag.
+ */
+typedef struct _PH_BP_CACHE
+{
+    HDC Hdc;            // memory DC (created once, reused)
+    HBITMAP Bitmap;     // DIB section currently sized AllocWidth x AllocHeight
+    PVOID Bits;         // raw pixel pointer from CreateDIBSection (32 bpp)
+    LONG AllocWidth;    // allocated bitmap width
+    LONG AllocHeight;   // allocated bitmap height
+    BOOLEAN InUse;      // nesting guard
+} PH_BP_CACHE;
+
+/**
+ * FLS destructor for a per-thread cache slot.
+ *
+ * \param Parameter The PH_BP_CACHE slot being released on thread exit.
+ */
+static VOID NTAPI PhpFreeBufferedPaintCache(
+    _In_ PVOID Parameter
+    )
+{
+    PPH_BP_CACHE cache = Parameter;
+
+    if (!cache)
+        return;
+
+    // If the thread died mid-paint InUse is TRUE; we cannot safely deselect, so
+    // we leak the objects rather than corrupt GDI state.
+    if (!cache->InUse)
+    {
+        if (cache->Bitmap)
+            DeleteBitmap(cache->Bitmap);
+        if (cache->Hdc)
+            DeleteDC(cache->Hdc);
+    }
+
+    PhFree(cache);
+}
+
+/**
+ * Returns the calling thread's buffered paint cache slot, allocating one on
+ * first use. Returns NULL when the FLS index has not been initialized.
+ */
+_Must_inspect_result_
+static PPH_BP_CACHE PhpGetBufferedPaintCache(
+    VOID
+    )
+{
+    PPH_BP_CACHE cache;
+
+    if (PhBufferedPaintFlsIndex == FLS_OUT_OF_INDEXES)
+        return NULL;
+
+    cache = FlsGetValue(PhBufferedPaintFlsIndex);
+
+    if (!cache)
+    {
+        cache = PhAllocateZero(sizeof(PH_BP_CACHE));
+
+        if (cache)
+        {
+            FlsSetValue(PhBufferedPaintFlsIndex, cache);
+        }
+    }
+
+    return cache;
+}
+
+/**
+ * Ensures the cache slot owns a memory DC compatible with ReferenceHdc.
+ */
+static BOOLEAN PhpEnsureBufferedPaintDC(
+    _In_ PPH_BP_CACHE Cache,
+    _In_ HDC ReferenceHdc
+    )
+{
+    if (!Cache->Hdc)
+        Cache->Hdc = CreateCompatibleDC(ReferenceHdc);
+
+    return Cache->Hdc != NULL;
+}
+
+/**
+ * Ensures the cache slot owns a top-down 32-bpp DIB section at least
+ * Width x Height pixels, reusing the existing bitmap when large enough.
+ */
+static BOOLEAN PhpEnsureBufferedPaintBitmap(
+    _In_ PPH_BP_CACHE Cache,
+    _In_ HDC ReferenceHdc,
+    _In_ LONG Width,
+    _In_ LONG Height
+    )
+{
+    BITMAPINFO bitmapInfo;
+    HBITMAP bitmap;
+    PVOID bits;
+    LONG allocWidth = __max(Width, PH_BP_MIN_DIM);
+    LONG allocHeight = __max(Height, PH_BP_MIN_DIM);
+
+    if (Cache->Bitmap &&
+        Cache->AllocWidth >= Width &&
+        Cache->AllocHeight >= Height)
+    {
+        return TRUE; // cached bitmap is large enough
+    }
+
+    if (Cache->Bitmap)
+    {
+        DeleteBitmap(Cache->Bitmap);
+        Cache->Bitmap = NULL;
+        Cache->Bits = NULL;
+    }
+
+    memset(&bitmapInfo, 0, sizeof(BITMAPINFO));
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = allocWidth;
+    bitmapInfo.bmiHeader.biHeight = -allocHeight; // top-down
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    bitmap = CreateDIBSection(ReferenceHdc, &bitmapInfo, DIB_RGB_COLORS, &bits, NULL, 0);
+
+    if (!bitmap)
+        return FALSE;
+
+    Cache->AllocWidth = allocWidth;
+    Cache->AllocHeight = allocHeight;
+    Cache->Bitmap = bitmap;
+    Cache->Bits = bits;
+
+    return TRUE;
+}
+
+/**
+ * Allocates a fresh DC and DIB for an oversized or fallback paint. Returns a
+ * heap-allocated cache slot owned by the caller's PH_BUFFERED_PAINT.
+ */
+static PPH_BP_CACHE PhpAllocateTransientBufferedPaint(
+    _In_ HDC ReferenceHdc,
+    _In_ LONG Width,
+    _In_ LONG Height
+    )
+{
+    PPH_BP_CACHE cache;
+    BITMAPINFO bitmapInfo;
+    HBITMAP bitmap;
+
+    cache = PhAllocateZero(sizeof(PH_BP_CACHE));
+
+    if (!cache)
+        return NULL;
+
+    cache->Hdc = CreateCompatibleDC(ReferenceHdc);
+
+    if (!cache->Hdc)
+        goto CleanupExit;
+
+    memset(&bitmapInfo, 0, sizeof(BITMAPINFO));
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = Width;
+    bitmapInfo.bmiHeader.biHeight = -Height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    bitmap = CreateDIBSection(ReferenceHdc, &bitmapInfo, DIB_RGB_COLORS, &cache->Bits, NULL, 0);
+
+    if (!bitmap)
+        bitmap = CreateCompatibleBitmap(ReferenceHdc, Width, Height); // Bits stays NULL
+
+    if (!bitmap)
+        goto CleanupExit;
+
+    cache->Bitmap = bitmap;
+    cache->AllocWidth = Width;
+    cache->AllocHeight = Height;
+    return cache;
+
+CleanupExit:
+    if (cache->Hdc)
+        DeleteDC(cache->Hdc);
+    PhFree(cache);
+    return NULL;
+}
+
+/**
+ * Allocates the process-wide FLS index used by the buffered paint cache.
+ *
+ * \return TRUE on success. Safe to call multiple times.
+ */
+BOOLEAN PhBufferedPaintInit(
+    VOID
+    )
+{
+    if (PhBufferedPaintFlsIndex == FLS_OUT_OF_INDEXES)
+    {
+        PhBufferedPaintFlsIndex = FlsAlloc(PhpFreeBufferedPaintCache);
+    }
+
+    return PhBufferedPaintFlsIndex != FLS_OUT_OF_INDEXES;
+}
+
+/**
+ * Frees the FLS index and all per-thread cache slots still alive. Call from
+ * DLL_PROCESS_DETACH or application shutdown.
+ */
+VOID PhBufferedPaintUnInit(
+    VOID
+    )
+{
+    if (PhBufferedPaintFlsIndex != FLS_OUT_OF_INDEXES)
+    {
+        FlsFree(PhBufferedPaintFlsIndex);
+        PhBufferedPaintFlsIndex = FLS_OUT_OF_INDEXES;
+    }
+}
+
+/**
+ * Acquires (or creates) the per-thread cached DC and DIB, prepares it to cover
+ * TargetRect, and returns the memory DC in PaintHdc.
+ *
+ * \param TargetHdc The DC that the buffer will be blitted to on End.
+ * \param TargetRect The paint rectangle in TargetHdc coordinates.
+ * \param BufferedPaint Receives the buffered paint state.
+ * \param PaintHdc Receives the memory DC to paint into.
+ * \return TRUE on success. On FALSE the caller should draw directly into
+ * TargetHdc.
+ */
+_Must_inspect_result_
+BOOLEAN PhBeginBufferedPaint(
+    _In_ HDC TargetHdc,
+    _In_ const RECT* TargetRect,
+    _Out_ PPH_BUFFERED_PAINT BufferedPaint,
+    _Out_ HDC* PaintHdc
+    )
+{
+    LONG width;
+    LONG height;
+    BOOLEAN oversized;
+    PPH_BP_CACHE cache;
+
+    memset(BufferedPaint, 0, sizeof(PH_BUFFERED_PAINT));
+    *PaintHdc = NULL;
+
+    width = TargetRect->right - TargetRect->left;
+    height = TargetRect->bottom - TargetRect->top;
+
+    if (width <= 0 || height <= 0)
+        return FALSE;
+
+    oversized = ((LONGLONG)width * height > (LONGLONG)PH_BP_MAX_CACHE_AREA);
+    cache = oversized ? NULL : PhpGetBufferedPaintCache();
+
+#if defined(_DEBUG) || defined(DBG)
+    if (cache)
+    {
+        assert(!cache->InUse && "Nested PhBeginBufferedPaint on same thread!");
+    }
+#endif
+
+    if (cache)
+    {
+        if (
+            PhpEnsureBufferedPaintDC(cache, TargetHdc) &&
+            PhpEnsureBufferedPaintBitmap(cache, TargetHdc, width, height)
+            )
+        {
+            BufferedPaint->Cache = cache;
+            BufferedPaint->TargetHdc = TargetHdc;
+            BufferedPaint->TargetRect = *TargetRect;
+            BufferedPaint->PaintWidth = width;
+            BufferedPaint->PaintHeight = height;
+            BufferedPaint->OwnsDc = FALSE;
+            BufferedPaint->OwnsBitmap = FALSE;
+            BufferedPaint->Valid = TRUE;
+            BufferedPaint->OldBitmap = SelectBitmap(cache->Hdc, cache->Bitmap);
+            SetWindowOrgEx(cache->Hdc, TargetRect->left, TargetRect->top, NULL);
+
+            cache->InUse = TRUE;
+            *PaintHdc = cache->Hdc;
+            return TRUE;
+        }
+
+        // GDI failure - fall through to the transient path.
+    }
+
+    // Oversized or GDI failure: allocate fresh objects for this call only.
+    {
+        const PPH_BP_CACHE transient = PhpAllocateTransientBufferedPaint(TargetHdc, width, height);
+
+        if (!transient)
+            return FALSE;
+
+        BufferedPaint->Cache = transient;
+        BufferedPaint->TargetHdc = TargetHdc;
+        BufferedPaint->TargetRect = *TargetRect;
+        BufferedPaint->PaintWidth = width;
+        BufferedPaint->PaintHeight = height;
+        BufferedPaint->OwnsDc = TRUE;
+        BufferedPaint->OwnsBitmap = TRUE;
+        BufferedPaint->Valid = TRUE;
+        BufferedPaint->OldBitmap = SelectBitmap(transient->Hdc, transient->Bitmap);
+        SetWindowOrgEx(transient->Hdc, TargetRect->left, TargetRect->top, NULL);
+
+        *PaintHdc = transient->Hdc;
+        return TRUE;
+    }
+}
+
+/**
+ * Blits (when UpdateTarget) the buffer to the target DC, deselects the bitmap,
+ * and returns the cache slot to its free state (or destroys transient objects).
+ *
+ * \param BufferedPaint The buffered paint state from PhBeginBufferedPaint.
+ * \param UpdateTarget TRUE to blit the buffer to the target DC.
+ */
+VOID PhEndBufferedPaint(
+    _In_ PPH_BUFFERED_PAINT BufferedPaint,
+    _In_ BOOLEAN UpdateTarget
+    )
+{
+    if (!BufferedPaint || !BufferedPaint->Valid)
+        return;
+
+    if (UpdateTarget && BufferedPaint->PaintWidth > 0 && BufferedPaint->PaintHeight > 0)
+    {
+        BitBlt(
+            BufferedPaint->TargetHdc,
+            BufferedPaint->TargetRect.left, BufferedPaint->TargetRect.top,
+            BufferedPaint->PaintWidth, BufferedPaint->PaintHeight,
+            BufferedPaint->Cache->Hdc,
+            BufferedPaint->TargetRect.left, BufferedPaint->TargetRect.top,
+            SRCCOPY
+            );
+    }
+
+    // Deselect before any DeleteObject calls.
+    if (BufferedPaint->OldBitmap)
+    {
+        SelectBitmap(BufferedPaint->Cache->Hdc, BufferedPaint->OldBitmap);
+    }
+
+    if (BufferedPaint->OwnsDc || BufferedPaint->OwnsBitmap)
+    {
+        if (BufferedPaint->OwnsBitmap && BufferedPaint->Cache->Bitmap)
+            DeleteBitmap(BufferedPaint->Cache->Bitmap);
+        if (BufferedPaint->OwnsDc && BufferedPaint->Cache->Hdc)
+            DeleteDC(BufferedPaint->Cache->Hdc);
+        PhFree(BufferedPaint->Cache);
+    }
+    else if (BufferedPaint->Cache)
+    {
+        BufferedPaint->Cache->InUse = FALSE;
+    }
+
+    memset(BufferedPaint, 0, sizeof(PH_BUFFERED_PAINT));
+}
+
+/**
+ * Clears (zeroes) the sub-rectangle Rect of the buffer. Zeros in a 32-bpp
+ * top-down DIB mean transparent black (ARGB 0x00000000). Pass Rect = NULL to
+ * clear the entire paint rectangle.
+ */
+BOOLEAN PhBufferedPaintClear(
+    _In_ PPH_BUFFERED_PAINT BufferedPaint,
+    _In_opt_ const RECT* Rect
+    )
+{
+    RECT clearRect;
+
+    if (!BufferedPaint || !BufferedPaint->Valid)
+        return FALSE;
+
+    clearRect = Rect ? *Rect : BufferedPaint->TargetRect;
+
+    // Fast path: use the raw bits pointer when available.
+    if (BufferedPaint->Cache->Bits)
+    {
+        LONG rowStride = BufferedPaint->Cache->AllocWidth * 4; // 4 bytes per pixel
+        LONG x0 = clearRect.left - BufferedPaint->TargetRect.left;
+        LONG y0 = clearRect.top - BufferedPaint->TargetRect.top;
+        LONG x1 = clearRect.right - BufferedPaint->TargetRect.left;
+        LONG y1 = clearRect.bottom - BufferedPaint->TargetRect.top;
+        LONG clampX0 = __max(x0, 0);
+        LONG clampY0 = __max(y0, 0);
+        LONG clampX1 = __min(x1, BufferedPaint->PaintWidth);
+        LONG clampY1 = __min(y1, BufferedPaint->PaintHeight);
+        LONG spanBytes = (clampX1 - clampX0) * 4;
+        LONG row;
+        PBYTE base = BufferedPaint->Cache->Bits;
+
+        if (spanBytes <= 0 || clampY1 <= clampY0)
+            return TRUE;
+
+        for (row = clampY0; row < clampY1; row++)
+        {
+            memset(base + (SIZE_T)row * rowStride + (SIZE_T)clampX0 * 4, 0, (SIZE_T)spanBytes);
+        }
+
+        return TRUE;
+    }
+
+    // Fallback: PatBlt with a black brush.
+    {
+        LONG x = clearRect.left;
+        LONG y = clearRect.top;
+        LONG width = clearRect.right - clearRect.left;
+        LONG height = clearRect.bottom - clearRect.top;
+
+        return !!PatBlt(BufferedPaint->Cache->Hdc, x, y, width, height, BLACKNESS);
+    }
+}
+
+/**
+ * Sets the alpha channel of every pixel in sub-rectangle Rect to Alpha. This is
+ * a direct write to the DIB bits; no GDI round-trip is needed.
+ *
+ * \param Alpha 0 = fully transparent, 255 = fully opaque.
+ * \param Rect Sub-rectangle in buffer coordinates. Pass NULL for the full rect.
+ * \return FALSE if the buffer has no DIB bits (fallback compatible-bitmap path).
+ */
+BOOLEAN PhBufferedPaintSetAlpha(
+    _In_ PPH_BUFFERED_PAINT BufferedPaint,
+    _In_opt_ const RECT* Rect,
+    _In_ BYTE Alpha
+    )
+{
+    RECT setRect;
+    LONG x0, y0, x1, y1, row, col;
+    PBYTE base;
+    LONG rowStride;
+
+    if (!BufferedPaint || !BufferedPaint->Valid)
+        return FALSE;
+
+    if (!BufferedPaint->Cache->Bits)
+        return FALSE; // compatible bitmap - no direct access
+
+    setRect = Rect ? *Rect : BufferedPaint->TargetRect;
+
+    x0 = __max(setRect.left - BufferedPaint->TargetRect.left, 0);
+    y0 = __max(setRect.top - BufferedPaint->TargetRect.top, 0);
+    x1 = __min(setRect.right - BufferedPaint->TargetRect.left, BufferedPaint->PaintWidth);
+    y1 = __min(setRect.bottom - BufferedPaint->TargetRect.top, BufferedPaint->PaintHeight);
+
+    if (x1 <= x0 || y1 <= y0)
+        return TRUE;
+
+    base = BufferedPaint->Cache->Bits;
+    rowStride = BufferedPaint->Cache->AllocWidth * 4;
+
+    for (row = y0; row < y1; row++)
+    {
+        PBYTE rowPointer = base + (SIZE_T)row * rowStride + (SIZE_T)x0 * 4;
+
+        for (col = x0; col < x1; col++, rowPointer += 4)
+        {
+            rowPointer[3] = Alpha; // BGRA layout: byte[3] is alpha
+        }
+    }
+
+    return TRUE;
+}
+
+/**
+ * Returns a pointer to the top-left pixel of the buffer DIB and the row stride
+ * in pixels (the DIB is 32 bpp, so one RGBQUAD per pixel).
+ *
+ * \param Bits Receives the start of the pixel data.
+ * \param WidthInPixels Receives the number of pixels per scan line (AllocWidth,
+ * which may be wider than the paint width for caching reasons).
+ * \return FALSE if the buffer has no DIB bits (fallback compatible-bitmap path
+ * or invalid handle).
+ */
+BOOLEAN PhGetBufferedPaintBits(
+    _In_ const PH_BUFFERED_PAINT* BufferedPaint,
+    _Out_ RGBQUAD** Bits,
+    _Out_ PLONG WidthInPixels
+    )
+{
+    *Bits = NULL;
+    *WidthInPixels = 0;
+
+    if (!BufferedPaint || !BufferedPaint->Valid || !BufferedPaint->Cache)
+        return FALSE;
+
+    if (!BufferedPaint->Cache->Bits)
+        return FALSE;
+
+    *Bits = BufferedPaint->Cache->Bits;
+    *WidthInPixels = BufferedPaint->Cache->AllocWidth;
+    return TRUE;
+}
+
+/**
+ * Extended variant of PhGetBufferedPaintBits that also returns the byte stride
+ * and a pointer to the first pixel of the paint rectangle.
+ *
+ * \param Bits Receives the pixel data base pointer (top-left of allocation).
+ * \param WidthInPixels Receives the scan-line width in pixels (>= paint width).
+ * \param WidthInBytes Receives the scan-line width in bytes (AllocWidth * 4).
+ * \param FirstPaintPixel Receives a pointer to the first paint pixel, ready for
+ * direct pixel loops over the paint width and height.
+ * \return FALSE if no DIB bits are available.
+ */
+BOOLEAN PhGetBufferedPaintBitsEx(
+    _In_ const PH_BUFFERED_PAINT* BufferedPaint,
+    _Out_ RGBQUAD** Bits,
+    _Out_ PLONG WidthInPixels,
+    _Out_ PLONG WidthInBytes,
+    _Out_ RGBQUAD** FirstPaintPixel
+    )
+{
+    assert(Bits);
+    assert(WidthInPixels);
+    assert(WidthInBytes);
+    assert(FirstPaintPixel);
+
+    *Bits = NULL;
+    *WidthInPixels = 0;
+    *WidthInBytes = 0;
+    *FirstPaintPixel = NULL;
+
+    if (!BufferedPaint || !BufferedPaint->Valid || !BufferedPaint->Cache || !BufferedPaint->Cache->Bits)
+        return FALSE;
+
+    *Bits = BufferedPaint->Cache->Bits;
+    *WidthInPixels = BufferedPaint->Cache->AllocWidth;
+    *WidthInBytes = BufferedPaint->Cache->AllocWidth * 4;
+    // The top-down DIB's row 0 corresponds to TargetRect.top in window
+    // coordinates because SetWindowOrgEx was applied to the memory DC. The pixel
+    // at (TargetRect.left, TargetRect.top) is therefore always at offset 0 in
+    // the surface.
+    *FirstPaintPixel = BufferedPaint->Cache->Bits;
+    return TRUE;
+}
+
+/**
+ * Returns the memory DC to paint into. Valid between Begin and End. Returns
+ * NULL if BufferedPaint is invalid.
+ */
+HDC PhGetBufferedPaintDC(
+    _In_ const PH_BUFFERED_PAINT* BufferedPaint
+    )
+{
+    if (!BufferedPaint || !BufferedPaint->Valid || !BufferedPaint->Cache)
+        return NULL;
+
+    return BufferedPaint->Cache->Hdc;
+}
+
+/**
+ * Returns the original DC that was passed to PhBeginBufferedPaint.
+ */
+HDC PhGetBufferedPaintTargetDC(
+    _In_ const PH_BUFFERED_PAINT* BufferedPaint
+    )
+{
+    if (!BufferedPaint || !BufferedPaint->Valid)
+        return NULL;
+
+    return BufferedPaint->TargetHdc;
+}
+
+/**
+ * Returns the paint rectangle that was passed to PhBeginBufferedPaint.
+ */
+BOOLEAN PhGetBufferedPaintTargetRect(
+    _In_ const PH_BUFFERED_PAINT* BufferedPaint,
+    _Out_ PRECT Rect
+    )
+{
+    if (!BufferedPaint || !BufferedPaint->Valid)
+    {
+        memset(Rect, 0, sizeof(RECT));
+        return FALSE;
+    }
+
+    *Rect = BufferedPaint->TargetRect;
+    return TRUE;
+}
+
+/**
+ * Convenience wrapper that buffers a WM_PAINT into an off-screen surface and
+ * invokes PaintProc with the buffer DC, falling back to direct painting when a
+ * buffer cannot be acquired.
+ *
+ * \param WindowHandle The window being painted.
+ * \param PaintStruct The PAINTSTRUCT from BeginPaint.
+ * \param PaintProc The callback that performs the actual drawing.
+ * \param Context Caller context passed through to PaintProc.
+ */
+VOID PhPaintBuffered(
+    _In_ HWND WindowHandle,
+    _In_ const PAINTSTRUCT* PaintStruct,
+    _In_ PPH_BUFFERED_PAINT_PROC PaintProc,
+    _In_opt_ PVOID Context
+    )
+{
+    PH_BUFFERED_PAINT bufferedPaint;
+    HDC paintHdc;
+
+    assert(WindowHandle);
+    assert(PaintStruct);
+    assert(PaintProc);
+
+    if (PhBeginBufferedPaint(PaintStruct->hdc, &PaintStruct->rcPaint, &bufferedPaint, &paintHdc))
+    {
+        BOOLEAN result = PaintProc(paintHdc, (PRECT)&PaintStruct->rcPaint, Context);
+
+        PhEndBufferedPaint(&bufferedPaint, result);
+    }
+    else
+    {
+        PaintProc(PaintStruct->hdc, (PRECT)&PaintStruct->rcPaint, Context);
+    }
+}
+
+COLORREF NTAPI PhHeatMapColor(
+    _In_ FLOAT Ratio
+    )
+{
+    // Five-stop CPU heatmap palette:
+    // 0.00 #2E7D32 -> 0.25 #8BC34A -> 0.50 #FBC02D -> 0.75 #F57C00 -> 1.00 #C62828
+    // 0.0 (cool/green) to 1.0 (hot/red)
+    UCHAR r;
+    UCHAR g;
+    UCHAR b;
+    FLOAT t;
+
+    if (Ratio < 0.0f)
+        Ratio = 0.0f;
+    if (Ratio > 1.0f)
+        Ratio = 1.0f;
+
+    if (Ratio <= 0.25f)
+    {
+        t = Ratio / 0.25f;
+        r = (UCHAR)(46.0f + (139.0f - 46.0f) * t + 0.5f);
+        g = (UCHAR)(125.0f + (195.0f - 125.0f) * t + 0.5f);
+        b = (UCHAR)(50.0f + (74.0f - 50.0f) * t + 0.5f);
+    }
+    else if (Ratio <= 0.5f)
+    {
+        t = (Ratio - 0.25f) / 0.25f;
+        r = (UCHAR)(139.0f + (251.0f - 139.0f) * t + 0.5f);
+        g = (UCHAR)(195.0f + (192.0f - 195.0f) * t + 0.5f);
+        b = (UCHAR)(74.0f + (45.0f - 74.0f) * t + 0.5f);
+    }
+    else if (Ratio <= 0.75f)
+    {
+        t = (Ratio - 0.5f) / 0.25f;
+        r = (UCHAR)(251.0f + (245.0f - 251.0f) * t + 0.5f);
+        g = (UCHAR)(192.0f + (124.0f - 192.0f) * t + 0.5f);
+        b = (UCHAR)(45.0f + (0.0f - 45.0f) * t + 0.5f);
+    }
+    else
+    {
+        t = (Ratio - 0.75f) / 0.25f;
+        r = (UCHAR)(245.0f + (198.0f - 245.0f) * t + 0.5f);
+        g = (UCHAR)(124.0f + (40.0f - 124.0f) * t + 0.5f);
+        b = (UCHAR)(0.0f + (40.0f - 0.0f) * t + 0.5f);
+    }
+
+    return RGB(r, g, b);
 }

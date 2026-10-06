@@ -1,6 +1,5 @@
 // Microsoft Visual C++ generated resource script.
 //
-#pragma code_page(65001)
 
 #include "resource.h"
 
@@ -25,17 +24,17 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 // TEXTINCLUDE
 //
 
-1 TEXTINCLUDE 
+1 TEXTINCLUDE
 BEGIN
     "resource.h\0"
 END
 
-2 TEXTINCLUDE 
+2 TEXTINCLUDE
 BEGIN
     "#include ""winres.h""\0"
 END
 
-3 TEXTINCLUDE 
+3 TEXTINCLUDE
 BEGIN
     "\r\n"
     "\0"
@@ -46,26 +45,42 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 //
+// PNG
+//
+
+IDB_PARTNERBANNER       PNG                     "resources\\partnerbanner.png"
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
 // Dialog
 //
 
-IDD_OPTIONS DIALOGEX 0, 0, 313, 200
+IDD_OPTIONS DIALOGEX 0, 0, 313, 229
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "选项"
 FONT 11, "等距更纱黑体 Slab SC", 400, 0, 0x1
 BEGIN
-    CONTROL         "Enable VirusTotal scanning",IDC_ENABLE_VIRUSTOTAL,
-                    "Button",BS_AUTOCHECKBOX | WS_DISABLED | WS_TABSTOP,7,7,101,10
-    CONTROL         "Enable VirusTotal detection highlighting",IDC_ENABLE_IDC_ENABLE_VIRUSTOTAL_HIGHLIGHT,
-                    "Button",BS_AUTOCHECKBOX | WS_DISABLED | WS_TABSTOP,7,20,141,10
-    EDITTEXT        IDC_HYBRIDTEXT,16,71,225,14,ES_AUTOHSCROLL | ES_READONLY | WS_DISABLED
-    LTEXT           "API key:",IDC_STATIC,16,60,95,8
-    PUSHBUTTON      "Change",IDC_APIKEYIDBTN,246,71,50,14
-    GROUPBOX        "Hybrid Analysis",IDC_STATIC,7,45,300,52
-    EDITTEXT        IDC_VTEXT,16,130,225,14,ES_AUTOHSCROLL | ES_READONLY | WS_DISABLED
-    LTEXT           "API key:",IDC_STATIC,16,119,95,8
-    PUSHBUTTON      "Change",IDC_VTKEYIDBTN,246,130,50,14
-    GROUPBOX        "VirusTotal",IDC_STATIC,7,104,300,52
+    CONTROL         "Enable scanning",IDC_ENABLE_SCANNING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,7,120,10
+    RTEXT           "Startup delay (seconds):",IDC_SCAN_DELAY_LABEL,176,8,104,8
+    EDITTEXT        IDC_SCAN_DELAY,282,6,24,12,ES_AUTOHSCROLL | ES_NUMBER
+    GROUPBOX        "Hybrid-Analysis",IDC_HA_GROUP,7,19,300,44
+    CONTROL         "Automatic scanning",IDC_HA_LOOKUPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,16,31,100,10
+    CONTROL         "Automatic submission",IDC_HA_SUBMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,120,31,110,10
+    PUSHBUTTON      "Change",IDC_APIKEYIDBTN,16,45,50,14
+    LTEXT           "API key:",IDC_STATIC,72,48,30,8
+    LTEXT           "",IDC_HA_KEY_STATUS,103,48,199,8
+    GROUPBOX        "VirusTotal",IDC_VT_GROUP,7,67,300,44
+    CONTROL         "Automatic scanning",IDC_VT_LOOKUPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,16,79,130,10
+    PUSHBUTTON      "Change",IDC_VTKEYIDBTN,16,93,50,14
+    LTEXT           "API key:",IDC_STATIC,72,96,30,8
+    LTEXT           "",IDC_VT_KEY_STATUS,103,96,199,8
+    GROUPBOX        "Scan exclusions",IDC_EXCLUDE_GROUP,7,115,300,111
+    LTEXT           "Regex matched against the full file path; automatic scanning only.",IDC_STATIC,16,126,284,8
+    LISTBOX         IDC_EXCLUDE_LIST,16,138,224,66,LBS_NOINTEGRALHEIGHT | LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Remove",IDC_EXCLUDE_REMOVE,246,138,54,14
+    EDITTEXT        IDC_EXCLUDE_TEXT,16,208,224,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Add",IDC_EXCLUDE_ADD,246,208,54,14
 END
 
 IDD_OPTIONSKEY DIALOGEX 0, 0, 309, 68
@@ -79,6 +94,23 @@ BEGIN
     LTEXT           "在下方输入密钥:",IDC_KEYTEXT_L,7,7,172,8
     CONTROL         "访问 <a href="""">How-to-generate-a-license-key</a>",IDC_HELPLINK,
                     "SysLink",WS_TABSTOP,7,47,136,14
+END
+
+IDD_PARTNER DIALOGEX 0, 0, 320, 205
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "System Informer"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_PARTNER_BANNER,"Static",SS_OWNERDRAW,70,10,180,50
+    LTEXT           "File reputation analysis",IDC_PARTNER_TITLE,7,66,306,12,SS_CENTER
+    LTEXT           "System Informer has partnered with Hybrid-Analysis to provide automatic reputation analysis for processes, loaded modules, and services.",IDC_STATIC,30,84,260,20
+    GROUPBOX        "What is shared with Hybrid-Analysis",IDC_STATIC,30,110,260,42
+    LTEXT           "•  SHA-256 hashes of scanned images, for reputation lookup",IDC_STATIC,38,124,244,9
+    LTEXT           "•  Files unknown to Hybrid-Analysis are uploaded for full analysis",IDC_STATIC,38,138,244,9
+    LTEXT           "Results appear in the Hybrid-Analysis column. To show it, right-click any column header and select ""Choose columns..."".",IDC_STATIC,30,159,260,18
+    CONTROL         "Hybrid-Analysis",IDC_PARTNER_LINK,"SysLink",WS_TABSTOP,7,187,90,10
+    PUSHBUTTON      "Configure",IDC_PARTNER_CONFIGURE,189,184,58,14
+    DEFPUSHBUTTON   "Keep enabled",IDOK,251,184,62,14
 END
 
 
@@ -134,4 +166,3 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-

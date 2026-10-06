@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -45,9 +45,9 @@ typedef enum _PH_SE_OBJECT_TYPE
 
 } PH_SE_OBJECT_TYPE;
 
-typedef struct
+typedef struct _PhSecurityInformation
 {
-    const ISecurityInformationVtbl *VTable;
+    ISecurityInformation Interface;
 
     ULONG RefCount;
 
@@ -73,25 +73,25 @@ typedef struct
     PVOID Context;
 } PhSecurityInformation;
 
-typedef struct
+typedef struct _PhSecurityInformation2
 {
-    const ISecurityInformation2Vtbl *VTable;
+    ISecurityInformation2 Interface;
 
     PhSecurityInformation *Context;
     ULONG RefCount;
 } PhSecurityInformation2;
 
-typedef struct
+typedef struct _PhSecurityInformation3
 {
-    const ISecurityInformation3Vtbl *VTable;
+    ISecurityInformation3 Interface;
 
     PhSecurityInformation *Context;
     ULONG RefCount;
 } PhSecurityInformation3;
 
-typedef struct
+typedef struct _PhSecurityIDataObject
 {
-    const IDataObjectVtbl *VTable;
+    IDataObject Interface;
 
     PhSecurityInformation *Context;
     ULONG RefCount;
@@ -100,9 +100,9 @@ typedef struct
     PPH_LIST NameCache;
 } PhSecurityIDataObject;
 
-typedef struct
+typedef struct _PhEffectivePermission
 {
-    const IEffectivePermissionVtbl *VTable;
+    IEffectivePermission Interface;
 
     PhSecurityInformation *Context;
     ULONG RefCount;
@@ -137,9 +137,20 @@ DECLARE_INTERFACE_IID_(ISecurityObjectTypeInfoEx, IUnknown, "FC3066EB-79EF-444b-
 };
 typedef ISecurityObjectTypeInfoEx* LPSecurityObjectTypeInfoEx;
 
-typedef struct
+#ifdef COBJMACROS
+#define ISecurityObjectTypeInfoEx_QueryInterface(This,riid,ppvObj) \
+    ((This)->lpVtbl->QueryInterface(This,riid,ppvObj))
+#define ISecurityObjectTypeInfoEx_AddRef(This) \
+    ((This)->lpVtbl->AddRef(This))
+#define ISecurityObjectTypeInfoEx_Release(This) \
+    ((This)->lpVtbl->Release(This))
+#define ISecurityObjectTypeInfoEx_GetInheritSource(This,si,pACL,ppInheritArray) \
+    ((This)->lpVtbl->GetInheritSource(This,si,pACL,ppInheritArray))
+#endif
+
+typedef struct _PhSecurityObjectTypeInfo
 {
-    const ISecurityObjectTypeInfoExVtbl* VTable;
+    ISecurityObjectTypeInfoEx Interface;
 
     PhSecurityInformation* Context;
     ULONG RefCount;
@@ -151,8 +162,8 @@ ISecurityInformation *PhSecurityInformation_Create(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PCWSTR ObjectName,
     _In_ PCWSTR ObjectType,
-    _In_ PPH_OPEN_OBJECT OpenObject,
-    _In_ PPH_CLOSE_OBJECT CloseObject,
+    _In_opt_ PPH_OPEN_OBJECT OpenObject,
+    _In_opt_ PPH_CLOSE_OBJECT CloseObject,
     _In_opt_ PPH_GET_OBJECT_SECURITY GetObjectSecurity,
     _In_opt_ PPH_SET_OBJECT_SECURITY SetObjectSecurity,
     _In_opt_ PVOID Context,

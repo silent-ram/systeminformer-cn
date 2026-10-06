@@ -6,14 +6,16 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #include <ph.h>
 #include <phdata.h>
 
+//
 // SIDs
+//
 
 CONST SID PhSeNobodySid = { SID_REVISION, 1, SECURITY_NULL_SID_AUTHORITY, { SECURITY_NULL_RID } };
 
@@ -38,6 +40,9 @@ CONST SID PhSeRemoteInteractiveLogonSid = { SID_REVISION, 1, SECURITY_NT_AUTHORI
 CONST SID PhSeLocalSystemSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SYSTEM_RID } };
 CONST SID PhSeLocalServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SERVICE_RID } };
 CONST SID PhSeNetworkServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_NETWORK_SERVICE_RID } };
+
+CONST SID PhSeAssertedSid = { SID_REVISION, 1, SECURITY_AUTHENTICATION_AUTHORITY, { SECURITY_AUTHENTICATION_AUTHORITY_ASSERTED_RID } };
+CONST SID PhSeServiceAssertedSid = { SID_REVISION, 1, SECURITY_AUTHENTICATION_AUTHORITY, { SECURITY_AUTHENTICATION_AUTHORITY_ASSERTED_RID } };
 
 PSID PhSeAdministratorsSid( // WinBuiltinAdministratorsSid (dmex)
     VOID
@@ -153,12 +158,32 @@ PSID PhSeCloudActiveDirectorySid( // S-1-12-1 (dmex)
     return activeDirectorySid;
 }
 
+PSID PhSeLogonIdSid(
+    _In_ ULONG LogonId
+    )
+{
+    static UCHAR logonSessionSidBuffer[FIELD_OFFSET(SID, SubAuthority) + sizeof(ULONG[SECURITY_LOGON_IDS_RID_COUNT])];
+    static SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
+    PSID logonSessionSid = (PSID)logonSessionSidBuffer;
+
+    PhInitializeSid(logonSessionSid, &authority, SECURITY_LOGON_IDS_RID_COUNT);
+    *PhSubAuthoritySid(logonSessionSid, 0) = SECURITY_LOGON_IDS_RID;
+    *PhSubAuthoritySid(logonSessionSid, 1) = 0;
+    *PhSubAuthoritySid(logonSessionSid, 2) = LogonId;
+
+    return logonSessionSid;
+}
+
+//
 // Unicode
+//
 
 DECLSPEC_SELECTANY CONST
 PH_STRINGREF PhUnicodeByteOrderMark = PH_STRINGREF_INIT(L"\ufeff");
 
+//
 // Characters
+//
 
 DECLSPEC_SELECTANY CONST
 BOOLEAN PhCharIsPrintable[256] =

@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2016-2019
+ *     dmex    2016-2026
  *
  */
 
@@ -16,9 +16,18 @@ static TASKDIALOG_BUTTON TaskDialogButtonArray[] =
     { IDOK, L"下载" }
 };
 
+/**
+ * \brief Callback procedure for the Update Available task dialog page.
+ * \param WindowHandle Handle to the dialog window.
+ * \param WindowMessage The window message.
+ * \param wParam Additional message-specific information.
+ * \param lParam Additional message-specific information.
+ * \param dwRefData The updater context.
+ * \return HRESULT Successful or errant status.
+ */
 HRESULT CALLBACK ShowAvailableCallbackProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -26,7 +35,7 @@ HRESULT CALLBACK ShowAvailableCallbackProc(
 {
     PPH_UPDATER_CONTEXT context = (PPH_UPDATER_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_NAVIGATED:
         PhSetEvent(&InitializedEvent);
@@ -51,6 +60,10 @@ HRESULT CALLBACK ShowAvailableCallbackProc(
     return S_OK;
 }
 
+/**
+ * \brief Shows the Update Available dialog page.
+ * \param Context The updater context.
+ */
 VOID ShowAvailableDialog(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -61,7 +74,7 @@ VOID ShowAvailableDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS;
     config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
     config.cxWidth = 200;
     config.pButtons = TaskDialogButtonArray;
     config.cButtons = RTL_NUMBER_OF(TaskDialogButtonArray);
@@ -74,19 +87,19 @@ VOID ShowAvailableDialog(
         switch (Context->Channel)
         {
         case PhReleaseChannel:
-            config.pszMainInstruction = L"下载正式版频道信息?";
+            config.pszMainInstruction = L"Would you like to download the Release build?";
             break;
         //case PhPreviewChannel:
-        //    config.pszMainInstruction = L"Download the preview channel?";
+        //    config.pszMainInstruction = L"Would you like to download the Preview build?";
         //    break;
         case PhCanaryChannel:
-            config.pszMainInstruction = L"Download the canary channel?";
+            config.pszMainInstruction = L"Would you like to download the Canary build?";
             break;
         //case PhDeveloperChannel:
-        //    config.pszMainInstruction = L"Download the developer channel?";
+        //    config.pszMainInstruction = L"Would you like to download the Developer build?";
         //    break;
         default:
-            config.pszMainInstruction = L"下载频道信息?";
+            config.pszMainInstruction = L"Would you like to download the update?";
             break;
         }
     }
@@ -95,7 +108,8 @@ VOID ShowAvailableDialog(
         config.pszMainInstruction = L"检查到一个可用的更新。";
     }
 
-    config.pszContent = PhaFormatString(L"版本: %s\r\n大小: %s\r\n\r\n<A HREF=\"changelog.txt\">查看更新日志</A>",
+    config.pszContent = PhaFormatString(
+        L"Version: %s\r\nDownload size: %s\r\n\r\n<A HREF=\"changelog.txt\">View the changelog</A>",
         PhGetStringOrEmpty(Context->Version),
         PhGetStringOrEmpty(Context->SetupFileLength)
         )->Buffer;

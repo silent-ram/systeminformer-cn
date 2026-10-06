@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *     jxy-s   2021
  *
  */
@@ -233,6 +233,7 @@ VOID PhInitializeProcessTreeList(
     PhAddTreeNewColumn(hwnd, PHPRTLC_START_KEY, FALSE, L"Start key", 120, PH_ALIGN_LEFT, ULONG_MAX, 0);
     PhAddTreeNewColumn(hwnd, PHPRTLC_MITIGATION_POLICIES, FALSE, L"Mitigation policies", 180, PH_ALIGN_LEFT, ULONG_MAX, 0);
     PhAddTreeNewColumn(hwnd, PHPRTLC_SERVICES, FALSE, L"Services", 180, PH_ALIGN_LEFT, ULONG_MAX, 0);
+    PhAddTreeNewColumn(hwnd, PHPRTLC_SHORT_USERNAME, FALSE, L"Short user name", 140, PH_ALIGN_LEFT, ULONG_MAX, 0);
 
     PhCmInitializeManager(&ProcessTreeListCm, hwnd, PHPRTLC_MAXIMUM, PhpProcessTreeNewPostSortFunction);
     PhInitializeTreeNewFilterSupport(&FilterSupport, hwnd, ProcessNodeList);
@@ -693,6 +694,7 @@ VOID PhpRemoveProcessNode(
     PhClearReference(&ProcessNode->ProcessStartKeyText);
     PhClearReference(&ProcessNode->MitigationPoliciesText);
     PhClearReference(&ProcessNode->ServicesText);
+    PhClearReference(&ProcessNode->ShortUsernameText);
 
     PhDeleteGraphBuffers(&ProcessNode->CpuGraphBuffers);
     PhDeleteGraphBuffers(&ProcessNode->PrivateGraphBuffers);
@@ -829,7 +831,11 @@ static VOID PhpNeedGraphContext(
         return;
     GraphBitmap = PhCreateDIBSection(hdc, PHBF_DIB, Width, Height, &GraphBits);
     if (!GraphBitmap)
+    {
+        DeleteDC(GraphContext);
+        GraphContext = NULL;
         return;
+    }
     GraphOldBitmap = SelectBitmap(GraphContext, GraphBitmap);
 }
 
@@ -883,6 +889,8 @@ FORCEINLINE VOID PhpAccumulateField(
     case AggregateTypeIntPtr:
         *(PULONG_PTR)Accumulator += *(PULONG_PTR)Value;
         break;
+    default:
+        ASSUME_NO_DEFAULT;
     }
 }
 
@@ -1904,6 +1912,27 @@ static VOID PhpUpdateProcessNodeServices(
     }
 }
 
+static VOID PhpUpdateProcessNodeShortUsername(
+    _Inout_ PPH_PROCESS_NODE ProcessNode
+)
+{
+    if (!FlagOn(ProcessNode->ValidMask, PHPN_SHORTUSERNAME))
+    {
+        PhClearReference(&ProcessNode->ShortUsernameText);
+
+        if (ProcessNode->ProcessItem->UserName)
+        {
+            wchar_t* backslash = wcsrchr(ProcessNode->ProcessItem->UserName->Buffer, L'\\');
+            if (backslash)
+                ProcessNode->ShortUsernameText = PhCreateString(backslash + 1);
+            else
+                ProcessNode->ShortUsernameText = PhCreateString(ProcessNode->ProcessItem->UserName->Buffer);
+        }
+
+        SetFlag(ProcessNode->ValidMask, PHPN_SHORTUSERNAME);
+    }
+}
+
 #define SORT_FUNCTION(Column) PhpProcessTreeNewCompare##Column
 #define BEGIN_SORT_FUNCTION(Column) static int __cdecl PhpProcessTreeNewCompare##Column( \
     _In_ const void *_elem1, \
@@ -2510,8 +2539,8 @@ BEGIN_SORT_FUNCTION(IoReadsDelta)
     ULONG64 number1 = 0;
     ULONG64 number2 = 0;
 
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadCountDelta.Value), &number1);
-    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadCountDelta.Value), &number2);
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadCountDelta.Delta), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadCountDelta.Delta), &number2);
 
     sortResult = uint64cmp(number1, number2);
 }
@@ -2522,8 +2551,8 @@ BEGIN_SORT_FUNCTION(IoWritesDelta)
     ULONG64 number1 = 0;
     ULONG64 number2 = 0;
 
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteCountDelta.Value), &number1);
-    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteCountDelta.Value), &number2);
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteCountDelta.Delta), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteCountDelta.Delta), &number2);
 
     sortResult = uint64cmp(number1, number2);
 }
@@ -2534,8 +2563,8 @@ BEGIN_SORT_FUNCTION(IoOtherDelta)
     ULONG64 number1 = 0;
     ULONG64 number2 = 0;
 
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherCountDelta.Value), &number1);
-    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherCountDelta.Value), &number2);
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherCountDelta.Delta), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherCountDelta.Delta), &number2);
 
     sortResult = uint64cmp(number1, number2);
 }
@@ -2594,7 +2623,7 @@ BEGIN_SORT_FUNCTION(MinimumWorkingSet)
     PhpUpdateProcessNodeQuotaLimits(node2);
 
     PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number1);
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeIntPtr, AggregateProcessNode, node2, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number2);
 
     sortResult = uintptrcmp(number1, number2);
 }
@@ -2609,7 +2638,7 @@ BEGIN_SORT_FUNCTION(MaximumWorkingSet)
     PhpUpdateProcessNodeQuotaLimits(node2);
 
     PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number1);
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeIntPtr, AggregateProcessNode, node2, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number2);
 
     sortResult = uintptrcmp(number1, number2);
 }
@@ -2970,6 +2999,19 @@ BEGIN_SORT_FUNCTION(Services)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(ShortUserName)
+{
+    PhpUpdateProcessNodeShortUsername(node1);
+    PhpUpdateProcessNodeShortUsername(node2);
+    sortResult = PhCompareStringWithNullSortOrder(
+        node1->ShortUsernameText,
+        node2->ShortUsernameText,
+        ProcessTreeListSortOrder,
+        TRUE
+    );
+}
+END_SORT_FUNCTION
+
 BOOLEAN NTAPI PhpProcessTreeNewCallback(
     _In_ HWND hwnd,
     _In_ PH_TREENEW_MESSAGE Message,
@@ -3048,7 +3090,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
 
             if (sortList)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     SORT_FUNCTION(Pid),
@@ -3157,8 +3199,9 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     SORT_FUNCTION(StartKey),
                     SORT_FUNCTION(MitigationPolicies),
                     SORT_FUNCTION(Services),
+                    SORT_FUNCTION(ShortUserName),
                 };
-                int (__cdecl *sortFunction)(const void *, const void *);
+                _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHPRTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -4692,6 +4735,16 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     }
                 }
                 break;
+            case PHPRTLC_SHORT_USERNAME:
+                {
+                    PhpUpdateProcessNodeShortUsername(node);
+
+                    if (node->ShortUsernameText)
+                    {
+                        getCellText->Text = PhGetStringRef(node->ShortUsernameText);
+                    }
+                }
+                break;
             default:
                 return FALSE;
             }
@@ -5681,6 +5734,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             PPH_PROCESS_NODE targetNode = (PPH_PROCESS_NODE)reorderEvent->Target;
             BOOLEAN targetIsDescendant = FALSE;
             ULONG oldIndex, newIndex;
+            PPH_PROCESS_NODE originalParent;
 
             if (sourceNode && targetNode)
             {
@@ -5695,6 +5749,9 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     current = current->Parent;
                 }
             }
+
+            // Save original parent before unlinking, so we can restore on invalid move.
+            originalParent = sourceNode->Parent;
 
             // Remove sourceNode from its current parent or root list (dmex)
             if (sourceNode->Parent)
@@ -5761,9 +5818,18 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             }
             else
             {
-                // Invalid move (would create a cycle) - restore original placement at end of root list. (dmex)
-                PhInsertItemList(ProcessNodeRootList, ProcessNodeRootList->Count, sourceNode);
-                sourceNode->Parent = NULL;
+                // Invalid move (would create a cycle) - restore to original position. (dmex)
+                if (originalParent)
+                {
+                    ULONG restoreIndex = (oldIndex != ULONG_MAX) ? oldIndex : originalParent->Children->Count;
+                    PhInsertItemList(originalParent->Children, restoreIndex, sourceNode);
+                }
+                else
+                {
+                    ULONG restoreIndex = (oldIndex != ULONG_MAX) ? oldIndex : ProcessNodeRootList->Count;
+                    PhInsertItemList(ProcessNodeRootList, restoreIndex, sourceNode);
+                }
+                sourceNode->Parent = originalParent;
             }
 
             TreeNew_NodesStructured(hwnd);
@@ -5928,13 +5994,11 @@ static VOID PhpAddAndPropagateProcessItems(
     _In_ PPH_PROCESS_NODE ProcessNode
     )
 {
-    for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
+    if (ProcessNode->Children)
     {
-        PPH_PROCESS_NODE child = ProcessNode->Children->Items[i];
-
-        if (child->Children)
+        for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
         {
-            PhpAddAndPropagateProcessItems(ProcessesArray, child);
+            PhpAddAndPropagateProcessItems(ProcessesArray, ProcessNode->Children->Items[i]);
         }
     }
 

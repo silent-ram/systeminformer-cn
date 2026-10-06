@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -63,6 +63,7 @@ typedef enum _PH_THREAD_TREELIST_COLUMN
     PH_THREAD_TREELIST_COLUMN_LXSSTID,
     PH_THREAD_TREELIST_COLUMN_POWERTHROTTLING,
     PH_THREAD_TREELIST_COLUMN_STARTADDRESS,
+    PH_THREAD_TREELIST_COLUMN_KSTACKUSAGE,
     PH_THREAD_TREELIST_COLUMN_RPC,
     PH_THREAD_TREELIST_COLUMN_ACTUALBASEPRIORITY,
     PH_THREAD_TREELIST_COLUMN_MAXIMUM,
@@ -74,6 +75,11 @@ typedef enum _PH_THREAD_TREELIST_MENUITEM
     PH_THREAD_TREELIST_MENUITEM_HIDE_GUITHREADS,
     PH_THREAD_TREELIST_MENUITEM_HIDE_UNKNOWNSTARTADDRESS,
     PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_SUSPENDED,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_DELAYEXECUTION,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_USERREQUEST,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_ALERTBYTHREADID,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_QUEUE,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_EXECUTIVE,
     PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_GUITHREADS,
     PH_THREAD_TREELIST_MENUITEM_SAVE, // Always last (dmex)
     PH_THREAD_TREELIST_MENUITEM_MAXIMUM
@@ -118,6 +124,9 @@ typedef struct _PH_THREAD_NODE
     FLOAT StackUsageFloat;
     ULONG_PTR StackUsage;
     ULONG_PTR StackLimit;
+    FLOAT KernelStackUsageFloat;
+    ULONG_PTR KernelStackUsage;
+    ULONG_PTR KernelStackLimit;
     PH_THREAD_TOKEN_STATE TokenState;
     NTSTATUS LastSystemCallStatus;
     THREAD_LAST_SYSCALL_INFORMATION LastSystemCall;
@@ -140,6 +149,7 @@ typedef struct _PH_THREAD_NODE
     PPH_STRING ApartmentTypeText;
     PPH_STRING ApartmentFlagsText;
     PPH_STRING StackUsageText;
+    PPH_STRING KernelStackUsageText;
     WCHAR ContextSwitchesText[PH_INT64_STR_LEN_1];
     WCHAR PriorityText[PH_INT32_STR_LEN_1];
     WCHAR BasePriorityText[PH_INT32_STR_LEN_1];
@@ -191,9 +201,14 @@ typedef struct _PH_THREAD_LIST_CONTEXT
             ULONG HideSuspended : 1;
             ULONG HideGuiThreads : 1;
             ULONG HighlightSuspended : 1;
+            ULONG HighlightDelayExecution : 1;
+            ULONG HighlightUserRequest : 1;
+            ULONG HighlightAlertByThreadId : 1;
+            ULONG HighlightQueue : 1;
+            ULONG HighlightExecutive : 1;
             ULONG HighlightGuiThreads : 1;
 
-            ULONG Spare : 25;
+            ULONG Spare : 20;
         };
     };
 } PH_THREAD_LIST_CONTEXT, *PPH_THREAD_LIST_CONTEXT;

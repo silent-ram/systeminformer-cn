@@ -1,12 +1,11 @@
 // Microsoft Visual C++ generated resource script.
 //
-#pragma code_page(65001)
 
 #include <windows.h>
 #include <sistatus.rc>
 
-#define VER_FILEVERSION             3,2,1,0
-#define VER_FILEVERSION_STR         "3.2\0"
+#define VER_FILEVERSION             4,0,1,0
+#define VER_FILEVERSION_STR         "4.0.1\0"
 
 #define VER_PRODUCTVERSION          VER_FILEVERSION
 #define VER_PRODUCTVERSION_STR      VER_FILEVERSION_STR

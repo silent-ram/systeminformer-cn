@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
 #ifndef PH_PROCPRV_H
 #define PH_PROCPRV_H
+
+EXTERN_C_START
 
 #define PH_RECORD_MAX_USAGE
 
@@ -242,7 +244,11 @@ typedef struct _PH_PROCESS_ITEM
     // Dynamic
 
     KPRIORITY BasePriority;
-    PKAFFINITY AffinityMasks; // PhSystemProcessorInformation.NumberOfProcessorGroups
+    union
+    {
+        KAFFINITY AffinityMaskSingle; // Single processor group
+        PKAFFINITY AffinityMaskGroups; // Multiple processor groups * PhSystemProcessorInformation.NumberOfProcessorGroups
+    };
     ULONG AffinityPopulationCount;
     ULONG PriorityClass;
     LARGE_INTEGER KernelTime;
@@ -487,8 +493,10 @@ PhReferenceProcessItemForRecord(
 // end_phapppub
 
 extern PPH_OBJECT_TYPE PhImageListItemType;
+extern LONG PhProcessImageListWindowDpi;
 extern HIMAGELIST PhProcessLargeImageList;
 extern HIMAGELIST PhProcessSmallImageList;
+extern LONG PhProcessImageListWindowDpi;
 
 // begin_phapppub
 PHAPPAPI
@@ -549,5 +557,7 @@ PhCreateProcessItemFromHandle(
     _In_ HANDLE ProcessHandle,
     _In_ BOOLEAN TerminatedProcess
     );
+
+EXTERN_C_END
 
 #endif

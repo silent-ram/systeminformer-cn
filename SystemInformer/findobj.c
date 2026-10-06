@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -312,7 +312,7 @@ VOID PhpUpdateHandleObjectNode(
 }
 
 BOOLEAN NTAPI PhpHandleObjectTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -331,7 +331,7 @@ BOOLEAN NTAPI PhpHandleObjectTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Process),
                     SORT_FUNCTION(Type),
@@ -341,7 +341,7 @@ BOOLEAN NTAPI PhpHandleObjectTreeNewCallback(
                     SORT_FUNCTION(OriginalName),
                     SORT_FUNCTION(GrantedAccess),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PH_OBJECT_SEARCH_TREE_COLUMN_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -428,7 +428,7 @@ BOOLEAN NTAPI PhpHandleObjectTreeNewCallback(
             context->TreeNewSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -469,13 +469,13 @@ BOOLEAN NTAPI PhpHandleObjectTreeNewCallback(
             PH_TN_COLUMN_MENU_DATA data;
 
             memset(&data, 0, sizeof(PH_TN_COLUMN_MENU_DATA));
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = PH_OBJECT_SEARCH_TREE_COLUMN_PROCESS;
             data.DefaultSortOrder = NoSortOrder;
             PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_SHOW_RESET_SORT);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
+            data.Selection = PhShowEMenu(data.Menu, WindowHandle, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);
@@ -1038,9 +1038,6 @@ NTSTATUS PhpFindObjectsThreadStart(
 
     if (NT_SUCCESS(status))
     {
-        static PH_INITONCE initOnce = PH_INITONCE_INIT;
-        static USHORT fileObjectTypeIndex = USHRT_MAX;
-
         BOOLEAN useWorkQueue = FALSE;
         PH_WORK_QUEUE workQueue;
         processHandleHashtable = PhCreateSimpleHashtable(8);
@@ -1049,12 +1046,6 @@ NTSTATUS PhpFindObjectsThreadStart(
         {
             useWorkQueue = TRUE;
             PhInitializeWorkQueue(&workQueue, 1, 20, 1000);
-
-            if (PhBeginInitOnce(&initOnce))
-            {
-                fileObjectTypeIndex = (USHORT)PhGetObjectTypeNumberZ(L"File");
-                PhEndInitOnce(&initOnce);
-            }
         }
 
         for (i = 0; i < handles->NumberOfHandles; i++)
@@ -1087,7 +1078,7 @@ NTSTATUS PhpFindObjectsThreadStart(
                 }
             }
 
-            if (useWorkQueue && handleInfo->ObjectTypeIndex == fileObjectTypeIndex)
+            if (useWorkQueue && PhIsObjectTypeIndex(handleInfo->ObjectTypeIndex, PhHandleObjectTypeFile))
             {
                 PSEARCH_HANDLE_CONTEXT searchHandleContext;
 
@@ -1265,7 +1256,7 @@ INT_PTR CALLBACK PhFindObjectsDlgProc(
             context->TreeNewHandle = GetDlgItem(hwndDlg, IDC_TREELIST);
             context->TypeWindowHandle = GetDlgItem(hwndDlg, IDC_FILTERTYPE);
             context->SearchWindowHandle = GetDlgItem(hwndDlg, IDC_FILTER);
-            context->TypeWindowFont = PhDuplicateFont(PhApplicationFont);
+            context->TypeWindowFont = PhCreateApplicationFont(PhGetWindowDpi(hwndDlg));
             context->WindowText = PhGetWindowText(hwndDlg);
 
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
@@ -1698,10 +1689,21 @@ INT_PTR CALLBACK PhFindObjectsDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT typeWindowFont;
+
+            if (typeWindowFont = PhCreateApplicationFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->TypeWindowFont, context->TypeWindowHandle, typeWindowFont, TRUE);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
 
             PhpUpdateDropdownThemeMetrics(context, LOWORD(wParam));
+
+            context->MinimumSize.left = 0;
+            context->MinimumSize.top = 0;
+            context->MinimumSize.right = 300;
+            context->MinimumSize.bottom = 100;
+            MapDialogRect(hwndDlg, &context->MinimumSize);
         }
         break;
     case WM_SIZE:

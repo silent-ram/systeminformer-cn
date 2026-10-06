@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -148,7 +148,7 @@ static VOID PhpRefreshProcessList(
         }
         else
         {
-            PhGetStockApplicationIcon(NULL, &icon);
+            PhGetStockApplicationIcon(NULL, &icon, PhGetWindowDpi(Context->ListViewHandle));
             imageIndex = PhImageListAddIcon(Context->ImageList, icon);
             PhSetListViewItemImageIndex(Context->ListViewHandle, lvItemIndex, imageIndex);
         }

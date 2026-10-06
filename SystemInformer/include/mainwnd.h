@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_MAINWND_H
 #define PH_MAINWND_H
+
+EXTERN_C_START
 
 extern HWND PhMainWndHandle;
 extern BOOLEAN PhMainWndExiting;
@@ -34,7 +36,8 @@ extern BOOLEAN PhMainWndExiting;
 #define WM_PH_SELECT_NODE (WM_APP + 151)
 #define WM_PH_SHOW_EDITOR (WM_APP + 152)
 #define WM_PH_SHOW_RESULT (WM_APP + 153)
-#define WM_PH_LAST (WM_APP + 154)
+#define WM_PH_SHOW_OPTIONS (WM_APP + 154)
+#define WM_PH_LAST (WM_APP + 155)
 
 // begin_phapppub
 typedef enum _PH_MAINWINDOW_CALLBACK_TYPE
@@ -71,8 +74,20 @@ typedef enum _PH_MAINWINDOW_CALLBACK_TYPE
     PH_MAINWINDOW_CALLBACK_TYPE_PAGEINDEX,
     PH_MAINWINDOW_CALLBACK_TYPE_WINDOWDPI,
     PH_MAINWINDOW_CALLBACK_TYPE_WINDOWNAME,
+    PH_MAINWINDOW_CALLBACK_TYPE_GET_MAIN_MENU,
+    PH_MAINWINDOW_CALLBACK_TYPE_GET_MAIN_SUBMENU,
+    PH_MAINWINDOW_CALLBACK_TYPE_SET_MAIN_SUBCMD,
+    PH_MAINWINDOW_CALLBACK_TYPE_SHOW_OPTIONS,
+    PH_MAINWINDOW_CALLBACK_TYPE_SHOW_MINIINFO_SECTION,
     PH_MAINWINDOW_CALLBACK_TYPE_MAXIMUM
 } PH_MAINWINDOW_CALLBACK_TYPE;
+
+typedef struct _PH_PLUGIN_SHOW_MINIINFO_SECTION
+{
+    BOOLEAN Show;
+    PCWSTR SectionName;
+    POINT SourcePoint;
+} PH_PLUGIN_SHOW_MINIINFO_SECTION, *PPH_PLUGIN_SHOW_MINIINFO_SECTION;
 
 PHAPPAPI
 PVOID
@@ -87,6 +102,8 @@ PhPluginInvokeWindowCallback(
     PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_DESTROY, 0, 0)
 #define SystemInformer_ShowProcessProperties(ProcessItem) \
     PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_SHOW_PROPERTIES, 0, (PVOID)(ULONG_PTR)(ProcessItem))
+#define SystemInformer_ShowOptions(SectionName) \
+    PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_SHOW_OPTIONS, 0, (PVOID)(ULONG_PTR)(SectionName))
 #define SystemInformer_SaveAllSettings() \
     PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_SAVE_ALL_SETTINGS, 0, 0)
 #define SystemInformer_PrepareForEarlyShutdown() \
@@ -147,6 +164,14 @@ PhPluginInvokeWindowCallback(
     (PtrToUlong(PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_WINDOWDPI, 0, 0)))
 #define SystemInformer_GetWindowName() \
     (PWSTR)(PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_WINDOWNAME, 0, 0))
+#define SystemInformer_GetMainMenu() \
+    ((PPH_EMENU)PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_GET_MAIN_MENU, 0, 0))
+#define SystemInformer_GetMainSubMenu(Index) \
+    ((PPH_EMENU)PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_GET_MAIN_SUBMENU, (PVOID)(ULONG_PTR)(Index), 0))
+#define SystemInformer_SetMainSubCmd(Index, Context) \
+    PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_SET_MAIN_SUBCMD, (PVOID)(ULONG_PTR)(Index), (PVOID)Context)
+#define SystemInformer_ShowMiniInfoSection(Data) \
+    PhPluginInvokeWindowCallback(PH_MAINWINDOW_CALLBACK_TYPE_SHOW_MINIINFO_SECTION, 0, (PVOID)(ULONG_PTR)(Data))
 
 #define PhWindowsVersion SystemInformer_GetWindowsVersion() // Temporary backwards compat (dmex)
 // end_phapppub
@@ -287,7 +312,7 @@ BOOLEAN PhHandleMiniProcessMenuItem(
 
 VOID PhShowIconContextMenu(
     _In_ HWND WindowHandle,
-    _In_ POINT Location
+    _In_ PPOINT Location
     );
 
 // begin_phapppub
@@ -306,7 +331,8 @@ typedef enum _PH_TOAST_REASON
     PhToastReasonTimedOut,
     PhToastReasonActivated,
     PhToastReasonError,
-    PhToastReasonUnknown
+    PhToastReasonUnknown,
+    PhToastReasonAction
 } PH_TOAST_REASON;
 
 typedef _Function_class_(PH_TOAST_CALLBACK)
@@ -317,6 +343,18 @@ VOID NTAPI PH_TOAST_CALLBACK(
 );
 typedef PH_TOAST_CALLBACK* PPH_TOAST_CALLBACK;
 
+// Note: V2 toast callbacks are invoked on the internal toast pump thread, not
+// on the caller's thread. Callers must not assume their own thread affinity and
+// should marshal any UI work to the main window (e.g. via PhInvokeOnMainThread).
+typedef _Function_class_(PH_TOAST_CALLBACK2)
+VOID NTAPI PH_TOAST_CALLBACK2(
+    _In_ HRESULT Result,
+    _In_ PH_TOAST_REASON Reason,
+    _In_opt_ PCWSTR Arguments,
+    _In_ PVOID Context
+);
+typedef PH_TOAST_CALLBACK2* PPH_TOAST_CALLBACK2;
+
 PHAPPAPI
 HRESULT
 NTAPI
@@ -326,6 +364,62 @@ PhShowIconNotificationEx(
     _In_ ULONG Timeout,
     _In_opt_ PPH_TOAST_CALLBACK Callback,
     _In_opt_ PVOID Context
+    );
+
+typedef enum _PH_TOAST_PRIORITY
+{
+    PhToastPriorityDefault = 0,
+    PhToastPriorityHigh = 1
+} PH_TOAST_PRIORITY;
+
+typedef struct _PH_TOAST_ENTRY *PPH_TOAST;
+
+PHAPPAPI
+_Must_inspect_result_
+HRESULT
+NTAPI
+PhShowToastEx2(
+    _In_ PPH_STRINGREF ApplicationId,
+    _In_ PPH_STRINGREF ToastXml,
+    _In_opt_ PPH_STRINGREF Tag,
+    _In_opt_ PPH_STRINGREF Group,
+    _In_opt_ ULONG TimeoutMilliseconds,
+    _In_opt_ PH_TOAST_PRIORITY Priority,
+    _In_opt_ PPH_TOAST_CALLBACK2 ToastCallback,
+    _In_opt_ PVOID Context,
+    _Outptr_opt_result_maybenull_ PPH_TOAST* OutToast
+    );
+
+PHAPPAPI
+HRESULT
+NTAPI
+PhUpdateToastProgress(
+    _In_ PPH_TOAST Toast,
+    _In_ double Value,
+    _In_opt_ PCWSTR String,
+    _In_opt_ PCWSTR Status,
+    _In_opt_ PCWSTR Title
+    );
+
+PHAPPAPI
+VOID
+NTAPI
+PhHideToast(
+    _In_opt_ PPH_TOAST Toast
+    );
+
+PHAPPAPI
+VOID
+NTAPI
+PhReleaseToast(
+    _In_opt_ PPH_TOAST Toast
+    );
+
+PHAPPAPI
+PPH_STRING
+NTAPI
+PhEscapeStringForXml(
+    _In_opt_ PCWSTR Input
     );
 // end_phapppub
 
@@ -367,5 +461,7 @@ VOID PhServiceListInsertContextMenu(
     _In_ PPH_SERVICE_ITEM* Services,
     _In_ ULONG NumberOfServices
     );
+
+EXTERN_C_END
 
 #endif

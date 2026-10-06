@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -51,7 +51,7 @@ LONG PhpNetworkTreeNewPostSortFunction(
     );
 
 BOOLEAN NTAPI PhpNetworkTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -79,7 +79,6 @@ static ULONG64 NextUniqueId = 0;
 
 BOOLEAN PhNetworkTreeListStateHighlighting = TRUE;
 static PPH_POINTER_LIST NetworkNodeStateList = NULL; // list of nodes which need to be processed
-
 static PH_TN_FILTER_SUPPORT FilterSupport;
 
 VOID PhNetworkTreeListInitialization(
@@ -263,8 +262,8 @@ PPH_NETWORK_NODE PhAddNetworkNode(
             );
     }
 
-    networkNode->NetworkItem = NetworkItem;
     PhReferenceObject(NetworkItem);
+    networkNode->NetworkItem = NetworkItem;
     networkNode->UniqueId = ++NextUniqueId; // used to stabilize sorting
 
     memset(networkNode->TextCache, 0, sizeof(PH_STRINGREF) * PHNETLC_MAXIMUM);
@@ -372,14 +371,27 @@ VOID PhTickNetworkNodes(
     VOID
     )
 {
+    BOOLEAN fullyInvalidated = FALSE;
+
     if (NetworkTreeListSortOrder != NoSortOrder)
     {
         // Sorting is on, but it's not one of our columns. Force a rebuild. (If it was one of our
         // columns, the restructure would have been handled in PhUpdateNetworkNode.)
         TreeNew_NodesStructured(NetworkTreeListHandle);
+        fullyInvalidated = TRUE;
     }
 
-    PH_TICK_SH_STATE_TN(PH_NETWORK_NODE, ShState, NetworkNodeStateList, PhpRemoveNetworkNode, PhCsHighlightingDuration, NetworkTreeListHandle, TRUE, NULL, NULL);
+    PH_TICK_SH_STATE_TN(
+        PH_NETWORK_NODE,
+        ShState,
+        NetworkNodeStateList,
+        PhpRemoveNetworkNode,
+        PhCsHighlightingDuration,
+        NetworkTreeListHandle,
+        TRUE,
+        &fullyInvalidated,
+        NULL
+        );
 }
 
 #define SORT_FUNCTION(Column) PhpNetworkTreeNewCompare##Column
@@ -539,7 +551,23 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(State)
 {
-    sortResult = uintcmp(networkItem1->State, networkItem2->State);
+    // For TCP, treat "Bound" state (listening sockets) specially - always sort them last
+    BOOLEAN isBound1 = (networkItem1->ProtocolType == PH_PROTOCOL_TYPE_TCP && networkItem1->State == MIB_TCP_STATE_RESERVED);
+    BOOLEAN isBound2 = (networkItem2->ProtocolType == PH_PROTOCOL_TYPE_TCP && networkItem2->State == MIB_TCP_STATE_RESERVED);
+
+    if (isBound1 && !isBound2)
+    {
+        sortResult = 1; // item1 is bound, sorts after item2
+    }
+    else if (!isBound1 && isBound2)
+    {
+        sortResult = -1; // item2 is bound, sorts after item1
+    }
+    else
+    {
+        // Both bound or both not bound - normal comparison
+        sortResult = uintcmp(networkItem1->State, networkItem2->State);
+    }
 }
 END_SORT_FUNCTION
 
@@ -562,7 +590,7 @@ BEGIN_SORT_FUNCTION(HvService)
 END_SORT_FUNCTION
 
 BOOLEAN NTAPI PhpNetworkTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -571,7 +599,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
 {
     PPH_NETWORK_NODE node;
 
-    if (PhCmForwardMessage(hwnd, Message, Parameter1, Parameter2, &NetworkTreeListCm))
+    if (PhCmForwardMessage(WindowHandle, Message, Parameter1, Parameter2, &NetworkTreeListCm))
         return TRUE;
 
     switch (Message)
@@ -582,7 +610,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Process),
                     SORT_FUNCTION(Pid),
@@ -599,7 +627,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                     SORT_FUNCTION(TimeStamp),
                     SORT_FUNCTION(HvService),
                 };
-                int (__cdecl *sortFunction)(const void *, const void *);
+                _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHNETLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -664,7 +692,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                     if (networkItem->LocalHostnameResolved)
                         getCellText->Text = PhGetStringRef(networkItem->LocalHostString);
                     else
-                        PhInitializeStringRef(&getCellText->Text, L"解析中....");
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
                 }
                 break;
             case PHNETLC_LOCALPORT:
@@ -682,7 +710,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                     if (networkItem->RemoteHostnameResolved)
                         getCellText->Text = PhGetStringRef(networkItem->RemoteHostString);
                     else
-                        PhInitializeStringRef(&getCellText->Text, L"解析中....");
+                        PhInitializeStringRef(&getCellText->Text, L"Resolving...");
                 }
                 break;
             case PHNETLC_REMOTEPORT:
@@ -699,10 +727,6 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                         getCellText->Text.Buffer = protocolType->Buffer;
                         getCellText->Text.Length = protocolType->Length;
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHNETLC_STATE:
@@ -716,10 +740,6 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                             getCellText->Text.Buffer = stateName->Buffer;
                             getCellText->Text.Length = stateName->Length;
                         }
-                        else
-                        {
-                            PhInitializeEmptyStringRef(&getCellText->Text);
-                        }
                     }
                     else if (networkItem->ProtocolType == PH_NETWORK_PROTOCOL_HYPERV)
                     {
@@ -732,14 +752,12 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                             PhInitializeStringRef(&getCellText->Text, L"Listen");
                         }
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHNETLC_OWNER:
-                getCellText->Text = PhGetStringRef(networkItem->OwnerName);
+                {
+                    getCellText->Text = PhGetStringRef(networkItem->OwnerName);
+                }
                 break;
             case PHNETLC_TIMESTAMP:
                 {
@@ -758,7 +776,9 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                 }
                 break;
             case PHNETLC_HV_SERVICE:
-                getCellText->Text = PhGetStringRef(networkItem->HvService);
+                {
+                    getCellText->Text = PhGetStringRef(networkItem->HvService);
+                }
                 break;
             default:
                 return FALSE;
@@ -847,7 +867,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
             NetworkTreeListSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -871,7 +891,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
             PH_TN_COLUMN_MENU_DATA data;
 
             memset(&data, 0, sizeof(PH_TN_COLUMN_MENU_DATA));
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = PHNETLC_PROCESS;
             data.DefaultSortOrder = AscendingSortOrder;
@@ -879,7 +899,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
 
             data.Selection = PhShowEMenu(
                 data.Menu,
-                hwnd,
+                WindowHandle,
                 PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP,
                 data.MouseEvent->ScreenLocation.x,
@@ -926,13 +946,21 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
             {
                 NOTHING;
             }
-            else if (PhCsUseColorPacked && node->NetworkItem->UnknownProcess)
+            else if (
+                PhCsUseColorNetworkSubsystemProcess &&
+                FlagOn(node->NetworkItem->ProtocolType, PH_PROTOCOL_TYPE_UDP) &&
+                PhIsUdpExemptPort(node->NetworkItem->LocalEndpoint.Port)
+                )
             {
-                getNodeColor->BackColor = PhCsColorPacked;
+                getNodeColor->BackColor = PhCsColorNetworkSubsystemProcess;
             }
-            else if (PhCsUseColorPicoProcesses && node->NetworkItem->SubsystemProcess)
+            else if (PhCsUseColorNetworkUnknownProcess && node->NetworkItem->UnknownProcess)
             {
-                getNodeColor->BackColor = PhCsColorPicoProcesses;
+                getNodeColor->BackColor = PhCsColorNetworkUnknownProcess;
+            }
+            else if (PhCsUseColorNetworkSubsystemProcess && node->NetworkItem->SubsystemProcess)
+            {
+                getNodeColor->BackColor = PhCsColorNetworkSubsystemProcess;
             }
 
             getNodeColor->Flags |= TN_AUTO_FORECOLOR;

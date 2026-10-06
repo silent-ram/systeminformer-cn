@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017-2022
+ *     dmex    2017-2026
  *
  */
 
@@ -293,7 +293,9 @@ VOID PvpPeResourceSaveToFile(
             {
                 IO_STATUS_BLOCK isb;
 
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 __try
                 {
@@ -356,7 +358,7 @@ VOID PvpPeEnumMappedImageResources(
             resourceNode->RvaStart = UlongToPtr(entry.Offset);
             PhPrintPointer(value, resourceNode->RvaStart);
             resourceNode->RvaStartString = PhCreateString(value);
-            resourceNode->RvaEnd = PTR_ADD_OFFSET(entry.Offset, entry.Size);
+            resourceNode->RvaEnd = (PVOID)(ULONG_PTR)UInt32Add32To64(entry.Offset, entry.Size);
             PhPrintPointer(value, resourceNode->RvaEnd);
             resourceNode->RvaEndString = PhCreateString(value);
             resourceNode->RvaSize = entry.Size;
@@ -424,7 +426,9 @@ VOID PvpPeEnumMappedImageResources(
 
             if (entry.Size)
             {
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 if (resourceData)
                 {
@@ -436,7 +440,9 @@ VOID PvpPeEnumMappedImageResources(
 
             if (entry.Size)
             {
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 if (resourceData)
                 {
@@ -530,6 +536,7 @@ NTSTATUS PvpPeResourcesEnumerateThread(
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PvpPeResourcesSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -633,6 +640,12 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
             }
         }
         break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
+        }
+        break;
     case WM_SIZE:
         {
             PhLayoutManagerLayout(&context->LayoutManager);
@@ -673,6 +686,7 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
             if (numberOfNodes != 0)
             {
                 menu = PhCreateEMenu();
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"Display resource...", NULL, NULL), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Save resource...", NULL, NULL), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"Copy", NULL, NULL), ULONG_MAX);
@@ -695,6 +709,13 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
                         {
                         case 1:
                             PvpPeResourceSaveToFile(context, hwndDlg, sectionNodes[0]);
+                            break;
+                        case 2:
+                            PvShowResourceViewerDialog(
+                                hwndDlg,
+                                sectionNodes[0]->NodeType == PV_RESOURCES_TREE_NODE_TYPE_MUI ? &context->MuiMappedImage : &PvMappedImage,
+                                PtrToUlong(sectionNodes[0]->RvaStart)
+                                );
                             break;
                         case USHRT_MAX:
                             {
@@ -983,7 +1004,7 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Index),
                     SORT_FUNCTION(Type),
@@ -995,7 +1016,7 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
                     SORT_FUNCTION(Hash),
                     SORT_FUNCTION(Entropy),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PV_RESOURCES_TREE_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1091,7 +1112,20 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
         return TRUE;
     case TreeNewLeftDoubleClick:
         {
-           // SendMessage(context->ParentWindowHandle, WM_COMMAND, WM_ACTION, (LPARAM)context);
+            PPV_RESOURCE_NODE* sectionNodes = NULL;
+            ULONG numberOfNodes = 0;
+
+            if (PvGetSelectedResourcesNodes(context, &sectionNodes, &numberOfNodes) && numberOfNodes != 0)
+            {
+                PvShowResourceViewerDialog(
+                    context->ParentWindowHandle,
+                    sectionNodes[0]->NodeType == PV_RESOURCES_TREE_NODE_TYPE_MUI ? &context->MuiMappedImage : &PvMappedImage,
+                    PtrToUlong(sectionNodes[0]->RvaStart)
+                    );
+            }
+
+            if (sectionNodes)
+                PhFree(sectionNodes);
         }
         return TRUE;
     case TreeNewContextMenu:

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2022
+ *     dmex    2017-2026
  *
  */
 
@@ -28,43 +28,62 @@
 #include <apiimport.h>
 #include <guisup.h>
 #include <guisupview.h>
+#include <mapimg.h>
 #include <mapldr.h>
+#include <thirdparty.h>
 #include <settings.h>
 #include <json.h>
-
-#include <xmllite.h>
-#include <shlwapi.h>
-
-_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
-BOOLEAN NTAPI PhpSettingsHashtableEqualFunction(
-    _In_ PVOID Entry1,
-    _In_ PVOID Entry2
-    );
-
-_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
-ULONG NTAPI PhpSettingsHashtableHashFunction(
-    _In_ PVOID Entry
-    );
+#include <filestream.h>
 
 PPH_HASHTABLE PhSettingsHashtable;
 PH_QUEUED_LOCK PhSettingsLock = PH_QUEUED_LOCK_INIT;
 PPH_LIST PhIgnoredSettings;
 
-VOID PhSettingsInitialization(
-    VOID
-    )
+typedef enum _PH_SETTINGS_STORE_PRIORITY
 {
-    PhSettingsHashtable = PhCreateHashtable(
-        sizeof(PH_SETTING),
-        PhpSettingsHashtableEqualFunction,
-        PhpSettingsHashtableHashFunction,
-        512
-        );
-    PhIgnoredSettings = PhCreateList(4);
-}
+    PhSettingsStorePriorityJson = 1,
+    PhSettingsStorePriorityXml,
+    PhSettingsStorePriorityKey,
+    PhSettingsStorePriorityReg,
+    PhSettingsStorePriorityBin
+} PH_SETTINGS_STORE_PRIORITY;
+
+// Settings store descriptors (priority order: lower = higher priority)
+static const PH_SETTINGS_STORE_DESCRIPTOR PhSettingsStores[] =
+{
+    { SettingsFormatJson, L".json", TRUE,   TRUE,   FALSE, PhSettingsStorePriorityJson },
+    { SettingsFormatXml, L".xml",   TRUE,   FALSE,  TRUE,  PhSettingsStorePriorityXml },
+    { SettingsFormatKey, L".dat",   TRUE,   FALSE,  FALSE, PhSettingsStorePriorityKey },
+    { SettingsFormatReg, NULL,      FALSE,  FALSE,  FALSE, PhSettingsStorePriorityReg },
+    { SettingsFormatBin, L".bin",   TRUE,   FALSE,  FALSE, PhSettingsStorePriorityBin },
+};
+
+#define PH_SETTINGS_STORE_COUNT RTL_NUMBER_OF(PhSettingsStores)
+
+// Track which format was loaded
+PH_SETTINGS_FORMAT PhSettingsLoadedFormat = SettingsFormatJson;
+
+#define PH_SETTINGS_BIN_SIGNATURE 0x4E485042 // 'BPHN'
+#define PH_SETTINGS_BIN_VERSION 1
+
+#include <pshpack1.h>
+typedef struct _PH_SETTINGS_BIN_HEADER
+{
+    ULONG Signature;
+    ULONG Version;
+    ULONG NumberOfSettings;
+} PH_SETTINGS_BIN_HEADER, *PPH_SETTINGS_BIN_HEADER;
+
+typedef struct _PH_SETTINGS_BIN_SETTING
+{
+    ULONG NameLength; // in bytes
+    ULONG Type;
+    ULONG ValueLength; // in bytes
+} PH_SETTINGS_BIN_SETTING, *PPH_SETTINGS_BIN_SETTING;
+#include <poppack.h>
 
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
-BOOLEAN NTAPI PhpSettingsHashtableEqualFunction(
+BOOLEAN NTAPI PhSettingsHashtableEqualFunction(
     _In_ PVOID Entry1,
     _In_ PVOID Entry2
     )
@@ -76,13 +95,26 @@ BOOLEAN NTAPI PhpSettingsHashtableEqualFunction(
 }
 
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
-ULONG NTAPI PhpSettingsHashtableHashFunction(
+ULONG NTAPI PhSettingsHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
     PPH_SETTING setting = (PPH_SETTING)Entry;
 
     return PhHashStringRefEx(&setting->Name, TRUE, PH_STRING_HASH_XXH32);
+}
+
+VOID PhSettingsInitialization(
+    VOID
+    )
+{
+    PhSettingsHashtable = PhCreateHashtable(
+        sizeof(PH_SETTING),
+        PhSettingsHashtableEqualFunction,
+        PhSettingsHashtableHashFunction,
+        512
+        );
+    PhIgnoredSettings = PhCreateList(1);
 }
 
 PPH_STRING PhSettingToString(
@@ -375,12 +407,11 @@ BOOLEAN PhGetScalableIntegerPairStringRefSetting(
     _In_ PCPH_STRINGREF Name,
     _In_ BOOLEAN ScaleToDpi,
     _In_ LONG Dpi,
-    _Out_ PPH_SCALABLE_INTEGER_PAIR* ScalableIntegerPair
+    _Out_ PPH_SCALABLE_INTEGER_PAIR ScalableIntegerPair
     )
 {
     BOOLEAN result;
     PPH_SETTING setting;
-    PPH_SCALABLE_INTEGER_PAIR value;
 
     PhAcquireQueuedLockShared(&PhSettingsLock);
 
@@ -389,28 +420,21 @@ BOOLEAN PhGetScalableIntegerPairStringRefSetting(
 
     if (setting && setting->Type == ScalableIntegerPairSettingType)
     {
-        value = setting->u.Pointer;
+        *ScalableIntegerPair = *(PPH_SCALABLE_INTEGER_PAIR)setting->u.Pointer;
         result = TRUE;
     }
     else
     {
-        value = NULL;
+        RtlZeroMemory(ScalableIntegerPair, sizeof(PH_SCALABLE_INTEGER_PAIR));
         result = FALSE;
     }
 
     PhReleaseQueuedLockShared(&PhSettingsLock);
 
-    if (ScaleToDpi)
+    if (result && ScaleToDpi)
     {
-        if (value->Scale != Dpi && value->Scale != 0)
-        {
-            value->X = PhMultiplyDivideSigned(value->X, Dpi, value->Scale);
-            value->Y = PhMultiplyDivideSigned(value->Y, Dpi, value->Scale);
-            value->Scale = Dpi;
-        }
+        PhScalableIntegerPairToScale(ScalableIntegerPair, Dpi);
     }
-
-    *ScalableIntegerPair = value;
 
     return result;
 }
@@ -482,7 +506,7 @@ VOID PhSetIntegerStringRefSetting(
 
 VOID PhSetIntegerPairStringRefSetting(
     _In_ PCPH_STRINGREF Name,
-    _In_ PH_INTEGER_PAIR Value
+    _In_ PPH_INTEGER_PAIR Value
     )
 {
     PPH_SETTING setting;
@@ -493,7 +517,7 @@ VOID PhSetIntegerPairStringRefSetting(
 
     if (setting && setting->Type == IntegerPairSettingType)
     {
-        setting->u.IntegerPair = Value;
+        memcpy(&setting->u.IntegerPair, Value, sizeof(PH_INTEGER_PAIR));
     }
 
     PhReleaseQueuedLockExclusive(&PhSettingsLock);
@@ -522,15 +546,19 @@ VOID PhSetScalableIntegerPairStringRefSetting(
 
 VOID PhSetScalableIntegerPairStringRefSetting2(
     _In_ PCPH_STRINGREF Name,
-    _In_ PH_INTEGER_PAIR Value,
-    _In_ LONG dpiValue
+    _In_ PPH_INTEGER_PAIR Value,
+    _In_ LONG Dpi
     )
 {
     PH_SCALABLE_INTEGER_PAIR scalableIntegerPair;
 
+    // Store the size at the DPI it was saved at and let the load path rescale on demand
+    // (PhScalableIntegerPairToScale interprets the Scale field). Same-DPI round-trips are
+    // lossless; cross-DPI round-trips still pay a single MulDiv on load. (dmex)
     ZeroMemory(&scalableIntegerPair, sizeof(PH_SCALABLE_INTEGER_PAIR));
-    scalableIntegerPair.Pair = Value;
-    scalableIntegerPair.Scale = dpiValue;
+    scalableIntegerPair.X = Value->X;
+    scalableIntegerPair.Y = Value->Y;
+    scalableIntegerPair.Scale = Dpi;
 
     PhSetScalableIntegerPairStringRefSetting(Name, &scalableIntegerPair);
 }
@@ -649,7 +677,216 @@ VOID PhConvertIgnoredSettings(
     PhReleaseQueuedLockExclusive(&PhSettingsLock);
 }
 
-#if defined(PH_SETTINGS_NTKEY)
+NTSTATUS PhLoadSettingsBin(
+    _In_ PCPH_STRINGREF FileName
+    )
+{
+    NTSTATUS status;
+    PVOID viewBase;
+    SIZE_T viewSize;
+    PPH_SETTINGS_BIN_HEADER header;
+    PBYTE pointer;
+    PBYTE limit;
+
+    status = PhMapViewOfEntireFileEx(FileName, NULL, &viewBase, &viewSize);
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    if (viewSize < sizeof(PH_SETTINGS_BIN_HEADER))
+    {
+        PhUnmapViewOfSection(NtCurrentProcess(), viewBase);
+        return STATUS_FILE_CORRUPT_ERROR;
+    }
+
+    header = (PPH_SETTINGS_BIN_HEADER)viewBase;
+
+    if (header->Signature != PH_SETTINGS_BIN_SIGNATURE || header->Version != PH_SETTINGS_BIN_VERSION)
+    {
+        PhUnmapViewOfSection(NtCurrentProcess(), viewBase);
+        return STATUS_FILE_CORRUPT_ERROR;
+    }
+
+    PhpClearIgnoredSettings();
+
+    PhAcquireQueuedLockExclusive(&PhSettingsLock);
+
+    pointer = (PBYTE)viewBase + sizeof(PH_SETTINGS_BIN_HEADER);
+    limit = (PBYTE)viewBase + viewSize;
+
+    for (ULONG i = 0; i < header->NumberOfSettings; i++)
+    {
+        PPH_SETTINGS_BIN_SETTING entry;
+        PPH_SETTING setting;
+        PH_STRINGREF settingName;
+        PH_STRINGREF settingValue;
+
+        if (pointer + sizeof(PH_SETTINGS_BIN_SETTING) > limit)
+            break;
+
+        entry = (PPH_SETTINGS_BIN_SETTING)pointer;
+        pointer += sizeof(PH_SETTINGS_BIN_SETTING);
+
+        if (pointer + entry->NameLength + entry->ValueLength > limit)
+            break;
+
+        settingName.Buffer = (PWCH)pointer;
+        settingName.Length = entry->NameLength;
+        pointer += entry->NameLength;
+
+        settingValue.Buffer = (PWCH)pointer;
+        settingValue.Length = entry->ValueLength;
+        pointer += entry->ValueLength;
+
+        if (setting = PhpLookupSetting(&settingName))
+        {
+            PhpFreeSettingValue(setting->Type, setting);
+
+            if (!PhSettingFromString(
+                setting->Type,
+                &settingValue,
+                NULL,
+                setting
+                ))
+            {
+                PhSettingFromString(
+                    setting->Type,
+                    &setting->DefaultValue,
+                    NULL,
+                    setting
+                    );
+            }
+        }
+        else
+        {
+            setting = PhAllocateZero(sizeof(PH_SETTING));
+            setting->Type = StringSettingType;
+            setting->Name.Buffer = PhAllocateCopy(settingName.Buffer, settingName.Length + sizeof(WCHAR));
+            setting->Name.Length = settingName.Length;
+            setting->Name.Buffer[settingName.Length / sizeof(WCHAR)] = 0;
+            setting->u.Pointer = PhCreateString2(&settingValue);
+
+            PhAddItemList(PhIgnoredSettings, setting);
+        }
+    }
+
+    PhReleaseQueuedLockExclusive(&PhSettingsLock);
+
+    PhUnmapViewOfSection(NtCurrentProcess(), viewBase);
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS PhSaveSettingsBin(
+    _In_ PCPH_STRINGREF FileName
+    )
+{
+    NTSTATUS status;
+    PH_HASHTABLE_ENUM_CONTEXT enumContext;
+    PPH_SETTING setting;
+    PH_SETTINGS_BIN_HEADER header;
+    SIZE_T totalSize = 0;
+    PBYTE buffer;
+    PBYTE pointer;
+    HANDLE fileHandle;
+    IO_STATUS_BLOCK isb;
+
+    PhAcquireQueuedLockShared(&PhSettingsLock);
+
+    // Calculate total size required
+    totalSize = sizeof(PH_SETTINGS_BIN_HEADER);
+
+    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
+
+    while (setting = PhNextEnumHashtable(&enumContext))
+    {
+        PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
+        totalSize += sizeof(PH_SETTINGS_BIN_SETTING) + setting->Name.Length + settingValue->Length;
+        PhDereferenceObject(settingValue);
+    }
+
+    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
+    {
+        setting = PhIgnoredSettings->Items[i];
+        PPH_STRING settingValue = setting->u.Pointer;
+        totalSize += sizeof(PH_SETTINGS_BIN_SETTING) + setting->Name.Length + settingValue->Length;
+    }
+
+    buffer = PhAllocate(totalSize);
+    pointer = buffer;
+
+    __analysis_assume(pointer <= (PBYTE)buffer + totalSize);
+    header.Signature = PH_SETTINGS_BIN_SIGNATURE;
+    header.Version = PH_SETTINGS_BIN_VERSION;
+    header.NumberOfSettings = PhSettingsHashtable->Count + PhIgnoredSettings->Count;
+
+    __analysis_assume(pointer + sizeof(PH_SETTINGS_BIN_HEADER) <= (PBYTE)buffer + totalSize);
+    memcpy(pointer, &header, sizeof(PH_SETTINGS_BIN_HEADER));
+    pointer += sizeof(PH_SETTINGS_BIN_HEADER);
+
+    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
+
+    while (setting = PhNextEnumHashtable(&enumContext))
+    {
+        PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
+        PH_SETTINGS_BIN_SETTING entry;
+
+        entry.NameLength = (ULONG)setting->Name.Length;
+        entry.Type = (ULONG)setting->Type;
+        entry.ValueLength = (ULONG)settingValue->Length;
+
+        memcpy(pointer, &entry, sizeof(PH_SETTINGS_BIN_SETTING));
+        pointer += sizeof(PH_SETTINGS_BIN_SETTING);
+        memcpy(pointer, setting->Name.Buffer, setting->Name.Length);
+        pointer += setting->Name.Length;
+        memcpy(pointer, settingValue->Buffer, settingValue->Length);
+        pointer += settingValue->Length;
+
+        PhDereferenceObject(settingValue);
+    }
+
+    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
+    {
+        setting = PhIgnoredSettings->Items[i];
+        PPH_STRING settingValue = setting->u.Pointer;
+        PH_SETTINGS_BIN_SETTING entry;
+
+        entry.NameLength = (ULONG)setting->Name.Length;
+        entry.Type = (ULONG)setting->Type;
+        entry.ValueLength = (ULONG)settingValue->Length;
+
+        memcpy(pointer, &entry, sizeof(PH_SETTINGS_BIN_SETTING));
+        pointer += sizeof(PH_SETTINGS_BIN_SETTING);
+        memcpy(pointer, setting->Name.Buffer, setting->Name.Length);
+        pointer += setting->Name.Length;
+        memcpy(pointer, settingValue->Buffer, settingValue->Length);
+        pointer += settingValue->Length;
+    }
+
+    PhReleaseQueuedLockShared(&PhSettingsLock);
+
+    status = PhCreateFile(
+        &fileHandle,
+        FileName,
+        FILE_GENERIC_WRITE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ,
+        FILE_OVERWRITE_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        status = NtWriteFile(fileHandle, NULL, NULL, NULL, &isb, buffer, (ULONG)totalSize, NULL, NULL);
+        NtClose(fileHandle);
+    }
+
+    PhFree(buffer);
+
+    return status;
+}
+
+_Function_class_(PH_ENUM_KEY_CALLBACK)
 static BOOLEAN NTAPI PhSettingsKeyCallback(
     _In_ HANDLE RootDirectory,
     _In_ PKEY_VALUE_FULL_INFORMATION Information,
@@ -703,6 +940,11 @@ static BOOLEAN NTAPI PhSettingsKeyCallback(
                     setting->u.Integer = value->LowPart;
                     return TRUE;
                 }
+                else if (Information->Type == REG_SZ)
+                {
+                    if (PhSettingFromString(setting->Type, &settingValue, NULL, setting))
+                        return TRUE;
+                }
             }
             break;
         case IntegerPairSettingType:
@@ -715,6 +957,11 @@ static BOOLEAN NTAPI PhSettingsKeyCallback(
                     setting->u.IntegerPair.Y = (LONG)value->HighPart;
                     return TRUE;
                 }
+                else if (Information->Type == REG_SZ)
+                {
+                    if (PhSettingFromString(setting->Type, &settingValue, NULL, setting))
+                        return TRUE;
+                }
             }
             break;
         case ScalableIntegerPairSettingType:
@@ -726,6 +973,11 @@ static BOOLEAN NTAPI PhSettingsKeyCallback(
                     setting->u.Pointer = PhAllocateCopy(value, sizeof(PH_SCALABLE_INTEGER_PAIR));
                     return TRUE;
                 }
+                else if (Information->Type == REG_SZ)
+                {
+                    if (PhSettingFromString(setting->Type, &settingValue, NULL, setting))
+                        return TRUE;
+                }
             }
             break;
         }
@@ -734,7 +986,8 @@ static BOOLEAN NTAPI PhSettingsKeyCallback(
     }
     else
     {
-        setting = PhAllocate(sizeof(PH_SETTING));
+        setting = PhAllocateZero(sizeof(PH_SETTING));
+        setting->Type = StringSettingType;
         setting->Name.Buffer = PhAllocateCopy(settingName.Buffer, settingName.Length + sizeof(WCHAR));
         setting->Name.Length = settingName.Length;
         setting->u.Pointer = PhCreateString2(&settingValue);
@@ -745,8 +998,228 @@ static BOOLEAN NTAPI PhSettingsKeyCallback(
     return TRUE;
 }
 
+static VOID PhpSaveSettingsToKey(
+    _In_ HANDLE KeyHandle
+    )
+{
+    PH_HASHTABLE_ENUM_CONTEXT enumContext;
+    PPH_SETTING setting;
+
+    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
+
+    while (setting = PhNextEnumHashtable(&enumContext))
+    {
+        switch (setting->Type)
+        {
+        case StringSettingType:
+            {
+                PPH_STRING value = (PPH_STRING)setting->u.Pointer;
+
+                if (PhIsNullOrEmptyString(value))
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+                else
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_SZ,
+                        value->Buffer,
+                        (ULONG)value->Length + sizeof(UNICODE_NULL)
+                        );
+                }
+            }
+            break;
+        case IntegerSettingType:
+            {
+                if (setting->u.Integer)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_DWORD,
+                        &setting->u.Integer,
+                        sizeof(setting->u.Integer)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        case IntegerPairSettingType:
+            {
+                PPH_INTEGER_PAIR integerPair = &setting->u.IntegerPair;
+                LARGE_INTEGER value;
+
+                value.LowPart = integerPair->X;
+                value.HighPart = integerPair->Y;
+
+                if (value.QuadPart)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_QWORD,
+                        &value.QuadPart,
+                        sizeof(value.QuadPart)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        case ScalableIntegerPairSettingType:
+            {
+                PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = setting->u.Pointer;
+
+                if (scalableIntegerPair && scalableIntegerPair->X && scalableIntegerPair->Y && scalableIntegerPair->Scale)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_BINARY,
+                        scalableIntegerPair,
+                        sizeof(PH_SCALABLE_INTEGER_PAIR)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        default:
+            {
+                PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
+
+                PhSetValueKey(
+                    KeyHandle,
+                    &setting->Name,
+                    REG_SZ,
+                    settingValue->Buffer,
+                    (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
+                    );
+
+                PhDereferenceObject(settingValue);
+            }
+            break;
+        }
+    }
+
+    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
+    {
+        setting = PhIgnoredSettings->Items[i];
+
+        switch (setting->Type)
+        {
+        case StringSettingType:
+            {
+                PPH_STRING value = (PPH_STRING)setting->u.Pointer;
+
+                if (PhIsNullOrEmptyString(value))
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+                else
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_SZ,
+                        value->Buffer,
+                        (ULONG)value->Length + sizeof(UNICODE_NULL)
+                        );
+                }
+            }
+            break;
+        case IntegerSettingType:
+            {
+                if (setting->u.Integer)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_DWORD,
+                        &setting->u.Integer,
+                        sizeof(setting->u.Integer)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        case IntegerPairSettingType:
+            {
+                PPH_INTEGER_PAIR integerPair = &setting->u.IntegerPair;
+                LARGE_INTEGER value;
+
+                value.LowPart = integerPair->X;
+                value.HighPart = integerPair->Y;
+
+                if (value.QuadPart)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_QWORD,
+                        &value.QuadPart,
+                        sizeof(value.QuadPart)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        case ScalableIntegerPairSettingType:
+            {
+                PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = setting->u.Pointer;
+
+                if (scalableIntegerPair && scalableIntegerPair->X && scalableIntegerPair->Y && scalableIntegerPair->Scale)
+                {
+                    PhSetValueKey(
+                        KeyHandle,
+                        &setting->Name,
+                        REG_BINARY,
+                        scalableIntegerPair,
+                        sizeof(PH_SCALABLE_INTEGER_PAIR)
+                        );
+                }
+                else
+                {
+                    PhDeleteValueKey(KeyHandle, &setting->Name);
+                }
+            }
+            break;
+        default:
+            {
+                PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
+
+                PhSetValueKey(
+                    KeyHandle,
+                    &setting->Name,
+                    REG_SZ,
+                    settingValue->Buffer,
+                    (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
+                    );
+
+                PhDereferenceObject(settingValue);
+            }
+            break;
+        }
+    }
+}
+
 NTSTATUS PhLoadSettingsAppKey(
-    _In_ PPH_STRINGREF FileName
+    _In_ PCPH_STRINGREF FileName
     )
 {
     NTSTATUS status;
@@ -779,13 +1252,11 @@ NTSTATUS PhLoadSettingsAppKey(
 }
 
 NTSTATUS PhSaveSettingsAppKey(
-    _In_ PPH_STRINGREF FileName
+    _In_ PCPH_STRINGREF FileName
     )
 {
     NTSTATUS status;
     HANDLE keyHandle;
-    PH_HASHTABLE_ENUM_CONTEXT enumContext;
-    PPH_SETTING setting;
 
     status = PhLoadAppKey(
         &keyHandle,
@@ -799,71 +1270,7 @@ NTSTATUS PhSaveSettingsAppKey(
 
     PhAcquireQueuedLockShared(&PhSettingsLock);
 
-    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
-
-    while (setting = PhNextEnumHashtable(&enumContext))
-    {
-        if (setting->Type == IntegerSettingType)
-        {
-            PhSetValueKey(
-                keyHandle,
-                &setting->Name,
-                REG_DWORD,
-                &setting->u.Integer,
-                sizeof(ULONG)
-                );
-        }
-        else
-        {
-            PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
-
-            PhSetValueKey(
-                keyHandle,
-                &setting->Name,
-                REG_SZ,
-                settingValue->Buffer,
-                (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
-                );
-
-            PhDereferenceObject(settingValue);
-        }
-    }
-
-    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
-    {
-        PPH_STRING settingValue;
-
-        setting = PhIgnoredSettings->Items[i];
-        settingValue = setting->u.Pointer;
-
-        if (setting->Type == IntegerSettingType)
-        {
-            PhSetValueKey(
-                keyHandle,
-                &setting->Name,
-                REG_DWORD,
-                &setting->u.Integer,
-                sizeof(ULONG)
-                );
-        }
-        else
-        {
-            if (settingValue->Length)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_SZ,
-                    settingValue->Buffer,
-                    (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-    }
+    PhpSaveSettingsToKey(keyHandle);
 
     PhReleaseQueuedLockShared(&PhSettingsLock);
 
@@ -914,8 +1321,6 @@ NTSTATUS PhSaveSettingsKey(
     static CONST PH_STRINGREF keyName = PH_STRINGREF_INIT(L"Software\\SystemInformer");
     NTSTATUS status;
     HANDLE keyHandle;
-    PH_HASHTABLE_ENUM_CONTEXT enumContext;
-    PPH_SETTING setting;
 
     status = PhCreateKey(
         &keyHandle,
@@ -932,201 +1337,7 @@ NTSTATUS PhSaveSettingsKey(
 
     PhAcquireQueuedLockShared(&PhSettingsLock);
 
-    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
-
-    while (setting = PhNextEnumHashtable(&enumContext))
-    {
-        if (setting->Type == StringSettingType)
-        {
-            PPH_STRING value = (PPH_STRING)setting->u.Pointer;
-
-            if (PhIsNullOrEmptyString(value))
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-            else
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_SZ,
-                    value->Buffer,
-                    (ULONG)value->Length + sizeof(UNICODE_NULL)
-                    );
-            }
-        }
-        else if (setting->Type == IntegerSettingType)
-        {
-            if (setting->u.Integer)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_DWORD,
-                    &setting->u.Integer,
-                    sizeof(setting->u.Integer)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-        else if (setting->Type == IntegerPairSettingType)
-        {
-            PPH_INTEGER_PAIR integerPair = &setting->u.IntegerPair;
-            LARGE_INTEGER value;
-
-            value.LowPart = integerPair->X;
-            value.HighPart = integerPair->Y;
-
-            if (value.QuadPart)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_QWORD,
-                    &value.QuadPart,
-                    sizeof(value.QuadPart)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-        else if (setting->Type == ScalableIntegerPairSettingType)
-        {
-           PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = setting->u.Pointer;
-
-           if (scalableIntegerPair->X && scalableIntegerPair->Y && scalableIntegerPair->Scale)
-           {
-               PhSetValueKey(
-                   keyHandle,
-                   &setting->Name,
-                   REG_BINARY,
-                   scalableIntegerPair,
-                   sizeof(PH_SCALABLE_INTEGER_PAIR)
-                   );
-           }
-           else
-           {
-               PhDeleteValueKey(keyHandle, &setting->Name);
-           }
-        }
-        else
-        {
-            PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
-
-            PhSetValueKey(
-                keyHandle,
-                &setting->Name,
-                REG_SZ,
-                settingValue->Buffer,
-                (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
-                );
-
-            PhDereferenceObject(settingValue);
-        }
-    }
-
-    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
-    {
-        setting = PhIgnoredSettings->Items[i];
-
-        if (setting->Type == StringSettingType)
-        {
-            PPH_STRING value = (PPH_STRING)setting->u.Pointer;
-
-            if (PhIsNullOrEmptyString(value))
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-            else
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_SZ,
-                    value->Buffer,
-                    (ULONG)value->Length + sizeof(UNICODE_NULL)
-                    );
-            }
-        }
-        else if (setting->Type == IntegerSettingType)
-        {
-            if (setting->u.Integer)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_DWORD,
-                    &setting->u.Integer,
-                    sizeof(setting->u.Integer)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-        else if (setting->Type == IntegerPairSettingType)
-        {
-            PPH_INTEGER_PAIR integerPair = &setting->u.IntegerPair;
-            LARGE_INTEGER value;
-
-            value.LowPart = integerPair->X;
-            value.HighPart = integerPair->Y;
-
-            if (value.QuadPart)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_QWORD,
-                    &value.QuadPart,
-                    sizeof(value.QuadPart)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-        else if (setting->Type == ScalableIntegerPairSettingType)
-        {
-            PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = setting->u.Pointer;
-
-            if (scalableIntegerPair->X && scalableIntegerPair->Y && scalableIntegerPair->Scale)
-            {
-                PhSetValueKey(
-                    keyHandle,
-                    &setting->Name,
-                    REG_BINARY,
-                    scalableIntegerPair,
-                    sizeof(PH_SCALABLE_INTEGER_PAIR)
-                    );
-            }
-            else
-            {
-                PhDeleteValueKey(keyHandle, &setting->Name);
-            }
-        }
-        else
-        {
-            PPH_STRING settingValue = PhSettingToString(setting->Type, setting);
-
-            PhSetValueKey(
-                keyHandle,
-                &setting->Name,
-                REG_SZ,
-                settingValue->Buffer,
-                (ULONG)settingValue->Length + sizeof(UNICODE_NULL)
-                );
-
-            PhDereferenceObject(settingValue);
-        }
-    }
+    PhpSaveSettingsToKey(keyHandle);
 
     PhReleaseQueuedLockShared(&PhSettingsLock);
 
@@ -1134,7 +1345,6 @@ NTSTATUS PhSaveSettingsKey(
 
     return status;
 }
-#endif
 
 static BOOLEAN PhLoadSettingsEnumJsonCallback(
     _In_ PVOID Object,
@@ -1154,10 +1364,30 @@ static BOOLEAN PhLoadSettingsEnumJsonCallback(
 
         switch (setting->Type)
         {
-        case StringSettingType:
-        case IntegerPairSettingType:
-        case ScalableIntegerPairSettingType:
         case IntegerSettingType:
+            {
+                if (PhGetJsonObjectType(Value) == PH_JSON_OBJECT_TYPE_INT)
+                {
+                    setting->u.Integer = PhGetJsonUInt32Object(Value);
+                    break;
+                }
+            }
+            goto DefaultCase;
+        case IntegerPairSettingType:
+            {
+                if (PhGetJsonObjectType(Value) == PH_JSON_OBJECT_TYPE_INT)
+                {
+                    ULARGE_INTEGER value;
+                    value.QuadPart = PhGetJsonUInt64Object(Value);
+                    setting->u.IntegerPair.X = (LONG)value.LowPart;
+                    setting->u.IntegerPair.Y = (LONG)value.HighPart;
+                    break;
+                }
+            }
+            goto DefaultCase;
+        case StringSettingType:
+        case ScalableIntegerPairSettingType:
+DefaultCase:
             {
                 PPH_STRING settingValue;
 
@@ -1169,7 +1399,7 @@ static BOOLEAN PhLoadSettingsEnumJsonCallback(
                 }
                 else
                 {
-                    setting->u.Pointer = PhCreateString2(&settingValue->sr);
+                    setting->u.Pointer = PhReferenceEmptyString();
                 }
 
                 if (!PhSettingFromString(
@@ -1196,7 +1426,8 @@ static BOOLEAN PhLoadSettingsEnumJsonCallback(
 
         settingValue = PhGetJsonObjectString(Value);
 
-        setting = PhAllocate(sizeof(PH_SETTING));
+        setting = PhAllocateZero(sizeof(PH_SETTING));
+        setting->Type = StringSettingType;
         setting->Name.Buffer = PhAllocateCopy(settingName->Buffer, settingName->Length + sizeof(WCHAR));
         setting->Name.Length = settingName->Length;
         PhReferenceObject(settingValue);
@@ -1220,9 +1451,12 @@ NTSTATUS PhLoadSettingsJson(
 
     if (NT_SUCCESS(status))
     {
-        PhAcquireQueuedLockExclusive(&PhSettingsLock);
-        PhEnumJsonArrayObject(object, PhLoadSettingsEnumJsonCallback, NULL);
-        PhReleaseQueuedLockExclusive(&PhSettingsLock);
+        if (PhGetJsonObjectType(object) == PH_JSON_OBJECT_TYPE_OBJECT)
+        {
+            PhAcquireQueuedLockExclusive(&PhSettingsLock);
+            PhEnumJsonArrayObject(object, PhLoadSettingsEnumJsonCallback, NULL);
+            PhReleaseQueuedLockExclusive(&PhSettingsLock);
+        }
 
         PhFreeJsonObject(object);
     }
@@ -1238,11 +1472,14 @@ NTSTATUS PhSaveSettingsJson(
     PVOID object;
     PH_HASHTABLE_ENUM_CONTEXT enumContext;
     PPH_SETTING setting;
+    PPH_LIST strings = NULL;
 
     object = PhCreateJsonObject();
 
     if (!object)
         return STATUS_FILE_CORRUPT_ERROR;
+
+    strings = PhCreateList(1);
 
     PhAcquireQueuedLockShared(&PhSettingsLock);
 
@@ -1252,10 +1489,10 @@ NTSTATUS PhSaveSettingsJson(
     {
         switch (setting->Type)
         {
-        case StringSettingType:
-        case IntegerPairSettingType:
-        case ScalableIntegerPairSettingType:
         case IntegerSettingType:
+        case IntegerPairSettingType:
+        case StringSettingType:
+        case ScalableIntegerPairSettingType:
             {
                 PPH_STRING stringSetting;
                 PPH_BYTES stringName;
@@ -1267,9 +1504,9 @@ NTSTATUS PhSaveSettingsJson(
 
                 PhAddJsonObject2(object, stringName->Buffer, stringValue->Buffer, stringValue->Length);
 
-                //PhDereferenceObject(stringValue);
-                //PhDereferenceObject(stringSetting);
-                //PhDereferenceObject(stringName);
+                PhAddItemList(strings, stringValue);
+                PhAddItemList(strings, stringSetting);
+                PhAddItemList(strings, stringName);
             }
             break;
         }
@@ -1289,8 +1526,8 @@ NTSTATUS PhSaveSettingsJson(
 
         PhAddJsonObject2(object, stringName->Buffer, stringValue->Buffer, stringValue->Length);
 
-        //PhDereferenceObject(stringValue);
-        //PhDereferenceObject(stringName);
+        PhAddItemList(strings, stringValue);
+        PhAddItemList(strings, stringName);
     }
 
     PhReleaseQueuedLockShared(&PhSettingsLock);
@@ -1298,10 +1535,13 @@ NTSTATUS PhSaveSettingsJson(
     status = PhSaveJsonObjectToFile(
         FileName,
         object,
-        PH_JSON_TO_STRING_PLAIN | PH_JSON_TO_STRING_PRETTY
+        PH_JSON_TO_STRING_PRETTY
         );
 
     PhFreeJsonObject(object);
+
+    PhDereferenceObjects(strings->Items, strings->Count);
+    PhDereferenceObject(strings);
 
     return status;
 }
@@ -1332,12 +1572,17 @@ NTSTATUS PhLoadSettingsXml(
     {
         if (settingName = PhGetXmlNodeAttributeText(currentNode, "name"))
         {
+            PH_STRINGREF name = settingName->sr;
+
+            if (PhIsLegacyPrefix(&name))
+            {
+                PhSkipStringRef(&name, 14 * sizeof(WCHAR));
+            }
+
             settingValue = PhGetXmlNodeOpaqueText(currentNode);
 
             {
-                setting = PhpLookupSetting(&settingName->sr);
-
-                if (setting)
+                if (setting = PhpLookupSetting(&name))
                 {
                     PhpFreeSettingValue(setting->Type, setting);
 
@@ -1358,7 +1603,8 @@ NTSTATUS PhLoadSettingsXml(
                 }
                 else
                 {
-                    setting = PhAllocate(sizeof(PH_SETTING));
+                    setting = PhAllocateZero(sizeof(PH_SETTING));
+                    setting->Type = StringSettingType;
                     setting->Name.Buffer = PhAllocateCopy(settingName->Buffer, settingName->Length + sizeof(WCHAR));
                     setting->Name.Length = settingName->Length;
                     PhReferenceObject(settingValue);
@@ -1382,371 +1628,371 @@ NTSTATUS PhLoadSettingsXml(
     return STATUS_SUCCESS;
 }
 
-static BOOLEAN PhXmlLiteInitialized(
-    VOID
-    )
-{
-    static PH_INITONCE initOnce = PH_INITONCE_INIT;
-    static BOOLEAN XmlLiteInitialized = FALSE;
-
-    if (PhBeginInitOnce(&initOnce))
-    {
-        if (CreateXmlReader_Import() && CreateXmlWriter_Import() && SHCreateStreamOnFileEx_Import())
-        {
-            XmlLiteInitialized = TRUE;
-        }
-
-        PhEndInitOnce(&initOnce);
-    }
-
-    return XmlLiteInitialized;
-}
-
-HRESULT PhLoadSettingsXmlRead(
-    _In_ PCWSTR FileName
-    )
-{
-    HRESULT status;
-    IXmlReader* xmlReader = NULL;
-    IStream* fileStream = NULL;
-    PPH_SETTING setting;
-    SIZE_T settingBufferLength;
-    WCHAR settingBuffer[0x1000];
-    PH_STRINGREF settingName;
-    PH_STRINGREF settingValue;
-    XmlNodeType nodeType;
-    PCWSTR nodeName;
-    PCWSTR attrName;
-
-    status = SHCreateStreamOnFileEx_Import()(
-        FileName,
-        STGM_READ | STGM_SIMPLE,
-        FILE_ATTRIBUTE_NORMAL,
-        FALSE,
-        NULL,
-        &fileStream
-        );
-
-    if (HR_FAILED(status))
-        goto CleanupExit;
-
-    status = CreateXmlReader_Import()(&IID_IXmlReader, &xmlReader, NULL);
-
-    if (HR_FAILED(status))
-        goto CleanupExit;
-
-    IXmlReader_SetProperty(xmlReader, XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit);
-
-    status = IXmlReader_SetInput(xmlReader, (IUnknown*)fileStream);
-
-    if (HR_FAILED(status))
-        goto CleanupExit;
-
-    while (HR_SUCCESS(IXmlReader_Read(xmlReader, &nodeType)))
-    {
-        if (nodeType == XmlNodeType_Element)
-        {
-            if (HR_SUCCESS(IXmlReader_GetLocalName(xmlReader, &nodeName, NULL)))
-            {
-                if (PhEqualStringZ(nodeName, L"setting", TRUE))
-                {
-                    if (HR_SUCCESS(IXmlReader_MoveToFirstAttribute(xmlReader)))
-                    {
-                        if (HR_SUCCESS(IXmlReader_GetLocalName(xmlReader, &attrName, NULL)))
-                        {
-                            if (PhEqualStringZ(attrName, L"name", TRUE))
-                            {
-                                ULONG nameStringLength = 0;
-                                PCWSTR nameStringBuffer;
-
-                                if (HR_SUCCESS(IXmlReader_GetValue(xmlReader, &nameStringBuffer, &nameStringLength)))
-                                {
-                                    settingBufferLength = nameStringLength * sizeof(WCHAR);
-
-                                    if (settingBufferLength % 2 != 0)
-                                        continue;
-                                    if (settingBufferLength > sizeof(settingBuffer))
-                                        continue;
-
-                                    // Note: IXmlReader_GetValue returns a pointer to the string offset in the IStream buffer.
-                                    // Copy the string since since the offset might be invalid after the next buffer read. (dmex)
-                                    memcpy(settingBuffer, nameStringBuffer, settingBufferLength);
-                                    settingName.Buffer = settingBuffer;
-                                    settingName.Length = settingBufferLength;
-
-                                    if (HR_SUCCESS(IXmlReader_Read(xmlReader, &nodeType)) && nodeType == XmlNodeType_Text)
-                                    {
-                                        ULONG valueStringLength = 0;
-                                        PCWSTR valueStringBuffer;
-
-                                        if (HR_SUCCESS(IXmlReader_GetValue(xmlReader, &valueStringBuffer, &valueStringLength)))
-                                        {
-                                            settingBufferLength = valueStringLength * sizeof(WCHAR);
-
-                                            if (settingBufferLength % 2 != 0)
-                                                continue;
-
-                                            settingValue.Buffer = (PWCH)valueStringBuffer;
-                                            settingValue.Length = settingBufferLength;
-
-                                            {
-                                                setting = PhpLookupSetting(&settingName);
-
-                                                if (setting)
-                                                {
-                                                    PhpFreeSettingValue(setting->Type, setting);
-
-                                                    if (!PhSettingFromString(
-                                                        setting->Type,
-                                                        &settingValue,
-                                                        NULL,
-                                                        setting
-                                                        ))
-                                                    {
-                                                        PhSettingFromString(
-                                                            setting->Type,
-                                                            &setting->DefaultValue,
-                                                            NULL,
-                                                            setting
-                                                            );
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    setting = PhAllocate(sizeof(PH_SETTING));
-                                                    setting->Name.Buffer = PhAllocateCopy(settingName.Buffer, settingName.Length + sizeof(UNICODE_NULL));
-                                                    setting->Name.Length = settingName.Length;
-                                                    setting->u.Pointer = PhCreateString2(&settingValue);
-
-                                                    PhAddItemList(PhIgnoredSettings, setting);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-CleanupExit:
-    if (xmlReader) IXmlReader_Release(xmlReader);
-    if (fileStream) IStream_Release(fileStream);
-
-    return status;
-}
-
-NTSTATUS PhLoadSettingsXmlLite(
-    _In_ PCPH_STRINGREF FileName
-    )
-{
-    HRESULT status;
-    PPH_STRING fileNameWin32;
-
-    fileNameWin32 = PhResolveDevicePrefix(FileName);
-
-    if (PhIsNullOrEmptyString(fileNameWin32))
-        return STATUS_UNSUCCESSFUL;
-
-    PhMoveReference(&fileNameWin32, PhConcatStringRef2(&PhWin32ExtendedPathPrefix, &fileNameWin32->sr));
-
-    PhpClearIgnoredSettings();
-
-    PhAcquireQueuedLockExclusive(&PhSettingsLock);
-    status = PhLoadSettingsXmlRead(PhGetString(fileNameWin32));
-    PhReleaseQueuedLockExclusive(&PhSettingsLock);
-
-    PhDereferenceObject(fileNameWin32);
-
-    if (HR_FAILED(status))
-        return STATUS_UNSUCCESSFUL; // HRESULT_CODE(status);
-    return STATUS_SUCCESS;
-}
-
-DEFINE_GUID(IID_IXmlWriterLite, 0x862494C6, 0x1310, 0x4AAD, 0xB3, 0xCD, 0x2D, 0xBE, 0xEB, 0xF6, 0x70, 0xD3);
-
-HRESULT PhSaveSettingsXmlWrite(
-    _In_ PCWSTR FileName
-    )
-{
-    HRESULT status;
-    PH_AUTO_POOL autoPool;
-    IStream* fileStream = NULL;
-    PH_HASHTABLE_ENUM_CONTEXT enumContext;
-    PPH_SETTING setting;
-
-    status = SHCreateStreamOnFileEx_Import()(
-        FileName,
-        STGM_WRITE | STGM_CREATE,
-        FILE_ATTRIBUTE_NORMAL,
-        TRUE,
-        NULL,
-        &fileStream
-        );
-
-    if (HR_FAILED(status))
-        return status;
-
-    PhInitializeAutoPool(&autoPool);
-
-    {
-        IXmlWriter* xmlWriter = NULL;
-
-        status = CreateXmlWriter_Import()(&IID_IXmlWriter, &xmlWriter, NULL);
-
-        if (HR_FAILED(status))
-            goto CleanupExit;
-
-        IXmlWriter_SetProperty(xmlWriter, XmlWriterProperty_Indent, TRUE);
-        IXmlWriter_SetProperty(xmlWriter, XmlWriterProperty_OmitXmlDeclaration, TRUE);
-
-        status = IXmlWriter_SetOutput(xmlWriter, (IUnknown*)fileStream);
-
-        if (HR_FAILED(status))
-            goto CleanupExit;
-
-        IXmlWriter_WriteStartElement(xmlWriter, NULL, L"settings", NULL);
-
-        PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
-
-        while (setting = PhNextEnumHashtable(&enumContext))
-        {
-            PPH_STRING settingValue;
-
-            settingValue = PH_AUTO_T(PH_STRING, PhSettingToString(setting->Type, setting));
-            IXmlWriter_WriteStartElement(xmlWriter, NULL, L"setting", NULL);
-            IXmlWriter_WriteAttributeString(xmlWriter, NULL, L"name", NULL, PhGetStringRefZ(&setting->Name));
-            IXmlWriter_WriteString(xmlWriter, PhGetStringRefZ(&settingValue->sr));
-            IXmlWriter_WriteEndElement(xmlWriter);
-        }
-
-        for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
-        {
-            PPH_STRING settingValue;
-
-            setting = PhIgnoredSettings->Items[i];
-            settingValue = setting->u.Pointer;
-
-            IXmlWriter_WriteStartElement(xmlWriter, NULL, L"setting", NULL);
-            IXmlWriter_WriteAttributeString(xmlWriter, NULL, L"name", NULL, PhGetStringRefZ(&setting->Name));
-            IXmlWriter_WriteString(xmlWriter, PhGetStringRefZ(&settingValue->sr));
-            IXmlWriter_WriteEndElement(xmlWriter);
-        }
-
-        IXmlWriter_WriteEndElement(xmlWriter);
-
-        status = IXmlWriter_Flush(xmlWriter);
-
-        IXmlWriter_Release(xmlWriter);
-    }
-
-    //{
-    //    IXmlWriterLite* xmlWriterLite = NULL;
-    //
-    //    status = CreateXmlWriter_Import()(&IID_IXmlWriterLite, &xmlWriterLite, NULL);
-    //
-    //    if (HR_FAILED(status))
-    //        goto CleanupExit;
-    //
-    //    status = IXmlWriterLite_SetOutput(xmlWriterLite, (IUnknown*)fileStream);
-    //
-    //    if (HR_FAILED(status))
-    //        goto CleanupExit;
-
-    //    IXmlWriterLite_WriteStartElement(xmlWriterLite, L"settings", 8);
-    //    IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
-    //
-    //    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
-    //
-    //    while (setting = PhNextEnumHashtable(&enumContext))
-    //    {
-    //        PPH_STRING settingValue;
-    //
-    //        settingValue = PhSettingToString(setting->Type, setting);
-    //        IXmlWriterLite_WriteStartElement(xmlWriterLite, L"setting", 7);
-    //        IXmlWriterLite_WriteAttributeString(xmlWriterLite, L"name", 4, setting->Name.Buffer, (ULONG)setting->Name.Length / sizeof(WCHAR));
-    //        IXmlWriterLite_WriteString(xmlWriterLite, PhGetStringRefZ(&settingValue->sr));
-    //        //IXmlWriterLite_WriteChars(xmlWriterLite, settingValue->Buffer, (ULONG)settingValue->Length / sizeof(WCHAR));
-    //        IXmlWriterLite_WriteEndElement(xmlWriterLite, L"setting", 7);
-    //        IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
-    //        PhDereferenceObject(settingValue);
-    //    }
-    //
-    //    // Write the ignored settings.
-    //
-    //    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
-    //    {
-    //        PPH_STRING settingValue;
-    //
-    //        setting = PhIgnoredSettings->Items[i];
-    //        settingValue = setting->u.Pointer;
-    //        IXmlWriterLite_WriteStartElement(xmlWriterLite, L"setting", 7);
-    //        IXmlWriterLite_WriteAttributeString(xmlWriterLite, L"name", 4, setting->Name.Buffer, (ULONG)setting->Name.Length / sizeof(WCHAR));
-    //        IXmlWriterLite_WriteString(xmlWriterLite, PhGetStringRefZ(&settingValue->sr));
-    //        IXmlWriterLite_WriteEndElement(xmlWriterLite, L"setting", 7);
-    //        IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
-    //    }
-    //
-    //    IXmlWriterLite_WriteEndElement(xmlWriterLite, L"settings", 8);
-
-    //    status = IXmlWriterLite_Flush(xmlWriterLite);
-    //
-    //    IXmlWriterLite_Release(xmlWriterLite);
-    //}
-
-CleanupExit:
-    //IStream_Commit(fileStream, STGC_DEFAULT);
-    IStream_Release(fileStream);
-
-    PhDeleteAutoPool(&autoPool);
-
-    return status;
-}
-
-NTSTATUS PhSaveSettingsXmlLite(
-    _In_ PCPH_STRINGREF FileName
-    )
-{
-    static CONST PH_STRINGREF extension = PH_STRINGREF_INIT(L".tmp");
-    HRESULT status;
-    PPH_STRING fileNameWin32;
-    PPH_STRING fileNameTempWin32;
-
-    fileNameWin32 = PhResolveDevicePrefix(FileName);
-
-    if (PhIsNullOrEmptyString(fileNameWin32))
-        return STATUS_UNSUCCESSFUL;
-
-    // TODO: Write XmlLite to buffer and atomic rename (same as PhSaveXmlObjectToFile) (dmex)
-    PhMoveReference(&fileNameWin32, PhConcatStringRef2(&PhWin32ExtendedPathPrefix, &fileNameWin32->sr));
-    fileNameTempWin32 = PhConcatStringRef2(&fileNameWin32->sr, &extension);
-
-    PhpClearIgnoredSettings();
-
-    PhAcquireQueuedLockShared(&PhSettingsLock);
-    status = PhSaveSettingsXmlWrite(PhGetString(fileNameTempWin32));
-    PhReleaseQueuedLockShared(&PhSettingsLock);
-
-    if (HR_FAILED(status))
-    {
-        PhDereferenceObject(fileNameTempWin32);
-        PhDereferenceObject(fileNameWin32);
-        return STATUS_UNSUCCESSFUL; // HRESULT_CODE(status);
-    }
-
-    status = PhMoveFileWin32(
-        PhGetString(fileNameTempWin32),
-        PhGetString(fileNameWin32),
-        FALSE
-        );
-
-    PhDereferenceObject(fileNameTempWin32);
-    PhDereferenceObject(fileNameWin32);
-    return status;
-}
+//static BOOLEAN PhXmlLiteInitialized(
+//    VOID
+//    )
+//{
+//    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+//    static BOOLEAN XmlLiteInitialized = FALSE;
+//
+//    if (PhBeginInitOnce(&initOnce))
+//    {
+//        if (CreateXmlReader_Import() && CreateXmlWriter_Import() && SHCreateStreamOnFileEx_Import())
+//        {
+//            XmlLiteInitialized = TRUE;
+//        }
+//
+//        PhEndInitOnce(&initOnce);
+//    }
+//
+//    return XmlLiteInitialized;
+//}
+//
+//HRESULT PhLoadSettingsXmlRead(
+//    _In_ PCWSTR FileName
+//    )
+//{
+//    HRESULT status;
+//    IXmlReader* xmlReader = NULL;
+//    IStream* fileStream = NULL;
+//    PPH_SETTING setting;
+//    SIZE_T settingBufferLength;
+//    WCHAR settingBuffer[0x1000];
+//    PH_STRINGREF settingName;
+//    PH_STRINGREF settingValue;
+//    XmlNodeType nodeType;
+//    PCWSTR nodeName;
+//    PCWSTR attrName;
+//
+//    status = SHCreateStreamOnFileEx_Import()(
+//        FileName,
+//        STGM_READ | STGM_SIMPLE,
+//        FILE_ATTRIBUTE_NORMAL,
+//        FALSE,
+//        NULL,
+//        &fileStream
+//        );
+//
+//    if (HR_FAILED(status))
+//        goto CleanupExit;
+//
+//    status = CreateXmlReader_Import()(&IID_IXmlReader, &xmlReader, NULL);
+//
+//    if (HR_FAILED(status))
+//        goto CleanupExit;
+//
+//    IXmlReader_SetProperty(xmlReader, XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit);
+//
+//    status = IXmlReader_SetInput(xmlReader, (IUnknown*)fileStream);
+//
+//    if (HR_FAILED(status))
+//        goto CleanupExit;
+//
+//    while (HR_SUCCESS(IXmlReader_Read(xmlReader, &nodeType)))
+//    {
+//        if (nodeType == XmlNodeType_Element)
+//        {
+//            if (HR_SUCCESS(IXmlReader_GetLocalName(xmlReader, &nodeName, NULL)))
+//            {
+//                if (PhEqualStringZ(nodeName, L"setting", TRUE))
+//                {
+//                    if (HR_SUCCESS(IXmlReader_MoveToFirstAttribute(xmlReader)))
+//                    {
+//                        if (HR_SUCCESS(IXmlReader_GetLocalName(xmlReader, &attrName, NULL)))
+//                        {
+//                            if (PhEqualStringZ(attrName, L"name", TRUE))
+//                            {
+//                                ULONG nameStringLength = 0;
+//                                PCWSTR nameStringBuffer;
+//
+//                                if (HR_SUCCESS(IXmlReader_GetValue(xmlReader, &nameStringBuffer, &nameStringLength)))
+//                                {
+//                                    settingBufferLength = nameStringLength * sizeof(WCHAR);
+//
+//                                    if (settingBufferLength % 2 != 0)
+//                                        continue;
+//                                    if (settingBufferLength > sizeof(settingBuffer))
+//                                        continue;
+//
+//                                    // Note: IXmlReader_GetValue returns a pointer to the string offset in the IStream buffer.
+//                                    // Copy the string since since the offset might be invalid after the next buffer read. (dmex)
+//                                    memcpy(settingBuffer, nameStringBuffer, settingBufferLength);
+//                                    settingName.Buffer = settingBuffer;
+//                                    settingName.Length = settingBufferLength;
+//
+//                                    if (HR_SUCCESS(IXmlReader_Read(xmlReader, &nodeType)) && nodeType == XmlNodeType_Text)
+//                                    {
+//                                        ULONG valueStringLength = 0;
+//                                        PCWSTR valueStringBuffer;
+//
+//                                        if (HR_SUCCESS(IXmlReader_GetValue(xmlReader, &valueStringBuffer, &valueStringLength)))
+//                                        {
+//                                            settingBufferLength = valueStringLength * sizeof(WCHAR);
+//
+//                                            if (settingBufferLength % 2 != 0)
+//                                                continue;
+//
+//                                            settingValue.Buffer = (PWCH)valueStringBuffer;
+//                                            settingValue.Length = settingBufferLength;
+//
+//                                            {
+//                                                setting = PhpLookupSetting(&settingName);
+//
+//                                                if (setting)
+//                                                {
+//                                                    PhpFreeSettingValue(setting->Type, setting);
+//
+//                                                    if (!PhSettingFromString(
+//                                                        setting->Type,
+//                                                        &settingValue,
+//                                                        NULL,
+//                                                        setting
+//                                                        ))
+//                                                    {
+//                                                        PhSettingFromString(
+//                                                            setting->Type,
+//                                                            &setting->DefaultValue,
+//                                                            NULL,
+//                                                            setting
+//                                                            );
+//                                                    }
+//                                                }
+//                                                else
+//                                                {
+//                                                    setting = PhAllocate(sizeof(PH_SETTING));
+//                                                    setting->Name.Buffer = PhAllocateCopy(settingName.Buffer, settingName.Length + sizeof(UNICODE_NULL));
+//                                                    setting->Name.Length = settingName.Length;
+//                                                    setting->u.Pointer = PhCreateString2(&settingValue);
+//
+//                                                    PhAddItemList(PhIgnoredSettings, setting);
+//                                                }
+//                                            }
+//                                        }
+//                                    }
+//                                }
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    }
+//
+//CleanupExit:
+//    if (xmlReader) IXmlReader_Release(xmlReader);
+//    if (fileStream) IStream_Release(fileStream);
+//
+//    return status;
+//}
+//
+//NTSTATUS PhLoadSettingsXmlLite(
+//    _In_ PCPH_STRINGREF FileName
+//    )
+//{
+//    HRESULT status;
+//    PPH_STRING fileNameWin32;
+//
+//    fileNameWin32 = PhResolveDevicePrefix(FileName);
+//
+//    if (PhIsNullOrEmptyString(fileNameWin32))
+//        return STATUS_UNSUCCESSFUL;
+//
+//    PhMoveReference(&fileNameWin32, PhConcatStringRef2(&PhWin32ExtendedPathPrefix, &fileNameWin32->sr));
+//
+//    PhpClearIgnoredSettings();
+//
+//    PhAcquireQueuedLockExclusive(&PhSettingsLock);
+//    status = PhLoadSettingsXmlRead(PhGetString(fileNameWin32));
+//    PhReleaseQueuedLockExclusive(&PhSettingsLock);
+//
+//    PhDereferenceObject(fileNameWin32);
+//
+//    if (HR_FAILED(status))
+//        return STATUS_UNSUCCESSFUL; // HRESULT_CODE(status);
+//    return STATUS_SUCCESS;
+//}
+//
+//DEFINE_GUID(IID_IXmlWriterLite, 0x862494C6, 0x1310, 0x4AAD, 0xB3, 0xCD, 0x2D, 0xBE, 0xEB, 0xF6, 0x70, 0xD3);
+//
+//HRESULT PhSaveSettingsXmlWrite(
+//    _In_ PCWSTR FileName
+//    )
+//{
+//    HRESULT status;
+//    PH_AUTO_POOL autoPool;
+//    IStream* fileStream = NULL;
+//    PH_HASHTABLE_ENUM_CONTEXT enumContext;
+//    PPH_SETTING setting;
+//
+//    status = SHCreateStreamOnFileEx_Import()(
+//        FileName,
+//        STGM_WRITE | STGM_CREATE,
+//        FILE_ATTRIBUTE_NORMAL,
+//        TRUE,
+//        NULL,
+//        &fileStream
+//        );
+//
+//    if (HR_FAILED(status))
+//        return status;
+//
+//    PhInitializeAutoPool(&autoPool);
+//
+//    {
+//        IXmlWriter* xmlWriter = NULL;
+//
+//        status = CreateXmlWriter_Import()(&IID_IXmlWriter, &xmlWriter, NULL);
+//
+//        if (HR_FAILED(status))
+//            goto CleanupExit;
+//
+//        IXmlWriter_SetProperty(xmlWriter, XmlWriterProperty_Indent, TRUE);
+//        IXmlWriter_SetProperty(xmlWriter, XmlWriterProperty_OmitXmlDeclaration, TRUE);
+//
+//        status = IXmlWriter_SetOutput(xmlWriter, (IUnknown*)fileStream);
+//
+//        if (HR_FAILED(status))
+//            goto CleanupExit;
+//
+//        IXmlWriter_WriteStartElement(xmlWriter, NULL, L"settings", NULL);
+//
+//        PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
+//
+//        while (setting = PhNextEnumHashtable(&enumContext))
+//        {
+//            PPH_STRING settingValue;
+//
+//            settingValue = PH_AUTO_T(PH_STRING, PhSettingToString(setting->Type, setting));
+//            IXmlWriter_WriteStartElement(xmlWriter, NULL, L"setting", NULL);
+//            IXmlWriter_WriteAttributeString(xmlWriter, NULL, L"name", NULL, PhGetStringRefZ(&setting->Name));
+//            IXmlWriter_WriteString(xmlWriter, PhGetStringRefZ(&settingValue->sr));
+//            IXmlWriter_WriteEndElement(xmlWriter);
+//        }
+//
+//        for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
+//        {
+//            PPH_STRING settingValue;
+//
+//            setting = PhIgnoredSettings->Items[i];
+//            settingValue = setting->u.Pointer;
+//
+//            IXmlWriter_WriteStartElement(xmlWriter, NULL, L"setting", NULL);
+//            IXmlWriter_WriteAttributeString(xmlWriter, NULL, L"name", NULL, PhGetStringRefZ(&setting->Name));
+//            IXmlWriter_WriteString(xmlWriter, PhGetStringRefZ(&settingValue->sr));
+//            IXmlWriter_WriteEndElement(xmlWriter);
+//        }
+//
+//        IXmlWriter_WriteEndElement(xmlWriter);
+//
+//        status = IXmlWriter_Flush(xmlWriter);
+//
+//        IXmlWriter_Release(xmlWriter);
+//    }
+//
+//    //{
+//    //    IXmlWriterLite* xmlWriterLite = NULL;
+//    //
+//    //    status = CreateXmlWriter_Import()(&IID_IXmlWriterLite, &xmlWriterLite, NULL);
+//    //
+//    //    if (HR_FAILED(status))
+//    //        goto CleanupExit;
+//    //
+//    //    status = IXmlWriterLite_SetOutput(xmlWriterLite, (IUnknown*)fileStream);
+//    //
+//    //    if (HR_FAILED(status))
+//    //        goto CleanupExit;
+//
+//    //    IXmlWriterLite_WriteStartElement(xmlWriterLite, L"settings", 8);
+//    //    IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
+//    //
+//    //    PhBeginEnumHashtable(PhSettingsHashtable, &enumContext);
+//    //
+//    //    while (setting = PhNextEnumHashtable(&enumContext))
+//    //    {
+//    //        PPH_STRING settingValue;
+//    //
+//    //        settingValue = PhSettingToString(setting->Type, setting);
+//    //        IXmlWriterLite_WriteStartElement(xmlWriterLite, L"setting", 7);
+//    //        IXmlWriterLite_WriteAttributeString(xmlWriterLite, L"name", 4, setting->Name.Buffer, (ULONG)setting->Name.Length / sizeof(WCHAR));
+//    //        IXmlWriterLite_WriteString(xmlWriterLite, PhGetStringRefZ(&settingValue->sr));
+//    //        //IXmlWriterLite_WriteChars(xmlWriterLite, settingValue->Buffer, (ULONG)settingValue->Length / sizeof(WCHAR));
+//    //        IXmlWriterLite_WriteEndElement(xmlWriterLite, L"setting", 7);
+//    //        IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
+//    //        PhDereferenceObject(settingValue);
+//    //    }
+//    //
+//    //    // Write the ignored settings.
+//    //
+//    //    for (ULONG i = 0; i < PhIgnoredSettings->Count; i++)
+//    //    {
+//    //        PPH_STRING settingValue;
+//    //
+//    //        setting = PhIgnoredSettings->Items[i];
+//    //        settingValue = setting->u.Pointer;
+//    //        IXmlWriterLite_WriteStartElement(xmlWriterLite, L"setting", 7);
+//    //        IXmlWriterLite_WriteAttributeString(xmlWriterLite, L"name", 4, setting->Name.Buffer, (ULONG)setting->Name.Length / sizeof(WCHAR));
+//    //        IXmlWriterLite_WriteString(xmlWriterLite, PhGetStringRefZ(&settingValue->sr));
+//    //        IXmlWriterLite_WriteEndElement(xmlWriterLite, L"setting", 7);
+//    //        IXmlWriterLite_WriteWhitespace(xmlWriterLite, L"\n");
+//    //    }
+//    //
+//    //    IXmlWriterLite_WriteEndElement(xmlWriterLite, L"settings", 8);
+//
+//    //    status = IXmlWriterLite_Flush(xmlWriterLite);
+//    //
+//    //    IXmlWriterLite_Release(xmlWriterLite);
+//    //}
+//
+//CleanupExit:
+//    //IStream_Commit(fileStream, STGC_DEFAULT);
+//    IStream_Release(fileStream);
+//
+//    PhDeleteAutoPool(&autoPool);
+//
+//    return status;
+//}
+//
+//NTSTATUS PhSaveSettingsXmlLite(
+//    _In_ PCPH_STRINGREF FileName
+//    )
+//{
+//    static CONST PH_STRINGREF extension = PH_STRINGREF_INIT(L".tmp");
+//    HRESULT status;
+//    PPH_STRING fileNameWin32;
+//    PPH_STRING fileNameTempWin32;
+//
+//    fileNameWin32 = PhResolveDevicePrefix(FileName);
+//
+//    if (PhIsNullOrEmptyString(fileNameWin32))
+//        return STATUS_UNSUCCESSFUL;
+//
+//    // TODO: Write XmlLite to buffer and atomic rename (same as PhSaveXmlObjectToFile) (dmex)
+//    PhMoveReference(&fileNameWin32, PhConcatStringRef2(&PhWin32ExtendedPathPrefix, &fileNameWin32->sr));
+//    fileNameTempWin32 = PhConcatStringRef2(&fileNameWin32->sr, &extension);
+//
+//    PhpClearIgnoredSettings();
+//
+//    PhAcquireQueuedLockShared(&PhSettingsLock);
+//    status = PhSaveSettingsXmlWrite(PhGetString(fileNameTempWin32));
+//    PhReleaseQueuedLockShared(&PhSettingsLock);
+//
+//    if (HR_FAILED(status))
+//    {
+//        PhDereferenceObject(fileNameTempWin32);
+//        PhDereferenceObject(fileNameWin32);
+//        return STATUS_UNSUCCESSFUL; // HRESULT_CODE(status);
+//    }
+//
+//    status = PhMoveFileWin32(
+//        PhGetString(fileNameTempWin32),
+//        PhGetString(fileNameWin32),
+//        FALSE
+//        );
+//
+//    PhDereferenceObject(fileNameTempWin32);
+//    PhDereferenceObject(fileNameWin32);
+//    return status;
+//}
 
 PCSTR PhpSettingsSaveCallback(
     _In_ PVOID cbdata,
@@ -1754,10 +2000,6 @@ PCSTR PhpSettingsSaveCallback(
     _In_ LONG when
     )
 {
-#define MXML_WS_BEFORE_OPEN 0
-#define MXML_WS_AFTER_OPEN 1
-#define MXML_WS_AFTER_CLOSE 3
-
     PCSTR elementName;
 
     if (!(elementName = PhGetXmlNodeElementText(node)))
@@ -1856,42 +2098,420 @@ NTSTATUS PhSaveSettingsXml(
     return status;
 }
 
+typedef struct _PH_SETTINGS_DISCOVERY_RESULT
+{
+    PH_SETTINGS_FORMAT Format;
+    PPH_STRING FilePath;
+    LARGE_INTEGER LastWriteTime;
+    BOOLEAN Found;
+} PH_SETTINGS_DISCOVERY_RESULT, *PPH_SETTINGS_DISCOVERY_RESULT;
+
+static ULONG PhpDiscoverSettingsStores(
+    _In_opt_ PPH_STRING BasePath,
+    _In_opt_ PCWSTR DefaultName,
+    _Out_writes_(PH_SETTINGS_STORE_COUNT) PPH_SETTINGS_DISCOVERY_RESULT Results,
+    _In_ ULONG ResultCount,
+    _Out_opt_ PBOOLEAN IsPortable
+    )
+{
+    ULONG foundCount = 0;
+    FILE_NETWORK_OPEN_INFORMATION networkOpenInfo;
+    PPH_STRING searchPath;
+    PPH_STRING filePath;
+
+    RtlZeroMemory(Results, sizeof(PH_SETTINGS_DISCOVERY_RESULT) * ResultCount);
+
+    if (IsPortable) *IsPortable = FALSE;
+
+    if (!BasePath)
+    {
+        // 1. Portable
+        if (searchPath = PhGetApplicationFileNameZ(L".settings"))
+        {
+            foundCount = PhpDiscoverSettingsStores(searchPath, DefaultName, Results, ResultCount, NULL);
+            PhDereferenceObject(searchPath);
+
+            if (foundCount > 0)
+            {
+                if (IsPortable) *IsPortable = TRUE;
+                return foundCount;
+            }
+        }
+
+        // 2. AppData
+        if (DefaultName && (searchPath = PhGetRoamingAppDataDirectoryZ(DefaultName, TRUE)))
+        {
+            foundCount = PhpDiscoverSettingsStores(searchPath, DefaultName, Results, ResultCount, NULL);
+            PhDereferenceObject(searchPath);
+            if (foundCount > 0) return foundCount;
+        }
+    }
+
+    for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+    {
+        const PH_SETTINGS_STORE_DESCRIPTOR* store = &PhSettingsStores[i];
+
+        Results[i].Format = store->Format;
+        Results[i].Found = FALSE;
+
+        if (store->IsFileBased)
+        {
+            if (!BasePath)
+                continue;
+
+            filePath = PhConcatStringRefZ(&BasePath->sr, store->Extension);
+
+            if (NT_SUCCESS(PhQueryFullAttributesFile(&filePath->sr, &networkOpenInfo)))
+            {
+                Results[i].Found = TRUE;
+                Results[i].FilePath = filePath;
+                Results[i].LastWriteTime = networkOpenInfo.LastWriteTime;
+                foundCount++;
+            }
+            else
+            {
+                PhDereferenceObject(filePath);
+            }
+        }
+        else if (store->Format == SettingsFormatReg)
+        {
+            if (BasePath)
+                continue;
+
+            static CONST PH_STRINGREF keyName = PH_STRINGREF_INIT(L"Software\\SystemInformer");
+            HANDLE keyHandle;
+
+            if (NT_SUCCESS(PhOpenKey(
+                &keyHandle,
+                KEY_READ,
+                PH_KEY_CURRENT_USER,
+                &keyName,
+                0
+                )))
+            {
+                Results[i].Found = TRUE;
+                Results[i].FilePath = NULL;
+                foundCount++;
+                NtClose(keyHandle);
+            }
+        }
+    }
+
+    return foundCount;
+}
+
+static LONG PhpSelectBestSettingsStore(
+    _In_reads_(PH_SETTINGS_STORE_COUNT) PPH_SETTINGS_DISCOVERY_RESULT Results
+    )
+{
+    LONG preferredIndex = LONG_MAX;
+    LONG newestIndex = LONG_MAX;
+    LONG highestPriorityIndex = LONG_MAX;
+    LARGE_INTEGER newestTime = { 0 };
+    LONG highestPriority = INT_MAX;
+
+    for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+    {
+        if (!Results[i].Found)
+            continue;
+
+        if (PhSettingsStores[i].IsPreferred)
+        {
+            preferredIndex = i;
+        }
+
+        if (PhSettingsStores[i].IsFileBased)
+        {
+            if (Results[i].LastWriteTime.QuadPart > newestTime.QuadPart)
+            {
+                newestTime = Results[i].LastWriteTime;
+                newestIndex = i;
+            }
+        }
+
+        if (PhSettingsStores[i].Priority < highestPriority)
+        {
+            highestPriority = PhSettingsStores[i].Priority;
+            highestPriorityIndex = i;
+        }
+    }
+
+    if (preferredIndex != LONG_MAX)
+        return preferredIndex;
+
+    if (newestIndex != LONG_MAX)
+        return newestIndex;
+
+    return highestPriorityIndex;
+}
+
+static VOID PhpFreeDiscoveryResults(
+    _In_reads_(PH_SETTINGS_STORE_COUNT) PPH_SETTINGS_DISCOVERY_RESULT Results
+    )
+{
+    for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+    {
+        if (Results[i].FilePath)
+        {
+            PhDereferenceObject(Results[i].FilePath);
+            Results[i].FilePath = NULL;
+        }
+    }
+}
+
+NTSTATUS PhLoadSettingsAutoDetect(
+    _In_opt_ PPH_STRING BasePath,
+    _In_opt_ PCWSTR DefaultName,
+    _Out_opt_ PPH_STRING* ActualPath,
+    _Out_opt_ PH_SETTINGS_FORMAT* ActualFormat,
+    _Out_opt_ PBOOLEAN IsPortable
+    )
+{
+    PH_SETTINGS_DISCOVERY_RESULT results[PH_SETTINGS_STORE_COUNT];
+    NTSTATUS status = STATUS_NOT_FOUND;
+    LONG selectedIndex;
+    ULONG foundCount;
+
+    foundCount = PhpDiscoverSettingsStores(BasePath, DefaultName, results, PH_SETTINGS_STORE_COUNT, IsPortable);
+
+    if (foundCount == 0)
+    {
+        if (ActualPath)
+        {
+            PPH_STRING searchPath = NULL;
+
+            if (BasePath)
+            {
+                searchPath = PhReferenceObject(BasePath);
+            }
+            else if (DefaultName)
+            {
+                searchPath = PhGetRoamingAppDataDirectoryZ(DefaultName, TRUE);
+            }
+
+            if (searchPath)
+            {
+                for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+                {
+                    if (PhSettingsStores[i].IsPreferred && PhSettingsStores[i].IsFileBased)
+                    {
+                        *ActualPath = PhConcatStringRefZ(&searchPath->sr, PhSettingsStores[i].Extension);
+                        if (ActualFormat)
+                            *ActualFormat = PhSettingsStores[i].Format;
+                        break;
+                    }
+                }
+                PhDereferenceObject(searchPath);
+            }
+        }
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    selectedIndex = PhpSelectBestSettingsStore(results);
+
+    if (selectedIndex == LONG_MAX)
+    {
+        status = STATUS_NOT_FOUND;
+        goto Cleanup;
+    }
+
+    const PH_SETTINGS_STORE_DESCRIPTOR* selectedStore = &PhSettingsStores[selectedIndex];
+
+    if (selectedStore->IsFileBased && !results[selectedIndex].FilePath)
+    {
+        status = STATUS_NOT_FOUND;
+        goto Cleanup;
+    }
+
+    switch (selectedStore->Format)
+    {
+        case SettingsFormatJson:
+            status = PhLoadSettingsJson(&results[selectedIndex].FilePath->sr);
+            break;
+        case SettingsFormatXml:
+            status = PhLoadSettingsXml(&results[selectedIndex].FilePath->sr);
+            break;
+        case SettingsFormatKey:
+            status = PhLoadSettingsAppKey(&results[selectedIndex].FilePath->sr);
+            break;
+        case SettingsFormatReg:
+            status = PhLoadSettingsKey();
+            break;
+        case SettingsFormatBin:
+            status = PhLoadSettingsBin(&results[selectedIndex].FilePath->sr);
+            break;
+        default:
+            status = STATUS_NOT_SUPPORTED;
+            break;
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        PH_SETTINGS_FORMAT actualFormat = selectedStore->Format;
+        PPH_STRING actualPath = NULL;
+
+        if (
+            selectedStore->Format == SettingsFormatXml &&
+            selectedStore->IsLegacy &&
+            results[selectedIndex].FilePath
+            )
+        {
+            PPH_STRING jsonFileName;
+
+            jsonFileName = PhGetBaseNameChangeExtensionZ(&results[selectedIndex].FilePath->sr, L".json");
+
+            if (jsonFileName)
+            {
+                if (!PhDoesFileExist(&jsonFileName->sr) &&
+                    NT_SUCCESS(PhConvertSettingsXmlToJson(&results[selectedIndex].FilePath->sr, &jsonFileName->sr)))
+                {
+                    actualPath = jsonFileName;
+                    actualFormat = SettingsFormatJson;
+                }
+                else
+                {
+                    PhDereferenceObject(jsonFileName);
+                }
+            }
+        }
+
+        if (!actualPath && results[selectedIndex].FilePath)
+            actualPath = PhReferenceObject(results[selectedIndex].FilePath);
+
+        if (ActualPath)
+        {
+            *ActualPath = actualPath;
+        }
+        else if (actualPath)
+        {
+            PhDereferenceObject(actualPath);
+        }
+
+        if (ActualFormat)
+            *ActualFormat = actualFormat;
+
+        PhSettingsLoadedFormat = actualFormat;
+    }
+
+Cleanup:
+    PhpFreeDiscoveryResults(results);
+    return status;
+}
+
 NTSTATUS PhLoadSettings(
     _In_ PCPH_STRINGREF FileName
     )
 {
-    return PhLoadSettingsJson(FileName);
+    return PhLoadSettingsEx(FileName, NULL);
+}
 
-    //if (PhEndsWithStringRef2(FileName, L".xml", TRUE))
-    //if (PhXmlLiteInitialized())
-    //{
-    //    if (NT_SUCCESS(PhLoadSettingsXmlLite(FileName)))
-    //        return STATUS_SUCCESS;
-    //}
-    //return PhLoadSettingsXml(FileName);
-    //status = PhLoadSettingsAppKey(FileName);
-    //status = PhLoadSettingsKey(FileName);
+NTSTATUS PhLoadSettingsEx(
+    _In_ PCPH_STRINGREF FileName,
+    _Out_opt_ PBOOLEAN IsPortable
+    )
+{
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
+    PPH_STRING portableSettingsBaseName = NULL;
 
-    return STATUS_INVALID_PARAMETER;
+    if (IsPortable)
+        *IsPortable = FALSE;
+
+    if (IsPortable)
+        portableSettingsBaseName = PhGetApplicationFileNameZ(L".settings");
+
+    // Detect format from extension
+    for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+    {
+        if (PhSettingsStores[i].IsFileBased &&
+            PhEndsWithStringRef2(FileName, PhSettingsStores[i].Extension, TRUE))
+        {
+            if (portableSettingsBaseName)
+            {
+                PPH_STRING portableSettingsFileName;
+
+                portableSettingsFileName = PhConcatStringRefZ(&portableSettingsBaseName->sr, PhSettingsStores[i].Extension);
+
+                if (PhEqualStringRef(&portableSettingsFileName->sr, FileName, TRUE))
+                    *IsPortable = TRUE;
+
+                PhDereferenceObject(portableSettingsFileName);
+            }
+
+            PhSettingsLoadedFormat = PhSettingsStores[i].Format;
+
+            switch (PhSettingsStores[i].Format)
+            {
+                case SettingsFormatBin:
+                    status = PhLoadSettingsBin(FileName);
+                    break;
+                case SettingsFormatJson:
+                    status = PhLoadSettingsJson(FileName);
+                    break;
+                case SettingsFormatXml:
+                    status = PhLoadSettingsXml(FileName);
+                    break;
+                case SettingsFormatKey:
+                    status = PhLoadSettingsAppKey(FileName);
+                    break;
+            }
+            break;
+        }
+    }
+
+    if (portableSettingsBaseName)
+        PhDereferenceObject(portableSettingsBaseName);
+
+    return status;
 }
 
 NTSTATUS PhSaveSettings(
-    _In_ PCPH_STRINGREF FileName
+    _In_opt_ PCPH_STRINGREF FileName
     )
 {
-    return PhSaveSettingsJson(FileName);
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
 
-    //if (PhEndsWithStringRef2(FileName, L".xml", TRUE))
-    //if (PhXmlLiteInitialized())
-    //{
-    //    if (NT_SUCCESS(PhSaveSettingsXmlLite(FileName)))
-    //        return STATUS_SUCCESS;
-    //}
-    //return PhSaveSettingsXml(FileName);
-    //status = PhSaveSettingsAppKey(FileName);
-    //status = PhSaveSettingsKey();
+    switch (PhSettingsLoadedFormat)
+    {
+    case SettingsFormatJson:
+        {
+            if (FileName)
+            {
+                status = PhSaveSettingsJson(FileName);
+            }
+        }
+        break;
+    case SettingsFormatXml:
+        {
+            if (FileName)
+            {
+                status = PhSaveSettingsXml(FileName);
+            }
+        }
+        break;
+    case SettingsFormatKey:
+        {
+            if (FileName)
+            {
+                status = PhSaveSettingsAppKey(FileName);
+            }
+        }
+        break;
+    case SettingsFormatReg:
+        {
+            status = PhSaveSettingsKey();
+        }
+        break;
+    case SettingsFormatBin:
+        {
+            if (FileName)
+            {
+                status = PhSaveSettingsBin(FileName);
+            }
+        }
+        break;
+    }
 
-    return STATUS_INVALID_PARAMETER;
+    return status;
 }
 
 VOID PhResetSettings(
@@ -1918,26 +2538,69 @@ NTSTATUS PhResetSettingsFile(
     _In_ PCPH_STRINGREF FileName
     )
 {
-    HANDLE fileHandle;
     NTSTATUS status;
-    CHAR data[] = "<settings></settings>";
+    HANDLE fileHandle;
+    PVOID data = NULL;
+    SIZE_T dataLength = 0;
+    CHAR jsonData[] = "{}";
+    CHAR xmlData[] = "<settings></settings>";
+    PH_SETTINGS_FORMAT detectedFormat = SettingsFormatJson;
+    PH_SETTINGS_BIN_HEADER binData = { PH_SETTINGS_BIN_SIGNATURE, PH_SETTINGS_BIN_VERSION, 0 };
 
-    // This used to delete the file. But it's better to keep the file there
-    // and overwrite it with some valid XML, especially with case (2) above.
+    // Detect format from file extension
+    for (ULONG i = 0; i < PH_SETTINGS_STORE_COUNT; i++)
+    {
+        if (PhSettingsStores[i].IsFileBased &&
+            PhEndsWithStringRef2(FileName, PhSettingsStores[i].Extension, TRUE))
+        {
+            detectedFormat = PhSettingsStores[i].Format;
+            break;
+        }
+    }
 
+    // Select appropriate reset data based on format
+    switch (detectedFormat)
+    {
+        case SettingsFormatJson:
+            data = jsonData;
+            dataLength = sizeof(jsonData) - 1;
+            break;
+        case SettingsFormatXml:
+            data = xmlData;
+            dataLength = sizeof(xmlData) - 1;
+            break;
+        case SettingsFormatKey:
+            // For AppKey/DAT files, delete and recreate is better
+            PhDeleteFile(FileName);
+            return STATUS_SUCCESS;
+        case SettingsFormatReg:
+            // Registry format doesn't use file - should not be called
+            return STATUS_NOT_SUPPORTED;
+        case SettingsFormatBin:
+            data = &binData;
+            dataLength = sizeof(PH_SETTINGS_BIN_HEADER);
+            break;
+        default:
+            // Unknown format - default to JSON
+            data = jsonData;
+            dataLength = sizeof(jsonData) - 1;
+            break;
+    }
+
+    // Overwrite the file with empty valid content
     status = PhCreateFile(
         &fileHandle,
         FileName,
         FILE_GENERIC_WRITE,
         FILE_ATTRIBUTE_NORMAL,
         FILE_SHARE_READ | FILE_SHARE_DELETE,
-        FILE_OVERWRITE,
+        FILE_OVERWRITE_IF,
         FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT
         );
 
     if (NT_SUCCESS(status))
     {
-        PhWriteFile(fileHandle, data, sizeof(data) - 1, NULL, NULL);
+        PhWriteFile(fileHandle, data, (ULONG)dataLength, NULL, NULL);
         NtClose(fileHandle);
     }
 
@@ -2005,21 +2668,29 @@ VOID PhLoadWindowPlacementFromRectangle(
     )
 {
     PH_INTEGER_PAIR windowIntegerPair = { 0 };
-    PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = NULL;
+    PH_SCALABLE_INTEGER_PAIR scalableIntegerPair = { 0 };
+    PH_SCALABLE_INTEGER_PAIR scaledIntegerPair;
     LONG windowDpi;
-    RECT windowRect;
+    RECT probeRect;
 
     windowIntegerPair = PhGetIntegerPairSetting(PositionSettingName);
     scalableIntegerPair = PhGetScalableIntegerPairSetting(SizeSettingName, FALSE, 0);
 
+    if (scalableIntegerPair.X == 0 && scalableIntegerPair.Y == 0)
+        return;
+
     memset(WindowRectangle, 0, sizeof(PH_RECTANGLE));
     WindowRectangle->Position = windowIntegerPair;
-    WindowRectangle->Size = scalableIntegerPair->Pair;
+    WindowRectangle->Size = scalableIntegerPair.Pair;
 
-    PhRectangleToRect(&windowRect, WindowRectangle);
-    windowDpi = PhGetMonitorDpi(NULL, &windowRect);
+    // Resolve the target monitor's DPI by rect (no window move required). (dmex)
+    PhRectangleToRect(&probeRect, WindowRectangle);
+    windowDpi = PhGetMonitorDpi(NULL, &probeRect);
 
-    PhScalableIntegerPairToScale(scalableIntegerPair, windowDpi);
+    scaledIntegerPair = scalableIntegerPair;
+    PhScalableIntegerPairToScale(&scaledIntegerPair, windowDpi);
+    WindowRectangle->Size = scaledIntegerPair.Pair;
+
     PhAdjustRectangleToWorkingArea(NULL, WindowRectangle);
 }
 
@@ -2032,22 +2703,31 @@ BOOLEAN PhLoadWindowPlacementFromSetting(
     if (PositionSettingName && SizeSettingName)
     {
         PH_INTEGER_PAIR windowIntegerPair = { 0 };
-        PPH_SCALABLE_INTEGER_PAIR scalableIntegerPair = NULL;
+        PH_SCALABLE_INTEGER_PAIR scalableIntegerPair = { 0 };
+        PH_SCALABLE_INTEGER_PAIR scaledIntegerPair;
         PH_RECTANGLE windowRectangle = { 0 };
-        LONG dpi;
         RECT rectForAdjust;
+        RECT windowRect;
+        LONG dpi;
 
         windowIntegerPair = PhGetIntegerPairSetting(PositionSettingName);
-        scalableIntegerPair = PhGetScalableIntegerPairSetting(SizeSettingName, FALSE, 0);
-        windowRectangle.Position = windowIntegerPair;
-        windowRectangle.Size = scalableIntegerPair->Pair;
 
-        if (windowRectangle.Position.X == 0)
+        if (windowIntegerPair.X == 0 && windowIntegerPair.Y == 0)
+        {
             return FALSE;
+        }
 
+        scalableIntegerPair = PhGetScalableIntegerPairSetting(SizeSettingName, FALSE, 0);
+
+        if (scalableIntegerPair.X == 0 && scalableIntegerPair.Y == 0)
+        {
+            return FALSE;
+        }
+
+        windowRectangle.Position = windowIntegerPair;
+        windowRectangle.Size = scalableIntegerPair.Pair;
         PhAdjustRectangleToWorkingArea(NULL, &windowRectangle);
 
-        // Update the window position before querying the DPI or changing the size. (dmex)
         SetWindowPos(
             WindowHandle,
             NULL,
@@ -2058,21 +2738,34 @@ BOOLEAN PhLoadWindowPlacementFromSetting(
             SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOZORDER
             );
 
-        //dpi = PhGetMonitorDpiFromRect(&windowRectangle);
+        if (!PhGetWindowRect(WindowHandle, &windowRect))
+        {
+            return FALSE;
+        }
+
+        windowRectangle.Left = windowRect.left;
+        windowRectangle.Top = windowRect.top;
         dpi = PhGetWindowDpi(WindowHandle);
-        PhScalableIntegerPairToScale(scalableIntegerPair, dpi);
 
-        RtlZeroMemory(&windowRectangle, sizeof(PH_RECTANGLE));
-        windowRectangle.Position = windowIntegerPair;
-        windowRectangle.Size = scalableIntegerPair->Pair;
+        scaledIntegerPair = scalableIntegerPair;
+        PhScalableIntegerPairToScale(&scaledIntegerPair, dpi);
 
-        // Let the window adjust for the minimum size if needed.
+        windowRectangle.Size = scaledIntegerPair.Pair;
+
         PhRectangleToRect(&rectForAdjust, &windowRectangle);
         SendMessage(WindowHandle, WM_SIZING, WMSZ_BOTTOMRIGHT, (LPARAM)&rectForAdjust);
         PhRectToRectangle(&windowRectangle, &rectForAdjust);
 
-        MoveWindow(WindowHandle, windowRectangle.Left, windowRectangle.Top,
-            windowRectangle.Width, windowRectangle.Height, FALSE);
+        PhAdjustRectangleToWorkingArea(NULL, &windowRectangle);
+
+        MoveWindow(
+            WindowHandle,
+            windowRectangle.Left,
+            windowRectangle.Top,
+            windowRectangle.Width,
+            windowRectangle.Height,
+            FALSE
+            );
     }
     else
     {
@@ -2080,52 +2773,87 @@ BOOLEAN PhLoadWindowPlacementFromSetting(
         PH_INTEGER_PAIR position = { 0 };
         PH_INTEGER_PAIR size;
         ULONG flags;
+        RECT windowRect;
         LONG dpi;
 
-        flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOZORDER;
+        flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER;
+
+        if (!PhGetWindowRect(WindowHandle, &windowRect))
+        {
+            return FALSE;
+        }
+
+        position.X = windowRect.left;
+        position.Y = windowRect.top;
+        size.X = windowRect.right - windowRect.left;
+        size.Y = windowRect.bottom - windowRect.top;
 
         if (PositionSettingName)
         {
             position = PhGetIntegerPairSetting(PositionSettingName);
+
+            if (position.X == 0 && position.Y == 0)
+            {
+                return FALSE;
+            }
+
             ClearFlag(flags, SWP_NOMOVE);
-        }
-        else
-        {
-            position.X = 0;
-            position.Y = 0;
         }
 
         if (SizeSettingName)
         {
-            //RECT rect;
-            //
-            //windowRectangle.Position = position;
-            //rect = PhRectangleToRect(windowRectangle);
-            //dpi = PhGetMonitorDpi(&rect);
-            dpi = PhGetWindowDpi(WindowHandle);
-            size = PhGetScalableIntegerPairSetting(SizeSettingName, TRUE, dpi)->Pair;
+            PH_SCALABLE_INTEGER_PAIR scalableIntegerPair = { 0 };
+            RECT probeRect;
+
+            probeRect.left = position.X;
+            probeRect.top = position.Y;
+            probeRect.right = probeRect.left + (size.X ? size.X : 1);
+            probeRect.bottom = probeRect.top + (size.Y ? size.Y : 1);
+
+            dpi = PositionSettingName ? PhGetMonitorDpi(NULL, &probeRect) : PhGetWindowDpi(WindowHandle);
+
+            scalableIntegerPair = PhGetScalableIntegerPairSetting(SizeSettingName, TRUE, dpi);
+
+            if (scalableIntegerPair.X == 0 && scalableIntegerPair.Y == 0)
+            {
+                return FALSE;
+            }
+
+            size = scalableIntegerPair.Pair;
             ClearFlag(flags, SWP_NOSIZE);
         }
-        else
+        else if (PositionSettingName)
         {
-            RECT windowRect;
+            windowRectangle.Position = position;
+            windowRectangle.Size = size;
+            PhAdjustRectangleToWorkingArea(NULL, &windowRectangle);
 
-            //size.X = 16;
-            //size.Y = 16;
+            SetWindowPos(
+                WindowHandle,
+                NULL,
+                windowRectangle.Left,
+                windowRectangle.Top,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSIZE | SWP_NOZORDER
+                );
 
             if (!PhGetWindowRect(WindowHandle, &windowRect))
+            {
                 return FALSE;
+            }
 
+            position.X = windowRect.left;
+            position.Y = windowRect.top;
             size.X = windowRect.right - windowRect.left;
             size.Y = windowRect.bottom - windowRect.top;
         }
 
-        // Make sure the window doesn't get positioned on disconnected monitors. (dmex)
         windowRectangle.Position = position;
         windowRectangle.Size = size;
         PhAdjustRectangleToWorkingArea(NULL, &windowRectangle);
 
-        SetWindowPos(WindowHandle, NULL, windowRectangle.Left, windowRectangle.Top, size.X, size.Y, flags);
+        SetWindowPos(WindowHandle, NULL, windowRectangle.Left, windowRectangle.Top, windowRectangle.Width, windowRectangle.Height, flags);
     }
 
     return TRUE;
@@ -2139,28 +2867,38 @@ VOID PhSaveWindowPlacementToSetting(
 {
     WINDOWPLACEMENT placement = { sizeof(placement) };
     PH_RECTANGLE windowRectangle;
+    HMONITOR monitorHandle;
     MONITORINFO monitorInfo = { sizeof(MONITORINFO) };
-    //RECT rect;
     LONG dpi;
 
-    GetWindowPlacement(WindowHandle, &placement);
+    if (!GetWindowPlacement(WindowHandle, &placement))
+    {
+        return;
+    }
+
     PhRectToRectangle(&windowRectangle, &placement.rcNormalPosition);
 
-    // The rectangle is in workspace coordinates. Convert the values back to screen coordinates.
-    if (GetMonitorInfo(MonitorFromRect(&placement.rcNormalPosition, MONITOR_DEFAULTTOPRIMARY), &monitorInfo))
+    // rcNormalPosition is in workspace coordinates. Convert back to screen coordinates.
+    monitorHandle = MonitorFromWindow(WindowHandle, MONITOR_DEFAULTTONEAREST);
+    if (GetMonitorInfo(monitorHandle, &monitorInfo))
     {
         windowRectangle.Left += monitorInfo.rcWork.left - monitorInfo.rcMonitor.left;
         windowRectangle.Top += monitorInfo.rcWork.top - monitorInfo.rcMonitor.top;
     }
 
-    //PhRectangleToRect(&rect, &windowRectangle);
-    //dpi = PhGetMonitorDpi(&rect);
+    // Use the window's effective DPI context for persisted size scaling.
+    // This avoids cumulative growth/shrink when monitor DPI and window DPI differ
+    // (e.g. system-DPI-aware behavior on older or non per-monitor modes).
     dpi = PhGetWindowDpi(WindowHandle);
 
     if (PositionSettingName)
+    {
         PhSetIntegerPairSetting(PositionSettingName, windowRectangle.Position);
+    }
     if (SizeSettingName)
+    {
         PhSetScalableIntegerPairSetting2(SizeSettingName, windowRectangle.Size, dpi);
+    }
 }
 
 BOOLEAN PhLoadListViewColumnSettings(
@@ -2660,7 +3398,7 @@ VOID PhLoadListViewGroupStatesFromSetting(
 
         ListView_SetGroupState(
             ListViewHandle,
-            (INT)groupId,
+            (LONG)groupId,
             LVGS_NORMAL | LVGS_COLLAPSED,
             (UINT)stateMask
             );
@@ -2690,6 +3428,9 @@ VOID PhSaveListViewGroupStatesToSetting(
     for (index = 0; index < count; index++)
     {
         LVGROUP group;
+        PH_FORMAT format[4];
+        SIZE_T returnLength;
+        WCHAR buffer[PH_INT64_STR_LEN_1];
 
         memset(&group, 0, sizeof(LVGROUP));
         group.cbSize = sizeof(LVGROUP);
@@ -2699,12 +3440,24 @@ VOID PhSaveListViewGroupStatesToSetting(
         if (ListView_GetGroupInfoByIndex(ListViewHandle, index, &group) == -1)
             continue;
 
-        PhAppendFormatStringBuilder(
-            &stringBuilder,
-            L"%d|%u|",
-            group.iGroupId,
-            group.state
-            );
+        PhInitFormatD(&format[0], group.iGroupId);
+        PhInitFormatC(&format[1], L'|');
+        PhInitFormatU(&format[2], group.state);
+        PhInitFormatC(&format[3], L'|');
+
+        if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), buffer, sizeof(buffer), &returnLength))
+        {
+            PhAppendStringBuilderEx(&stringBuilder, buffer, returnLength - sizeof(UNICODE_NULL));
+        }
+        else
+        {
+            PhAppendFormatStringBuilder(
+                &stringBuilder,
+                L"%d|%u|",
+                group.iGroupId,
+                group.state
+                );
+        }
     }
 
     if (stringBuilder.String->Length != 0)
@@ -2800,7 +3553,7 @@ VOID PhSaveCustomColorList(
     PhDeleteStringBuilder(&stringBuilder);
 }
 
-static VOID PhConvertSettingsStripSubstring(
+static VOID PhBytesStripSubstringZ(
     _In_ PSTR String,
     _In_ PCSTR SubString
     )
@@ -2814,8 +3567,146 @@ static VOID PhConvertSettingsStripSubstring(
 
     while (offset)
     {
+        // Calculate the size of the remaining string (including null terminator) in bytes
+        // and shift it over the substring to be removed.
         memmove(offset, offset + length, (PhCountBytesZ(offset + length) + 1) * sizeof(CHAR));
+
+        // Rescan from the beginning of the string to handle nested occurrences
         offset = strstr(String, SubString);
+    }
+}
+
+static VOID PhStringStripSubstringZ(
+    _In_ PWSTR String,
+    _In_ PCWSTR SubString
+    )
+{
+    SIZE_T length = PhCountStringZ(SubString);
+    
+    if (length == 0)
+        return;
+
+    PWSTR offset = wcsstr(String, SubString);
+
+    while (offset)
+    {
+        // Calculate the size of the remaining string (including null terminator) in bytes
+        // and shift it over the substring to be removed.
+        memmove(offset, offset + length, (PhCountStringZ(offset + length) + 1) * sizeof(WCHAR));
+
+        // Rescan from the beginning of the string to handle nested occurrences
+        offset = wcsstr(String, SubString);
+    }
+}
+
+static PPH_STRING PhRemoveSubstringFromStringSafe(
+    _In_ PPH_STRING String,
+    _In_ PCPH_STRINGREF Separator,
+    _In_ BOOLEAN IgnoreCase
+    )
+{
+    PH_STRINGREF firstPart;
+    PH_STRINGREF secondPart;
+    PH_STRINGREF remainingPart;
+    PH_STRING_BUILDER stringBuilder;
+
+    if (!String || !String->Buffer || !Separator || Separator->Length == 0)
+        return NULL;
+
+    remainingPart = PhGetStringRef(String);
+
+    PhInitializeStringBuilder(&stringBuilder, 0x1000);
+
+    while (remainingPart.Length != 0)
+    {
+        if (!PhSplitStringRefAtString(&remainingPart, Separator, IgnoreCase, &firstPart, &secondPart))
+            break;
+
+        PhAppendStringBuilder(&stringBuilder, &firstPart);
+    }
+
+    if (remainingPart.Length)
+    {
+        PhAppendStringBuilder(&stringBuilder, &remainingPart);
+    }
+
+    return PhFinalStringBuilderString(&stringBuilder);
+}
+
+static PPH_STRING PhRemoveSubstringFromString(
+    _In_ PPH_STRING String,
+    _In_ PCPH_STRINGREF Substring,
+    _In_ BOOLEAN IgnoreCase
+    )
+{
+    PH_STRING_BUILDER stringBuilder;
+    PH_STRINGREF remainingPart;
+    PH_STRINGREF stringPart;
+
+    remainingPart = PhGetStringRef(String);
+
+    PhInitializeStringBuilder(&stringBuilder, String->Length);
+
+    while (PhSplitStringRefAtString(&remainingPart, Substring, IgnoreCase, &stringPart, &remainingPart))
+    {
+        PhAppendStringBuilder(&stringBuilder, &stringPart);
+    }
+
+    // If 'remainingPart' still has the same length as the original string,
+    // it means the Substring was never found. Return the original to save memory.
+    //if (remainingPart.Length == String->Length)
+    //{
+    //    PhDeleteStringBuilder(&stringBuilder);
+    //    return PhReferenceObject(String);
+    //}
+
+    // Append the final chunk (or the whole string if no Substring was found)
+    if (remainingPart.Length)
+    {
+        PhAppendStringBuilder(&stringBuilder, &remainingPart);
+    }
+
+    return PhFinalStringBuilderString(&stringBuilder);
+}
+
+static VOID PhRemoveSubstringFromStringUnsafe(
+    _In_ PPH_STRING String,
+    _In_ PCPH_STRINGREF Separator,
+    _In_ BOOLEAN IgnoreCase
+    )
+{
+    PH_STRINGREF firstPart;
+    PH_STRINGREF secondPart;
+    PH_STRINGREF remainingPart;
+    PH_STRING_BUILDER stringBuilder;
+
+    remainingPart = PhGetStringRef(String);
+
+    PhInitializeStringBuilder(&stringBuilder, 0x1000);
+
+    while (remainingPart.Length != 0)
+    {
+        if (!PhSplitStringRefAtString(&remainingPart, Separator, TRUE, &firstPart, &secondPart))
+            break;
+
+        // Calculate the destination pointer (end of the first part)
+        PWSTR destination = (PWSTR)PTR_ADD_OFFSET(firstPart.Buffer, firstPart.Length);
+        // Calculate the source pointer (start of the second part)
+        PWSTR source = secondPart.Buffer;
+
+        // Move the remaining part of the string (including the null terminator)
+        // over the substring we want to remove.
+        memmove(destination, source, secondPart.Length + sizeof(UNICODE_NULL));
+
+        // Update the Length field.
+        String->Length -= Separator->Length;
+
+        // Re-initialize the stringRef to the modified string to continue searching.
+        // This is necessary because the string length has changed.
+        // Since we modified the buffer in-place, the 'STRINGREF' view is now stale.
+        // Re-initialize it to the new string state to find subsequent occurrences.
+        remainingPart.Buffer = String->Buffer;
+        remainingPart.Length = String->Length;
     }
 }
 
@@ -2858,14 +3749,6 @@ NTSTATUS PhConvertSettingsXmlToJson(
     if (!NT_SUCCESS(status))
         goto CleanupExit;
 
-    {
-        PPH_STRING string = PhConcatStrings(8, L"Process", L"H", L"a", L"c", L"k", L"e", L"r", L".");
-        PPH_BYTES bytes = PhConvertStringRefToUtf8(&string->sr);
-        PhConvertSettingsStripSubstring(fileContent->Buffer, bytes->Buffer);
-        PhDereferenceObject(bytes);
-        PhDereferenceObject(string);
-    }
-
     topNode = PhLoadXmlObjectFromString(fileContent->Buffer);
     PhDereferenceObject(fileContent);
 
@@ -2893,13 +3776,20 @@ NTSTATUS PhConvertSettingsXmlToJson(
     {
         if (settingName = PhGetXmlNodeAttributeText(currentNode, "name"))
         {
+            PH_STRINGREF name = settingName->sr;
+
+            if (PhIsLegacyPrefix(&name))
+            {
+                PhSkipStringRef(&name, 14 * sizeof(WCHAR));
+            }
+
             if (settingValue = PhGetXmlNodeOpaqueText(currentNode))
             {
                 PPH_BYTES stringName;
                 PPH_BYTES stringValue;
 
-                stringName = PhConvertStringToUtf8(settingName);
-                stringValue = PhConvertStringToUtf8(settingValue);
+                stringName = PhConvertStringRefToUtf8(&name);
+                stringValue = PhConvertStringRefToUtf8(&settingValue->sr);
 
                 PhAddJsonObject2(
                     object,
@@ -2913,10 +3803,8 @@ NTSTATUS PhConvertSettingsXmlToJson(
 
                 PhDereferenceObject(settingValue);
             }
-
             PhDereferenceObject(settingName);
         }
-
         currentNode = PhGetXmlNodeNextChild(currentNode);
     }
 

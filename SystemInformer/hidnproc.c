@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2019-2023
+ *     dmex    2019-2026
  *
  */
 
@@ -65,6 +65,16 @@ NTSTATUS PhpCreateProcessItemForZombieProcess(
     _In_ HWND WindowHandle,
     _In_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
     _Out_ PPH_PROCESS_ITEM* ProcessItem
+    );
+
+VOID PhpInitializeZombieProcessEntry(
+    _Out_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessId
+    );
+
+VOID PhpSetZombieProcessHandleCount(
+    _Inout_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessHandle
     );
 
 static HWND PhZombieProcessesWindowHandle = NULL;
@@ -184,11 +194,13 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
             PhSetControlTheme(lvHandle, L"explorer");
             PhAddListViewColumn(lvHandle, 0, 0, 0, LVCFMT_LEFT, 320, L"Process");
             PhAddListViewColumn(lvHandle, 1, 1, 1, LVCFMT_LEFT, 60, L"PID");
+            PhAddListViewColumn(lvHandle, 2, 2, 2, LVCFMT_RIGHT, 70, L"Handles");
 
             PhSetExtendedListView(lvHandle);
             PhLoadListViewColumnsFromSetting(SETTING_ZOMBIE_PROCESSES_LIST_VIEW_COLUMNS, lvHandle);
             ExtendedListView_AddFallbackColumn(lvHandle, 0);
             ExtendedListView_AddFallbackColumn(lvHandle, 1);
+            ExtendedListView_AddFallbackColumn(lvHandle, 2);
             ExtendedListView_SetItemColorFunction(lvHandle, PhpZombieProcessesColorFunction);
 
             ComboBox_AddString(methodHandle, L"Brute force");
@@ -272,9 +284,7 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                     ULONG numberOfEntries;
                     ULONG i;
 
-                    PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &entries, &numberOfEntries);
-
-                    if (numberOfEntries != 0)
+                    if (PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &entries, &numberOfEntries))
                     {
                         if (!PhGetIntegerSetting(SETTING_ENABLE_WARNINGS) ||
                             PhShowConfirmMessage(
@@ -334,9 +344,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                                 SendMessage(hwndDlg, WM_COMMAND, IDC_SCAN, 0);
                             }
                         }
-                    }
 
-                    PhFree(entries);
+                        PhFree(entries);
+                    }
                 }
                 break;
             case IDC_SAVE:
@@ -397,12 +407,25 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                                     else if (entry->Type != NormalProcess)
                                         continue;
 
-                                    PhWriteStringFormatAsUtf8FileStream(
-                                        fileStream,
-                                        L"%s (%u)\r\n",
-                                        entry->FileName->Buffer,
-                                        HandleToUlong(entry->ProcessId)
-                                        );
+                                    if (entry->HasHandleCount)
+                                    {
+                                        PhWriteStringFormatAsUtf8FileStream(
+                                            fileStream,
+                                            L"%s (%u) Handles: %u\r\n",
+                                            entry->FileName->Buffer,
+                                            HandleToUlong(entry->ProcessId),
+                                            entry->HandleCount
+                                            );
+                                    }
+                                    else
+                                    {
+                                        PhWriteStringFormatAsUtf8FileStream(
+                                            fileStream,
+                                            L"%s (%u)\r\n",
+                                            entry->FileName->Buffer,
+                                            HandleToUlong(entry->ProcessId)
+                                            );
+                                    }
                                 }
                             }
 
@@ -503,9 +526,7 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(PhZombieProcessesListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -541,9 +562,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
@@ -620,13 +641,44 @@ COLORREF NTAPI PhpZombieProcessesColorFunction(
     return PhEnableThemeSupport ? PhThemeWindowBackgroundColor : GetSysColor(COLOR_WINDOW);
 }
 
+VOID PhpInitializeZombieProcessEntry(
+    _Out_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessId
+    )
+{
+    Entry->ProcessId = ProcessId;
+    Entry->FileName = NULL;
+    Entry->Type = UnknownProcess;
+    Entry->HandleCount = 0;
+    Entry->HasHandleCount = FALSE;
+}
+
+VOID PhpSetZombieProcessHandleCount(
+    _Inout_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessHandle
+    )
+{
+    OBJECT_BASIC_INFORMATION basicInfo;
+
+    if (NT_SUCCESS(PhQueryObjectBasicInformation(ProcessHandle, &basicInfo)))
+    {
+        Entry->HandleCount = basicInfo.HandleCount ? basicInfo.HandleCount - 1 : 0;
+        Entry->HasHandleCount = TRUE;
+    }
+}
+
 BOOLEAN NTAPI PhpZombieProcessesCallback(
     _In_ PPH_ZOMBIE_PROCESS_ENTRY Process,
-    _In_ PVOID Context
+    _In_opt_ PVOID Context
     )
 {
     PPH_ZOMBIE_PROCESS_ENTRY entry;
-    ULONG count = ((PPH_LIST)Context)->Count;
+    ULONG count;
+
+    if (!Context)
+        return FALSE;
+
+    count = ((PPH_LIST)Context)->Count;
 
     for (ULONG i = 0; i < count; i++)
     {
@@ -662,6 +714,7 @@ VOID PhZombieProcessesUpdateListView(
         PPH_ZOMBIE_PROCESS_ENTRY entry = UpdateList->Items[i];
         INT lvItemIndex;
         WCHAR pidString[PH_INT32_STR_LEN_1];
+        WCHAR handleCountString[PH_INT32_STR_LEN_1];
 
         if (entry->FileName)
         {
@@ -677,10 +730,17 @@ VOID PhZombieProcessesUpdateListView(
         PhPrintUInt32(pidString, HandleToUlong(entry->ProcessId));
         PhSetListViewSubItem(PhZombieProcessesListViewHandle, lvItemIndex, 1, pidString);
 
+        if (entry->HasHandleCount)
+        {
+            PhPrintUInt32(handleCountString, entry->HandleCount);
+            PhSetListViewSubItem(PhZombieProcessesListViewHandle, lvItemIndex, 2, handleCountString);
+        }
+
         PhAddItemList(ProcessesList, entry);
     }
 }
 
+_Success_(NT_SUCCESS(return))
 NTSTATUS PhpCreateProcessItemForZombieProcess(
     _In_ HWND WindowHandle,
     _In_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
@@ -777,7 +837,8 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
 
         if (NT_SUCCESS(status2))
         {
-            entry.ProcessId = UlongToHandle(pid);
+            PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
+            PhpSetZombieProcessHandleCount(&entry, processHandle);
 
             if (NT_SUCCESS(status2 = PhGetProcessTimes(
                 processHandle,
@@ -811,7 +872,7 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
         {
             if (NT_SUCCESS(status2 = PhGetProcessImageFileNameByProcessId(UlongToHandle(pid), &fileName)))
             {
-                entry.ProcessId = UlongToHandle(pid);
+                PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
                 entry.FileName = fileName;
 
                 if (PhFindItemList(pids, UlongToHandle(pid)) != ULONG_MAX)
@@ -831,9 +892,7 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
 
         if (!NT_SUCCESS(status2))
         {
-            entry.ProcessId = UlongToHandle(pid);
-            entry.FileName = NULL;
-            entry.Type = UnknownProcess;
+            PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
 
             if (!Callback(&entry, Context))
                 stop = TRUE;
@@ -868,7 +927,7 @@ static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
     PPH_STRING fileName;
     PH_ZOMBIE_PROCESS_ENTRY entry;
 
-    entry.ProcessId = Handle->ProcessId;
+    PhpInitializeZombieProcessEntry(&entry, Handle->ProcessId);
 
     if (NT_SUCCESS(status = PhOpenProcessByCsrHandle(
         &processHandle,
@@ -876,6 +935,8 @@ static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
         Handle
         )))
     {
+        PhpSetZombieProcessHandleCount(&entry, processHandle);
+
         if (NT_SUCCESS(status = PhGetProcessTimes(
             processHandle,
             &times
@@ -957,6 +1018,7 @@ typedef struct _PH_ENUM_NEXT_PROCESS_CONTEXT
     PVOID Context;
 } PH_ENUM_NEXT_PROCESS_CONTEXT, *PPH_ENUM_NEXT_PROCESS_CONTEXT;
 
+_Function_class_(PH_ENUM_NEXT_PROCESS)
 NTSTATUS NTAPI PhpEnumNextProcessHandles(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID Context
@@ -980,7 +1042,8 @@ NTSTATUS NTAPI PhpEnumNextProcessHandles(
                 PH_ZOMBIE_PROCESS_ENTRY entry;
                 PPH_STRING fileName;
 
-                entry.ProcessId = basicInfo.BasicInfo.UniqueProcessId;
+                PhpInitializeZombieProcessEntry(&entry, basicInfo.BasicInfo.UniqueProcessId);
+                PhpSetZombieProcessHandleCount(&entry, ProcessHandle);
 
                 if (NT_SUCCESS(PhGetProcessImageFileName(ProcessHandle, &fileName)))
                 {
@@ -1099,7 +1162,8 @@ NTSTATUS PhpEnumZombieSubKeyHandles(
                         PH_ZOMBIE_PROCESS_ENTRY process;
                         PPH_STRING fileName;
 
-                        process.ProcessId = entry.ProcessId;
+                        PhpInitializeZombieProcessEntry(&process, entry.ProcessId);
+                        PhpSetZombieProcessHandleCount(&process, processHandle);
 
                         if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                         {
@@ -1139,7 +1203,7 @@ NTSTATUS PhpEnumZombieSubKeyHandles(
                 PH_ZOMBIE_PROCESS_ENTRY process;
                 PPH_STRING fileName;
 
-                process.ProcessId = entry.ProcessId;
+                PhpInitializeZombieProcessEntry(&process, entry.ProcessId);
 
                 if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                 {
@@ -1238,7 +1302,8 @@ NTSTATUS PhpEnumEtwGuidHandles(
                                 PH_ZOMBIE_PROCESS_ENTRY process;
                                 PPH_STRING fileName;
 
-                                process.ProcessId = UlongToHandle(instance->Pid);
+                                PhpInitializeZombieProcessEntry(&process, UlongToHandle(instance->Pid));
+                                PhpSetZombieProcessHandleCount(&process, processHandle);
 
                                 if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                                 {
@@ -1280,7 +1345,7 @@ NTSTATUS PhpEnumEtwGuidHandles(
                         PH_ZOMBIE_PROCESS_ENTRY process;
                         PPH_STRING fileName;
 
-                        process.ProcessId = UlongToHandle(instance->Pid);
+                        PhpInitializeZombieProcessEntry(&process, UlongToHandle(instance->Pid));
 
                         if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                         {
@@ -1375,7 +1440,8 @@ NTSTATUS PhpEnumNtdllHandles(
                             PH_ZOMBIE_PROCESS_ENTRY process;
                             PPH_STRING fileName;
 
-                            process.ProcessId = processId;
+                            PhpInitializeZombieProcessEntry(&process, processId);
+                            PhpSetZombieProcessHandleCount(&process, processHandle);
 
                             if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                             {
@@ -1415,7 +1481,7 @@ NTSTATUS PhpEnumNtdllHandles(
                     PH_ZOMBIE_PROCESS_ENTRY process;
                     PPH_STRING fileName;
 
-                    process.ProcessId = processId;
+                    PhpInitializeZombieProcessEntry(&process, processId);
 
                     if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                     {

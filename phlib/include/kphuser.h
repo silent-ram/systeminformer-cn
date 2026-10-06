@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *     jxy-s   2021-2022
  *
  */
@@ -23,23 +23,19 @@ EXTERN_C_START
 #define KPH_OBJECT_NAME  TEXT("\\Driver\\KSystemInformer")
 #define KPH_PORT_NAME    TEXT("\\KSystemInformer")
 
-#ifdef DEBUG
-#define KSI_COMMS_INIT_ASSERT() assert(KphMessageFreeList.Size == sizeof(KPH_MESSAGE))
-#else
-#define KSI_COMMS_INIT_ASSERT()
-#endif
-
 typedef struct _KPH_CONFIG_PARAMETERS
 {
     _In_ PPH_STRINGREF FileName;
     _In_ PPH_STRINGREF ServiceName;
     _In_ PPH_STRINGREF ObjectName;
     _In_opt_ PCPH_STRINGREF PortName;
-    _In_opt_ PPH_STRINGREF Altitude;
+    _In_opt_ PCPH_STRINGREF Altitude;
+    _In_opt_ PCPH_STRINGREF SystemProcessName;
     _In_ ULONG FsSupportedFeatures;
     _In_ KPH_PARAMETER_FLAGS Flags;
     _In_ BOOLEAN EnableNativeLoad;
     _In_ BOOLEAN EnableFilterLoad;
+    _In_ ULONG RingBufferLength;
     _In_opt_ PKPH_COMMS_CALLBACK Callback;
 } KPH_CONFIG_PARAMETERS, *PKPH_CONFIG_PARAMETERS;
 
@@ -65,7 +61,7 @@ KphSetParameters(
     );
 
 PHLIBAPI
-VOID
+NTSTATUS
 NTAPI
 KphSetServiceSecurity(
     _In_ SC_HANDLE ServiceHandle
@@ -106,10 +102,10 @@ KphServiceStop(
 //    );
 
 PHLIBAPI
-PPH_FREE_LIST
+PKPH_MESSAGE
 NTAPI
-KphGetMessageFreeList(
-    VOID
+KphCreateMessage(
+    _In_ SIZE_T Size
     );
 
 PHLIBAPI
@@ -214,7 +210,7 @@ KphEnumerateProcessHandles(
     _In_ HANDLE ProcessHandle,
     _Out_writes_bytes_(BufferLength) PVOID Buffer,
     _In_opt_ ULONG BufferLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -272,7 +268,7 @@ NTAPI
 KphOpenDriver(
     _Out_ PHANDLE DriverHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_ PCOBJECT_ATTRIBUTES ObjectAttributes
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes
     );
 
 PHLIBAPI
@@ -283,7 +279,7 @@ KphQueryInformationDriver(
     _In_ KPH_DRIVER_INFORMATION_CLASS DriverInformationClass,
     _Out_writes_bytes_opt_(DriverInformationLength) PVOID DriverInformation,
     _In_ ULONG DriverInformationLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -294,7 +290,7 @@ KphQueryInformationProcess(
     _In_ KPH_PROCESS_INFORMATION_CLASS ProcessInformationClass,
     _Out_writes_bytes_opt_(ProcessInformationLength) PVOID ProcessInformation,
     _In_ ULONG ProcessInformationLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -319,7 +315,6 @@ typedef enum _KPH_LEVEL
     KphLevelMed,
     KphLevelHigh,
     KphLevelMax
-
 } KPH_LEVEL;
 
 PHLIBAPI
@@ -445,7 +440,7 @@ NTAPI
 KphCreateFile(
     _Out_ PHANDLE FileHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_ PCOBJECT_ATTRIBUTES ObjectAttributes,
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes,
     _Out_ PIO_STATUS_BLOCK IoStatusBlock,
     _In_opt_ PLARGE_INTEGER AllocationSize,
     _In_ ULONG FileAttributes,
@@ -474,7 +469,7 @@ NTAPI
 KphQuerySection(
     _In_ HANDLE SectionHandle,
     _In_ KPH_SECTION_INFORMATION_CLASS SectionInformationClass,
-    _Out_writes_bytes_(SectionInformationLength) PVOID SectionInformation,
+    _Out_writes_bytes_opt_(SectionInformationLength) PVOID SectionInformation,
     _In_ ULONG SectionInformationLength,
     _Out_opt_ PULONG ReturnLength
     );
@@ -499,15 +494,15 @@ KphCompareObjects(
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphGetMessageTimeouts(
-    _Out_ PKPH_MESSAGE_TIMEOUTS Timeouts
+KphGetInformerClientSettings(
+    _Out_ PKPH_INFORMER_CLIENT_SETTINGS Settings
     );
 
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphSetMessageTimeouts(
-    _In_ PKPH_MESSAGE_TIMEOUTS Timeouts
+KphSetInformerClientSettings(
+    _In_ PKPH_INFORMER_CLIENT_SETTINGS Settings
     );
 
 PHLIBAPI
@@ -546,6 +541,13 @@ KphActivateDynData(
 PHLIBAPI
 NTSTATUS
 NTAPI
+KphIsDynDataActive(
+    _Out_ PBOOLEAN IsActive
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
 KphRequestSessionAccessToken(
     _Out_ PKPH_SESSION_ACCESS_TOKEN AccessToken,
     _In_ PLARGE_INTEGER Expiry,
@@ -574,17 +576,17 @@ KphAssignThreadSessionToken(
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphGetInformerProcessFilter(
+KphGetInformerProcessSettings(
     _In_ HANDLE ProcessHandle,
-    _Out_ PKPH_INFORMER_SETTINGS Filter
+    _Out_ PKPH_INFORMER_SETTINGS Settings
     );
 
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphSetInformerProcessFilter(
+KphSetInformerProcessSettings(
     _In_opt_ HANDLE ProcessHandle,
-    _In_ PKPH_INFORMER_SETTINGS Filter
+    _In_ PKPH_INFORMER_SETTINGS Settings
     );
 
 PHLIBAPI
@@ -643,6 +645,21 @@ KphOpenDeviceBaseDevice(
     _In_ HANDLE DeviceHandle,
     _In_ ACCESS_MASK DesiredAccess,
     _Out_ PHANDLE BaseDeviceHandle
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+KphGetInformerStats(
+    _In_opt_ HANDLE ProcessHandle,
+    _Out_ PKPH_INFORMER_STATS Stats
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+KphGetInformerClientStats(
+    _Out_ PKPH_INFORMER_CLIENT_STATS Stats
     );
 
 EXTERN_C_END

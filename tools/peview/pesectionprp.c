@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2019-2022
+ *     dmex    2019-2026
  *
  */
 
@@ -33,6 +33,7 @@ typedef enum _PV_SECTION_TREE_COLUMN_ITEM
     PV_SECTION_TREE_COLUMN_ITEM_ENTROPY,
     PV_SECTION_TREE_COLUMN_ITEM_SSDEEP,
     PV_SECTION_TREE_COLUMN_ITEM_TLSH,
+    PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE,
     PV_SECTION_TREE_COLUMN_ITEM_MAXIMUM
 } PV_SECTION_TREE_COLUMN_ITEM;
 
@@ -45,6 +46,7 @@ typedef struct _PV_SECTION_NODE
     PVOID RawStart;
     PVOID RawEnd;
     ULONG RawSize;
+    ULONG SlackSize;
     PVOID RvaStart;
     PVOID RvaEnd;
     ULONG RvaSize;
@@ -55,6 +57,7 @@ typedef struct _PV_SECTION_NODE
     PPH_STRING RawStartString;
     PPH_STRING RawEndString;
     PPH_STRING RawSizeString;
+    PPH_STRING SlackSizeString;
     PPH_STRING RvaStartString;
     PPH_STRING RvaEndString;
     PPH_STRING RvaSizeString;
@@ -266,6 +269,7 @@ PPH_STRING PvGetSectionCharacteristics(
     return PhFinalStringBuilderString(&stringBuilder);
 }
 
+_Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PvpPeSectionsEnumerateThread(
     _In_ PPV_SECTION_CONTEXT Context
     )
@@ -291,16 +295,19 @@ NTSTATUS PvpPeSectionsEnumerateThread(
         sectionNode->RawStart = UlongToPtr(PvMappedImage.Sections[i].PointerToRawData);
         PhPrintPointer(value, sectionNode->RawStart);
         sectionNode->RawStartString = PhCreateString(value);
-        sectionNode->RawEnd = PTR_ADD_OFFSET(PvMappedImage.Sections[i].PointerToRawData, PvMappedImage.Sections[i].SizeOfRawData);
+        sectionNode->RawEnd = (PVOID)(ULONG_PTR)UInt32Add32To64(PvMappedImage.Sections[i].PointerToRawData, PvMappedImage.Sections[i].SizeOfRawData);
         PhPrintPointer(value, sectionNode->RawEnd);
         sectionNode->RawEndString = PhCreateString(value);
         sectionNode->RawSize = PvMappedImage.Sections[i].SizeOfRawData;
         sectionNode->RawSizeString = PhFormatSize(sectionNode->RawSize, ULONG_MAX);
+        if (PvMappedImage.Sections[i].SizeOfRawData > PvMappedImage.Sections[i].Misc.VirtualSize)
+            sectionNode->SlackSize = PvMappedImage.Sections[i].SizeOfRawData - PvMappedImage.Sections[i].Misc.VirtualSize;
+        sectionNode->SlackSizeString = PhFormatSize(sectionNode->SlackSize, ULONG_MAX);
         // RVA
         sectionNode->RvaStart = UlongToPtr(PvMappedImage.Sections[i].VirtualAddress);
         PhPrintPointer(value, sectionNode->RvaStart);
         sectionNode->RvaStartString = PhCreateString(value);
-        sectionNode->RvaEnd = PTR_ADD_OFFSET(PvMappedImage.Sections[i].VirtualAddress, PvMappedImage.Sections[i].Misc.VirtualSize);
+        sectionNode->RvaEnd = (PVOID)(ULONG_PTR)UInt32Add32To64(PvMappedImage.Sections[i].VirtualAddress, PvMappedImage.Sections[i].Misc.VirtualSize);
         PhPrintPointer(value, sectionNode->RvaEnd);
         sectionNode->RvaEndString = PhCreateString(value);
         sectionNode->RvaSize = PvMappedImage.Sections[i].Misc.VirtualSize;
@@ -313,7 +320,7 @@ NTSTATUS PvpPeSectionsEnumerateThread(
         {
             PVOID imageSectionData;
 
-            if (imageSectionData = PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, NULL))
+            if (NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, &imageSectionData)))
             {
                 sectionNode->HashString = PvHashBuffer(imageSectionData, PvMappedImage.Sections[i].SizeOfRawData);
             }
@@ -322,7 +329,7 @@ NTSTATUS PvpPeSectionsEnumerateThread(
             {
                 FLOAT imageSectionEntropy;
 
-                if (imageSectionData = PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, NULL))
+                if (NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, &imageSectionData)))
                 {
                     if (PhCalculateEntropy(
                         imageSectionData,
@@ -347,7 +354,7 @@ NTSTATUS PvpPeSectionsEnumerateThread(
             {
                 char* ssdeepHashString = NULL;
 
-                if (imageSectionData = PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, NULL))
+                if (NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, &imageSectionData)))
                 {
                     fuzzy_hash_buffer(
                         imageSectionData,
@@ -372,7 +379,7 @@ NTSTATUS PvpPeSectionsEnumerateThread(
             {
                 char* tlshHashString = NULL;
 
-                if (imageSectionData = PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, NULL))
+                if (NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, PvMappedImage.Sections[i].VirtualAddress, &imageSectionData)))
                 {
                     //
                     // This can fail in TLSH library during finalization when
@@ -507,6 +514,12 @@ INT_PTR CALLBACK PvPeSectionsDlgProc(
             }
         }
         break;
+    case WM_DPICHANGED:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
+        }
+        break;
     case WM_SIZE:
         {
             PhLayoutManagerLayout(&context->LayoutManager);
@@ -542,7 +555,8 @@ INT_PTR CALLBACK PvPeSectionsDlgProc(
                     PPH_EMENU_ITEM highlightReadMenuItem;
                     PPH_EMENU_ITEM selectedItem;
 
-                    GetWindowRect(GetDlgItem(hwndDlg, IDC_SETTINGS), &rect);
+                    if (!PhGetWindowRect(GetDlgItem(hwndDlg, IDC_SETTINGS), &rect))
+                        break;
 
                     writableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_WRITE, L"Hide writable", NULL, NULL);
                     executableMenuItem = PhCreateEMenuItem(0, SECTION_TREE_MENU_ITEM_HIDE_EXECUTE, L"Hide executable", NULL, NULL);
@@ -992,6 +1006,12 @@ BEGIN_SORT_FUNCTION(Tlsh)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(SlackSize)
+{
+    sortResult = uintcmp(node1->SlackSize, node2->SlackSize);
+}
+END_SORT_FUNCTION
+
 BOOLEAN NTAPI PvSectionTreeNewCallback(
     _In_ HWND hwnd,
     _In_ PH_TREENEW_MESSAGE Message,
@@ -1019,7 +1039,7 @@ BOOLEAN NTAPI PvSectionTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Index),
                     SORT_FUNCTION(Name),
@@ -1034,8 +1054,9 @@ BOOLEAN NTAPI PvSectionTreeNewCallback(
                     SORT_FUNCTION(Entropy),
                     SORT_FUNCTION(Ssdeep),
                     SORT_FUNCTION(Tlsh),
+                    SORT_FUNCTION(SlackSize),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PV_SECTION_TREE_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1091,6 +1112,9 @@ BOOLEAN NTAPI PvSectionTreeNewCallback(
                 break;
             case PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE:
                 getCellText->Text = PhGetStringRef(node->RawSizeString);
+                break;
+            case PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE:
+                getCellText->Text = PhGetStringRef(node->SlackSizeString);
                 break;
             case PV_SECTION_TREE_COLUMN_ITEM_RVA_START:
                 getCellText->Text = PhGetStringRef(node->RvaStartString);
@@ -1274,6 +1298,7 @@ VOID PvInitializeSectionTree(
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, TRUE, L"RAW (start)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_START, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, TRUE, L"RAW (end)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_END, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, TRUE, L"RAW (size)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RAW_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, TRUE, L"Slack space", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_SLACK_SIZE, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, TRUE, L"RVA (start)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_START, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, TRUE, L"RVA (end)", 100, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_END, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, TRUE, L"RVA (size)", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_RVA_SIZE, 0, 0);
@@ -1283,7 +1308,7 @@ VOID PvInitializeSectionTree(
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_SSDEEP, TRUE, L"SSDEEP", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_SSDEEP, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_TLSH, TRUE, L"TLSH", 80, PH_ALIGN_LEFT, PV_SECTION_TREE_COLUMN_ITEM_TLSH, 0, 0);
 
-    TreeNew_SetRowHeight(TreeNewHandle, PhGetDpi(22, PhGetWindowDpi(ParentWindowHandle)));
+    TreeNew_SetRowHeight(TreeNewHandle, PvpGetTreeNewRowHeight());
 
     TreeNew_SetRedraw(TreeNewHandle, TRUE);
     TreeNew_SetSort(TreeNewHandle, PV_SECTION_TREE_COLUMN_ITEM_INDEX, AscendingSortOrder);
@@ -1340,6 +1365,12 @@ BOOLEAN PvSectionTreeFilterCallback(
     if (!PhIsNullOrEmptyString(node->RawSizeString))
     {
         if (PvSearchControlMatch(context->SearchMatchHandle, &node->RawSizeString->sr))
+            return TRUE;
+    }
+
+    if (!PhIsNullOrEmptyString(node->SlackSizeString))
+    {
+        if (PvSearchControlMatch(context->SearchMatchHandle, &node->SlackSizeString->sr))
             return TRUE;
     }
 

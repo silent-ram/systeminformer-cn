@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     jxy-s   2022-2024
+ *     jxy-s   2022-2026
  *
  */
 
@@ -71,6 +71,8 @@ NTSTATUS KphInitializeKnownDll(
         PKPH_KNOWN_DLL_INFORMATION info;
         OBJECT_ATTRIBUTES objectAttributes;
         SECTION_IMAGE_INFORMATION sectionImageInfo;
+        ULONG addressOfEntryPoint;
+        PVOID userBaseAddress;
 
         if (baseAddress)
         {
@@ -96,7 +98,7 @@ NTSTATUS KphInitializeKnownDll(
 
         InitializeObjectAttributes(&objectAttributes,
                                    &info->SectionName,
-                                   OBJ_KERNEL_HANDLE,
+                                   OBJ_KERNEL_HANDLE | OBJ_DONT_REPARSE,
                                    NULL,
                                    NULL);
 
@@ -118,7 +120,7 @@ NTSTATUS KphInitializeKnownDll(
         status = ZwQuerySection(sectionHandle,
                                 SectionImageInformation,
                                 &sectionImageInfo,
-                                sizeof(sectionImageInfo),
+                                sizeof(SECTION_IMAGE_INFORMATION),
                                 NULL);
         if (!NT_SUCCESS(status))
         {
@@ -128,13 +130,6 @@ NTSTATUS KphInitializeKnownDll(
                           status);
 
             goto Exit;
-        }
-
-        *info->BaseAddressStorage = sectionImageInfo.TransferAddress;
-
-        if (!info->Exports)
-        {
-            continue;
         }
 
         status = ObReferenceObjectByHandle(sectionHandle,
@@ -155,9 +150,7 @@ NTSTATUS KphInitializeKnownDll(
         }
 
         viewSize = 0;
-        status = MmMapViewInSystemSpace(sectionObject,
-                                        &baseAddress,
-                                        &viewSize);
+        status = MmMapViewInSystemSpace(sectionObject, &baseAddress, &viewSize);
         if (!NT_SUCCESS(status))
         {
             KphTracePrint(TRACE_LEVEL_VERBOSE,
@@ -169,6 +162,45 @@ NTSTATUS KphInitializeKnownDll(
             goto Exit;
         }
 
+        __try
+        {
+            KPH_IMAGE_NT_HEADERS image;
+            PIMAGE_OPTIONAL_HEADER optionalHeader;
+
+            status = KphImageNtHeader(baseAddress, viewSize, &image);
+            if (!NT_SUCCESS(status))
+            {
+                KphTracePrint(TRACE_LEVEL_VERBOSE,
+                              GENERAL,
+                              "KphImageNtHeader failed: %!STATUS!",
+                              status);
+
+                goto Exit;
+            }
+
+            optionalHeader = &image.Headers->OptionalHeader;
+            addressOfEntryPoint = optionalHeader->AddressOfEntryPoint;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            KphTracePrint(TRACE_LEVEL_VERBOSE,
+                          GENERAL,
+                          "Failed to read address of entry point.");
+
+            status = GetExceptionCode();
+            goto Exit;
+        }
+
+        userBaseAddress = Add2Ptr(sectionImageInfo.TransferAddress,
+                                  -(LONG64)addressOfEntryPoint);
+
+        *info->BaseAddressStorage = userBaseAddress;
+
+        if (!info->Exports)
+        {
+            continue;
+        }
+
         for (PKPH_KNOWN_DLL_EXPORT export = info->Exports;
              export->Name != NULL;
              export = export + 1)
@@ -177,21 +209,35 @@ NTSTATUS KphInitializeKnownDll(
 
             NT_ASSERT(export->Storage);
 
-            exportAddress = RtlFindExportedRoutineByName(baseAddress,
-                                                         export->Name);
-            if (!exportAddress)
+            __try
+            {
+                exportAddress = RtlFindExportedRoutineByName(baseAddress,
+                                                             export->Name);
+                if (!exportAddress)
+                {
+                    KphTracePrint(TRACE_LEVEL_VERBOSE,
+                                  GENERAL,
+                                  "Failed to find %hs in %wZ",
+                                  export->Name,
+                                  &info->SectionName);
+
+                    status = STATUS_NOT_FOUND;
+                    goto Exit;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
             {
                 KphTracePrint(TRACE_LEVEL_VERBOSE,
                               GENERAL,
-                              "Failed to find %hs in %wZ",
+                              "Failed to read %hs in %wZ",
                               export->Name,
                               &info->SectionName);
 
-                status = STATUS_NOT_FOUND;
+                status = GetExceptionCode();
                 goto Exit;
             }
 
-            *export->Storage = Add2Ptr(sectionImageInfo.TransferAddress,
+            *export->Storage = Add2Ptr(userBaseAddress,
                                        PtrOffset(baseAddress, exportAddress));
         }
     }

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -24,12 +24,24 @@
 
 typedef struct _PH_PROCESS_PROPSHEETCONTEXT
 {
+    PPH_PROCESS_PROPCONTEXT PropContext;
     WNDPROC PropSheetWindowHookProc;
     PH_LAYOUT_MANAGER LayoutManager;
     PPH_LAYOUT_ITEM TabPageItem;
     BOOLEAN LayoutInitialized;
     HFONT PropSheetWindowFont;
+    PH_CALLBACK_REGISTRATION ProcessesUpdatedRegistration;
+    HWND OptionsButtonWindowHandle;
+    WNDPROC OldOptionsButtonWndProc;
+    //HWND PermissionsButtonWindowHandle;
+    HWND ButtonsLabelWindowHandle;
 } PH_PROCESS_PROPSHEETCONTEXT, *PPH_PROCESS_PROPSHEETCONTEXT;
+
+VOID PhpUpdateProcessPropButtonsDpi(
+    _In_ PPH_PROCESS_PROPSHEETCONTEXT PropSheetContext,
+    _In_ HWND PropSheetWindow,
+    _In_ LONG WindowDpi
+    );
 
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpProcessPropContextDeleteProcedure(
@@ -44,11 +56,11 @@ INT CALLBACK PhpPropSheetProc(
     );
 
 PPH_PROCESS_PROPSHEETCONTEXT PhpGetPropSheetContext(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     );
 
 LRESULT CALLBACK PhpPropSheetWndProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
@@ -61,7 +73,7 @@ VOID NTAPI PhpProcessPropPageContextDeleteProcedure(
     );
 
 UINT CALLBACK PhpStandardPropPageProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     );
@@ -211,6 +223,13 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
     );
 #endif
 
+INT_PTR CALLBACK PhpProcessInformerDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    );
+
 extern PH_STRINGREF PhProcessPropPageLoadingText;
 
 #define WM_PH_THREADS_UPDATED (WM_APP + 200)
@@ -232,6 +251,7 @@ typedef struct _PH_THREADS_CONTEXT
     HWND TreeNewHandle;
     HWND StatusHandle;
     HWND SearchboxHandle;
+    HFONT TreeNewFont;
     ULONG_PTR SearchMatchHandle;
     PPH_TN_FILTER_ENTRY FilterEntry;
     union
@@ -267,6 +287,7 @@ typedef struct _PH_MODULES_CONTEXT
 // end_phapppub
     HWND SearchboxHandle;
     HWND TreeNewHandle;
+    HFONT TreeNewFont;
     union
     {
         PH_MODULE_LIST_CONTEXT ListContext;
@@ -302,6 +323,7 @@ typedef struct _PH_HANDLES_CONTEXT
 // end_phapppub
     HWND TreeNewHandle;
     HWND SearchWindowHandle;
+    HFONT TreeNewFont;
 
     union
     {
@@ -332,6 +354,7 @@ typedef struct _PH_MEMORY_CONTEXT
 // end_phapppub
     HWND TreeNewHandle;
     HWND SearchboxHandle;
+    HFONT TreeNewFont;
 
     union
     {
@@ -356,12 +379,16 @@ typedef struct _PH_MEMORY_CONTEXT
 
 #define WM_PH_STATISTICS_UPDATE (WM_APP + 231)
 
+#define PH_PROCESS_STATISTICS_SAMPLE_LIMIT 128
+
 typedef struct _PH_STATISTICS_CONTEXT
 {
     PH_CALLBACK_REGISTRATION ProcessesUpdatedRegistration;
     HWND WindowHandle;
     HWND ListViewHandle;
-    IListView* ListView;
+    HFONT TreeNewFont;
+
+    PPH_LISTVIEW_CONTEXT ListViewContext;
 
     BOOLEAN Enabled;
     HANDLE ProcessHandle;
@@ -371,15 +398,53 @@ typedef struct _PH_STATISTICS_CONTEXT
     BOOLEAN GotCounters;
 
     ULONG PagePriority;
-    IO_PRIORITY_HINT IoPriority;
-    ULONG PeakHandleCount;
-    ULONG HangCount;
-    ULONG GhostCount;
-    ULONGLONG RunningTime;
-    ULONGLONG SuspendedTime;
-    ULONGLONG NetworkTxRxBytes;
+    IO_PRIORITY_HINT IoPriority; IO_PRIORITY_HINT IoPriorityMin; IO_PRIORITY_HINT IoPriorityMax; IO_PRIORITY_HINT IoPriorityDiff;
+    ULONG HandleCount; ULONG HandleCountMin; ULONG HandleCountMax; ULONG HandleCountDiff;
+    ULONG PeakHandleCount; ULONG PeakHandleCountMin; ULONG PeakHandleCountMax; ULONG PeakHandleCountDiff;
+    ULONG GdiHandleCount; ULONG GdiHandleCountMin; ULONG GdiHandleCountMax; ULONG GdiHandleCountDiff;
+    ULONG PeakGdiHandleCount; ULONG PeakGdiHandleCountMin; ULONG PeakGdiHandleCountMax; ULONG PeakGdiHandleCountDiff;
+    ULONG UserHandleCount; ULONG UserHandleCountMin; ULONG UserHandleCountMax; ULONG UserHandleCountDiff;
+    ULONG PeakUserHandleCount; ULONG PeakUserHandleCountMin; ULONG PeakUserHandleCountMax; ULONG PeakUserHandleCountDiff;
+    ULONG HangCount; ULONG HangCountMin; ULONG HangCountMax; ULONG HangCountDiff;
+    ULONG GhostCount; ULONG GhostCountMin; ULONG GhostCountMax; ULONG GhostCountDiff;
+    ULONGLONG RunningTime; ULONGLONG RunningTimeMin; ULONGLONG RunningTimeMax; ULONGLONG RunningTimeDiff;
+    ULONGLONG SuspendedTime; ULONGLONG SuspendedTimeMin; ULONGLONG SuspendedTimeMax; ULONGLONG SuspendedTimeDiff;
+    ULONGLONG NetworkTxRxBytes; ULONGLONG NetworkTxRxBytesMin; ULONGLONG NetworkTxRxBytesMax; ULONGLONG NetworkTxRxBytesDiff;
+    BOOLEAN GotExtendedEnergyValues;
+    ULONG64 EnergyCycleTimeTotal; ULONG64 EnergyCycleTimeTotalMin; ULONG64 EnergyCycleTimeTotalMax; ULONG64 EnergyCycleTimeTotalDiff;
+    ULONG64 EnergyCycles[4][2]; ULONG64 EnergyCyclesMin[4][2]; ULONG64 EnergyCyclesMax[4][2]; ULONG64 EnergyCyclesDiff[4][2];
+    ULONG64 EnergyDisk; ULONG64 EnergyDiskMin; ULONG64 EnergyDiskMax; ULONG64 EnergyDiskDiff;
+    PH_UINT64_DELTA EnergyDiskDelta;
+    ULONG64 EnergyNetworkTail; ULONG64 EnergyNetworkTailMin; ULONG64 EnergyNetworkTailMax; ULONG64 EnergyNetworkTailDiff;
+    PH_UINT64_DELTA EnergyNetworkTailDelta;
+    ULONG64 EnergyMbbTail; ULONG64 EnergyMbbTailMin; ULONG64 EnergyMbbTailMax; ULONG64 EnergyMbbTailDiff;
+    PH_UINT64_DELTA EnergyMbbTailDelta;
+    ULONG64 EnergyNetworkTxRxBytes; ULONG64 EnergyNetworkTxRxBytesMin; ULONG64 EnergyNetworkTxRxBytesMax; ULONG64 EnergyNetworkTxRxBytesDiff;
+    ULONG64 EnergyMbbTxRxBytes; ULONG64 EnergyMbbTxRxBytesMin; ULONG64 EnergyMbbTxRxBytesMax; ULONG64 EnergyMbbTxRxBytesDiff;
+    ULONG64 EnergyForegroundDuration; ULONG64 EnergyForegroundDurationMin; ULONG64 EnergyForegroundDurationMax; ULONG64 EnergyForegroundDurationDiff;
+    ULONG64 EnergyDesktopVisibleDuration; ULONG64 EnergyDesktopVisibleDurationMin; ULONG64 EnergyDesktopVisibleDurationMax; ULONG64 EnergyDesktopVisibleDurationDiff;
+    ULONG64 EnergyPsmForegroundDuration; ULONG64 EnergyPsmForegroundDurationMin; ULONG64 EnergyPsmForegroundDurationMax; ULONG64 EnergyPsmForegroundDurationDiff;
+    ULONG64 EnergyCompositionRendered; ULONG64 EnergyCompositionRenderedMin; ULONG64 EnergyCompositionRenderedMax; ULONG64 EnergyCompositionRenderedDiff;
+    ULONG64 EnergyCompositionDirtyGenerated; ULONG64 EnergyCompositionDirtyGeneratedMin; ULONG64 EnergyCompositionDirtyGeneratedMax; ULONG64 EnergyCompositionDirtyGeneratedDiff;
+    ULONG64 EnergyCompositionDirtyPropagated; ULONG64 EnergyCompositionDirtyPropagatedMin; ULONG64 EnergyCompositionDirtyPropagatedMax; ULONG64 EnergyCompositionDirtyPropagatedDiff;
+    ULONG64 EnergyAttributedCycles; ULONG64 EnergyAttributedCyclesMin; ULONG64 EnergyAttributedCyclesMax; ULONG64 EnergyAttributedCyclesDiff;
+    ULONG64 EnergyAttributedCyclesBreakdown[4][2]; ULONG64 EnergyAttributedCyclesBreakdownMin[4][2]; ULONG64 EnergyAttributedCyclesBreakdownMax[4][2]; ULONG64 EnergyAttributedCyclesBreakdownDiff[4][2];
+    ULONG64 EnergyWorkOnBehalfCycles; ULONG64 EnergyWorkOnBehalfCyclesMin; ULONG64 EnergyWorkOnBehalfCyclesMax; ULONG64 EnergyWorkOnBehalfCyclesDiff;
+    ULONG64 EnergyWorkOnBehalfCyclesBreakdown[4][2]; ULONG64 EnergyWorkOnBehalfCyclesBreakdownMin[4][2]; ULONG64 EnergyWorkOnBehalfCyclesBreakdownMax[4][2]; ULONG64 EnergyWorkOnBehalfCyclesBreakdownDiff[4][2];
+    ULONG64 EnergyCpuTimelineActive; ULONG64 EnergyCpuTimelineActiveMin; ULONG64 EnergyCpuTimelineActiveMax; ULONG64 EnergyCpuTimelineActiveDiff;
+    ULONG64 EnergyDiskTimelineActive; ULONG64 EnergyDiskTimelineActiveMin; ULONG64 EnergyDiskTimelineActiveMax; ULONG64 EnergyDiskTimelineActiveDiff;
+    ULONG64 EnergyNetworkTimelineActive; ULONG64 EnergyNetworkTimelineActiveMin; ULONG64 EnergyNetworkTimelineActiveMax; ULONG64 EnergyNetworkTimelineActiveDiff;
+    ULONG64 EnergyInputDuration; ULONG64 EnergyInputDurationMin; ULONG64 EnergyInputDurationMax; ULONG64 EnergyInputDurationDiff;
+    ULONG64 EnergyAudioInDuration; ULONG64 EnergyAudioInDurationMin; ULONG64 EnergyAudioInDurationMax; ULONG64 EnergyAudioInDurationDiff;
+    ULONG64 EnergyAudioOutDuration; ULONG64 EnergyAudioOutDurationMin; ULONG64 EnergyAudioOutDurationMax; ULONG64 EnergyAudioOutDurationDiff;
+    ULONG64 EnergyDisplayRequiredDuration; ULONG64 EnergyDisplayRequiredDurationMin; ULONG64 EnergyDisplayRequiredDurationMax; ULONG64 EnergyDisplayRequiredDurationDiff;
+    ULONG64 EnergyPsmBackgroundDuration; ULONG64 EnergyPsmBackgroundDurationMin; ULONG64 EnergyPsmBackgroundDurationMax; ULONG64 EnergyPsmBackgroundDurationDiff;
+    ULONG64 EnergyKeyboardInput; ULONG64 EnergyKeyboardInputMin; ULONG64 EnergyKeyboardInputMax; ULONG64 EnergyKeyboardInputDiff;
+    ULONG64 EnergyMouseInput; ULONG64 EnergyMouseInputMin; ULONG64 EnergyMouseInputMax; ULONG64 EnergyMouseInputDiff;
     PH_UINT64_DELTA KeyboardDelta;
+    ULONG64 KeyboardInput; ULONG64 KeyboardInputMin; ULONG64 KeyboardInputMax; ULONG64 KeyboardInputDiff;
     PH_UINT64_DELTA MouseDelta;
+    ULONG64 MouseInput; ULONG64 MouseInputMin; ULONG64 MouseInputMax; ULONG64 MouseInputDiff;
 
     //PPH_STRING PrivateWs;
     //PPH_STRING ShareableWs;
@@ -446,6 +511,18 @@ typedef struct _PH_STATISTICS_CONTEXT
 
     ULONG64 IoTotal; ULONG64 IoTotalMin; ULONG64 IoTotalMax; ULONG64 IoTotalDiff;
     ULONG64 IoTotalDelta; ULONG64 IoTotalDeltaMin; ULONG64 IoTotalDeltaMax; ULONG64 IoTotalDeltaDiff;
+    ULONG64 IoAverage; ULONG64 IoAverageMin; ULONG64 IoAverageMax; ULONG64 IoAverageDiff;
+
+    DOUBLE *StatisticsSamples;
+    BOOLEAN *StatisticsSampleSlotsValid;
+    DOUBLE StatisticsSampleTotals[PH_PROCESS_STATISTICS_SAMPLE_LIMIT];
+    DOUBLE StatisticsAverages[PH_PROCESS_STATISTICS_SAMPLE_LIMIT];
+    DOUBLE StatisticsMedians[PH_PROCESS_STATISTICS_SAMPLE_LIMIT];
+    ULONG StatisticsSampleCounts[PH_PROCESS_STATISTICS_SAMPLE_LIMIT];
+    BOOLEAN StatisticsSampleValid[PH_PROCESS_STATISTICS_SAMPLE_LIMIT];
+    ULONG StatisticsSampleCapacity;
+    ULONG StatisticsSampleCount;
+    ULONG StatisticsSampleIndex;
 
 } PH_STATISTICS_CONTEXT, *PPH_STATISTICS_CONTEXT;
 
@@ -483,6 +560,7 @@ typedef struct _PH_ENVIRONMENT_CONTEXT
     HWND WindowHandle;
     HWND TreeNewHandle;
     HWND SearchWindowHandle;
+    HFONT TreeNewFont;
 
     BOOLEAN EnableStateHighlighting;
 

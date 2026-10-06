@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -42,7 +42,7 @@ NTSTATUS PhOpenThread(
 
     level = KsiLevel();
 
-    if ((level >= KphLevelMed) && (DesiredAccess & KPH_THREAD_READ_ACCESS) == DesiredAccess)
+    if ((DesiredAccess & KPH_THREAD_READ_ACCESS) == DesiredAccess && (level >= KphLevelMed))
     {
         status = KphOpenThread(
             ThreadHandle,
@@ -52,7 +52,14 @@ NTSTATUS PhOpenThread(
     }
     else
     {
-        InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+        InitializeObjectAttributes(
+            &objectAttributes,
+            NULL,
+            0,
+            NULL,
+            NULL
+            );
+
         status = NtOpenThread(
             ThreadHandle,
             DesiredAccess,
@@ -62,6 +69,9 @@ NTSTATUS PhOpenThread(
 
         if (status == STATUS_ACCESS_DENIED && (level == KphLevelMax))
         {
+            clientId.UniqueProcess = NULL;
+            clientId.UniqueThread = ThreadId;
+
             status = KphOpenThread(
                 ThreadHandle,
                 DesiredAccess,
@@ -89,7 +99,11 @@ NTSTATUS PhOpenThreadClientId(
 {
     NTSTATUS status;
     OBJECT_ATTRIBUTES objectAttributes;
+    CLIENT_ID clientId;
     KPH_LEVEL level;
+
+    clientId.UniqueProcess = ClientId->UniqueProcess;
+    clientId.UniqueThread = ClientId->UniqueThread;
 
     level = KsiLevel();
 
@@ -98,25 +112,35 @@ NTSTATUS PhOpenThreadClientId(
         status = KphOpenThread(
             ThreadHandle,
             DesiredAccess,
-            ClientId
+            &clientId
             );
     }
     else
     {
-        InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+        InitializeObjectAttributes(
+            &objectAttributes,
+            NULL,
+            0,
+            NULL,
+            NULL
+            );
+
         status = NtOpenThread(
             ThreadHandle,
             DesiredAccess,
             &objectAttributes,
-            ClientId
+            &clientId
             );
 
         if (status == STATUS_ACCESS_DENIED && (level == KphLevelMax))
         {
+            clientId.UniqueProcess = ClientId->UniqueProcess;
+            clientId.UniqueThread = ClientId->UniqueThread;
+
             status = KphOpenThread(
                 ThreadHandle,
                 DesiredAccess,
-                ClientId
+                &clientId
                 );
         }
     }
@@ -144,7 +168,13 @@ NTSTATUS PhOpenThreadPublic(
     clientId.UniqueProcess = NULL;
     clientId.UniqueThread = ThreadId;
 
-    InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+    InitializeObjectAttributes(
+        &objectAttributes,
+        NULL,
+        0,
+        NULL,
+        NULL
+        );
 
     return NtOpenThread(
         ThreadHandle,
@@ -204,6 +234,621 @@ NTSTATUS PhOpenThreadProcess(
 }
 
 /**
+ * Gets basic information for a thread.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param BasicInformation A variable which receives the information.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadBasicInformation(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PTHREAD_BASIC_INFORMATION BasicInformation
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadBasicInformation,
+        BasicInformation,
+        sizeof(THREAD_BASIC_INFORMATION),
+        NULL
+        );
+}
+
+/**
+ * Retrieves the base priority of a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose base priority is to be retrieved.
+ * \param[out] Increment A pointer to a variable that receives the base priority value (KPRIORITY).
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadBasePriority(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PKPRIORITY Increment
+    )
+{
+    NTSTATUS status;
+    THREAD_BASIC_INFORMATION basicInfo;
+
+    status = PhGetThreadBasicInformation(ThreadHandle, &basicInfo);
+
+    if (NT_SUCCESS(status))
+    {
+        *Increment = basicInfo.BasePriority;
+    }
+
+    return status;
+
+    //return NtQueryInformationThread(
+    //    ThreadHandle,
+    //    ThreadBasePriority,
+    //    Increment,
+    //    sizeof(LONG),
+    //    NULL
+    //    );
+}
+
+/**
+ * Retrieves the Thread Environment Block (TEB) base address for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose TEB base address is to be retrieved.
+ * \param[out] TebBaseAddress A pointer to a variable that receives the TEB base address as an ULONG_PTR.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadTeb(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG_PTR TebBaseAddress
+    )
+{
+    NTSTATUS status;
+    THREAD_BASIC_INFORMATION basicInfo;
+
+    status = PhGetThreadBasicInformation(ThreadHandle, &basicInfo);
+
+    if (NT_SUCCESS(status))
+    {
+        if (!basicInfo.TebBaseAddress)
+            return STATUS_UNSUCCESSFUL;
+
+        *TebBaseAddress = (ULONG_PTR)basicInfo.TebBaseAddress;
+    }
+
+    return status;
+}
+
+/**
+ * Retrieves the Thread Environment Block (TEB32) base address for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose TEB32 base address is to be retrieved.
+ * \param[out] TebBaseAddress A pointer to a variable that receives the TEB base address as an ULONG_PTR.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadTeb32(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG_PTR TebBaseAddress
+    )
+{
+    NTSTATUS status;
+    THREAD_BASIC_INFORMATION basicInfo;
+
+    status = PhGetThreadBasicInformation(ThreadHandle, &basicInfo);
+
+    if (NT_SUCCESS(status))
+    {
+        if (!basicInfo.TebBaseAddress)
+            return STATUS_UNSUCCESSFUL;
+
+        *TebBaseAddress = (ULONG_PTR)WOW64_GET_TEB32(basicInfo.TebBaseAddress);
+    }
+
+    return status;
+}
+
+/**
+ * Gets a thread's Win32 start address.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param StartAddress A variable which receives the start address of the thread.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadStartAddress(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG_PTR StartAddress
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadQuerySetWin32StartAddress,
+        StartAddress,
+        sizeof(ULONG_PTR),
+        NULL
+        );
+}
+
+/**
+ * Gets a thread's I/O priority.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param IoPriority A variable which receives the I/O priority of the thread.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadIoPriority(
+    _In_ HANDLE ThreadHandle,
+    _Out_ IO_PRIORITY_HINT *IoPriority
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadIoPriority,
+        IoPriority,
+        sizeof(IO_PRIORITY_HINT),
+        NULL
+        );
+}
+
+/**
+ * Gets a thread's page priority.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param PagePriority A variable which receives the page priority of the thread.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadPagePriority(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG PagePriority
+    )
+{
+    NTSTATUS status;
+    PAGE_PRIORITY_INFORMATION pagePriorityInfo;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadPagePriority,
+        &pagePriorityInfo,
+        sizeof(PAGE_PRIORITY_INFORMATION),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *PagePriority = pagePriorityInfo.PagePriority;
+    }
+
+    return status;
+}
+
+/**
+ * Gets a thread's dynamic boosting.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param PriorityBoostDisabled A variable which receives the dynamic boosting state.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadPriorityBoost(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PBOOLEAN PriorityBoostDisabled
+    )
+{
+    NTSTATUS status;
+    ULONG priorityBoost;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadPriorityBoost,
+        &priorityBoost,
+        sizeof(ULONG),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *PriorityBoostDisabled = !!priorityBoost;
+    }
+
+    return status;
+}
+
+/**
+ * Gets a thread's performance counter.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param PerformanceCounter A variable which receives the 64-bit performance counter.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadPerformanceCounter(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PLARGE_INTEGER PerformanceCounter
+    )
+{
+    NTSTATUS status;
+    LARGE_INTEGER performanceCounter;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadPerformanceCount,
+        &performanceCounter,
+        sizeof(LARGE_INTEGER),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *PerformanceCounter = performanceCounter;
+    }
+
+    return status;
+}
+
+/**
+ * Gets a thread's cycle count.
+ *
+ * \param ThreadHandle A handle to a thread. The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ * \param CycleTime A variable which receives the 64-bit cycle time.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhGetThreadCycleTime(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG64 CycleTime
+    )
+{
+    NTSTATUS status;
+    THREAD_CYCLE_TIME_INFORMATION cycleTimeInfo;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadCycleTime,
+        &cycleTimeInfo,
+        sizeof(THREAD_CYCLE_TIME_INFORMATION),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *CycleTime = cycleTimeInfo.AccumulatedCycles;
+    }
+
+    return status;
+}
+
+/**
+ * Retrieves the ideal processor for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose ideal processor is to be retrieved.
+ * \param[out] ProcessorNumber A pointer to a PROCESSOR_NUMBER structure that receives the ideal processor information.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadIdealProcessor(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PPROCESSOR_NUMBER ProcessorNumber
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadIdealProcessorEx,
+        ProcessorNumber,
+        sizeof(PROCESSOR_NUMBER),
+        NULL
+        );
+}
+
+/**
+ * Retrieves the suspend count for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose suspend count is to be retrieved.
+ * \param[out] SuspendCount A pointer to a variable that receives the suspend count.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadSuspendCount(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG SuspendCount
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadSuspendCount,
+        SuspendCount,
+        sizeof(ULONG),
+        NULL
+        );
+}
+
+/**
+ * Retrieves the WOW64 context for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose WOW64 context is to be retrieved.
+ * \param[out] Context A pointer to a WOW64_CONTEXT structure that receives the context.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadWow64Context(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PWOW64_CONTEXT Context
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadWow64Context,
+        Context,
+        sizeof(WOW64_CONTEXT),
+        NULL
+        );
+}
+
+#if defined(_ARM64_)
+/**
+ * Retrieves the ARM32 context for a thread on ARM64 systems.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose ARM32 context is to be retrieved.
+ * \param[out] Context A pointer to an ARM_NT_CONTEXT structure that receives the context.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadArm32Context(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PARM_NT_CONTEXT Context
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadWow64Context,
+        Context,
+        sizeof(ARM_NT_CONTEXT),
+        NULL
+        );
+}
+#endif
+
+/**
+ * Retrieves the break on termination state for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread.
+ * \param[out] BreakOnTermination A pointer to a variable that receives the break on termination state.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadBreakOnTermination(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PBOOLEAN BreakOnTermination
+    )
+{
+    NTSTATUS status;
+    ULONG breakOnTermination;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadBreakOnTermination,
+        &breakOnTermination,
+        sizeof(ULONG),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *BreakOnTermination = !!breakOnTermination;
+    }
+
+    return status;
+}
+
+/**
+ * Sets the break on termination state for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread.
+ * \param[in] BreakOnTermination TRUE to enable break on termination, FALSE to disable.
+ * \return Successful or errant status.
+ */
+NTSTATUS PhSetThreadBreakOnTermination(
+    _In_ HANDLE ThreadHandle,
+    _In_ BOOLEAN BreakOnTermination
+    )
+{
+    ULONG breakOnTermination;
+
+    breakOnTermination = BreakOnTermination ? 1 : 0;
+
+    return NtSetInformationThread(
+        ThreadHandle,
+        ThreadBreakOnTermination,
+        &breakOnTermination,
+        sizeof(ULONG)
+        );
+}
+
+/**
+ * Retrieves the container ID for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread.
+ * \param[out] ContainerId A pointer to a GUID structure that receives the container ID.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadContainerId(
+    _In_ HANDLE ThreadHandle,
+    _In_ PGUID ContainerId
+    )
+{
+    NTSTATUS status;
+    GUID threadContainerId;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadContainerId,
+        &threadContainerId,
+        sizeof(GUID),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        memcpy(ContainerId, &threadContainerId, sizeof(GUID));
+    }
+
+    return status;
+}
+
+/**
+ * Retrieves the I/O pending state for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose I/O pending state is to be retrieved.
+ * \param[out] IsIoPending A pointer to a variable that receives the I/O pending state.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadIsIoPending(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PBOOLEAN IsIoPending
+    )
+{
+    NTSTATUS status;
+    ULONG isIoPending;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadIsIoPending,
+        &isIoPending,
+        sizeof(ULONG),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *IsIoPending = !!isIoPending;
+    }
+
+    return status;
+}
+
+/**
+ * Gets time information for a thread.
+ *
+ * \param ThreadHandle A handle to a thread.
+ * \param Times A variable which receives the information.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadTimes(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PKERNEL_USER_TIMES Times
+    )
+{
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadTimes,
+        Times,
+        sizeof(KERNEL_USER_TIMES),
+        NULL
+        );
+}
+
+/**
+ * Retrieves the termination state for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose termination state is to be retrieved.
+ * \param[out] IsTerminated A pointer to a variable that receives the termination state (TRUE if terminated).
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadIsTerminated(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PBOOLEAN IsTerminated
+    )
+{
+    NTSTATUS status;
+    ULONG threadIsTerminated;
+
+    status = NtQueryInformationThread(
+        ThreadHandle,
+        ThreadIsTerminated,
+        &threadIsTerminated,
+        sizeof(ULONG),
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *IsTerminated = !!threadIsTerminated;
+    }
+
+    return status;
+}
+
+/**
+ * Determines if a thread is terminated by waiting with zero timeout.
+ *
+ * \param[in] ThreadHandle A handle to the thread.
+ * \return TRUE if the thread is terminated, FALSE otherwise.
+ */
+BOOLEAN PhGetThreadIsTerminated2(
+    _In_ HANDLE ThreadHandle
+    )
+{
+    NTSTATUS status;
+    LARGE_INTEGER timeout;
+
+    memset(&timeout, 0, sizeof(LARGE_INTEGER));
+
+    status = NtWaitForSingleObject(
+        ThreadHandle,
+        FALSE,
+        &timeout
+        );
+
+    return status == STATUS_WAIT_0;
+}
+
+/**
+ * Retrieves the group affinity for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose group affinity is to be retrieved.
+ * \param[out] GroupAffinity A pointer to a GROUP_AFFINITY structure that receives the group affinity.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadGroupAffinity(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PGROUP_AFFINITY GroupAffinity
+    )
+{
+    ULONG returnLength;
+
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadGroupInformation,
+        GroupAffinity,
+        sizeof(GROUP_AFFINITY),
+        &returnLength
+        );
+}
+
+/**
+ * Retrieves the index information for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose index information is to be retrieved.
+ * \param[out] ThreadIndex A pointer to a THREAD_INDEX_INFORMATION structure that receives the index information.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_QUERY_LIMITED_INFORMATION access.
+ */
+NTSTATUS PhGetThreadIndexInformation(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PTHREAD_INDEX_INFORMATION ThreadIndex
+    )
+{
+    ULONG returnLength;
+
+    return NtQueryInformationThread(
+        ThreadHandle,
+        ThreadIndexInformation,
+        ThreadIndex,
+        sizeof(THREAD_INDEX_INFORMATION),
+        &returnLength
+        );
+}
+
+/**
  * Terminates a thread.
  *
  * \param[in] ThreadHandle A handle to the thread to be terminated.
@@ -220,6 +865,50 @@ NTSTATUS PhTerminateThread(
     status = NtTerminateThread(
         ThreadHandle,
         ExitStatus
+        );
+
+    return status;
+}
+
+/**
+ * Suspends a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread to be suspended.
+ * \param[out,opt] PreviousSuspendCount A pointer to a variable that receives the previous suspend count.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhSuspendThread(
+    _In_ HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+    )
+{
+    NTSTATUS status;
+
+    status = NtSuspendThread(
+        ThreadHandle,
+        PreviousSuspendCount
+        );
+
+    return status;
+}
+
+/**
+ * Resumes a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread to be resumed.
+ * \param[out,opt] PreviousSuspendCount A pointer to a variable that receives the previous suspend count.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhResumeThread(
+    _In_ HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+    )
+{
+    NTSTATUS status;
+
+    status = NtResumeThread(
+        ThreadHandle,
+        PreviousSuspendCount
         );
 
     return status;
@@ -1312,7 +2001,8 @@ NTSTATUS PhGetThreadApartment(
 
 // rev from advapi32!WctGetCOMInfo (dmex)
 /**
- * If a thread is blocked on a COM call, we can retrieve COM ownership information using these functions. Retrieves COM information when a thread is blocked on a COM call.
+ * If a thread is blocked on a COM call, we can retrieve COM ownership information using these functions.
+ * Retrieves COM information when a thread is blocked on a COM call.
  *
  * \param[in] ThreadHandle A handle to the thread.
  * \param[in] ProcessHandle A handle to a process.
@@ -1609,13 +2299,13 @@ NTSTATUS PhGetThreadSocketState(
 
     if (isWow64)
     {
-        ULONG winsockDataAddress = 0;
+        typeof(RTL_FIELD_TYPE(TEB32, WinSockData)) winsockDataAddress = 0;
 
         status = PhReadVirtualMemory(
             ProcessHandle,
             PTR_ADD_OFFSET(WOW64_GET_TEB32(basicInfo.TebBaseAddress), UFIELD_OFFSET(TEB32, WinSockData)),
             &winsockDataAddress,
-            sizeof(ULONG),
+            sizeof(RTL_FIELD_TYPE(TEB32, WinSockData)),
             NULL
             );
 
@@ -1624,13 +2314,13 @@ NTSTATUS PhGetThreadSocketState(
     else
 #endif
     {
-        HANDLE winsockDataAddress = NULL;
+        typeof(RTL_FIELD_TYPE(TEB, WinSockData)) winsockDataAddress = NULL;
 
         status = PhReadVirtualMemory(
             ProcessHandle,
             PTR_ADD_OFFSET(basicInfo.TebBaseAddress, UFIELD_OFFSET(TEB, WinSockData)),
             &winsockDataAddress,
-            sizeof(HANDLE),
+            sizeof(RTL_FIELD_TYPE(TEB, WinSockData)),
             NULL
             );
 
@@ -2023,7 +2713,8 @@ NTSTATUS PhGetThreadIsFiber(
 
 // rev from SwitchToThread (dmex)
 /**
- * Causes the calling thread to yield execution to another thread that is ready to run on the current processor. The operating system selects the next thread to be executed.
+ * Causes the calling thread to yield execution to another thread that is ready to run on the
+ * current processor. The operating system selects the next thread to be executed.
  *
  * \remarks The operating system will not switch execution to another processor, even if that processor is idle or is running a thread of lower priority.
  * \return If calling the SwitchToThread function caused the operating system to switch execution to another thread, the return value is nonzero.
@@ -3758,6 +4449,7 @@ CleanupExit:
  * \param[in] RemoteHandle Handle value in remote process.
  * \param[in] Mask Bitmask of flags to modify.
  * \param[in] Flags New flag values.
+ * \param[in,opt] Timeout The timeout, in milliseconds, for the process to set the handle information.
  * \return NTSTATUS Successful or errant status.
  * \remarks Invokes SetHandleInformation via APC onto suspended thread.
  */
@@ -3765,7 +4457,8 @@ NTSTATUS PhSetHandleInformationRemote(
     _In_ HANDLE ProcessHandle,
     _In_ HANDLE RemoteHandle,
     _In_ ULONG Mask,
-    _In_ ULONG Flags
+    _In_ ULONG Flags,
+    _In_opt_ PLARGE_INTEGER Timeout
     )
 {
     NTSTATUS status;
@@ -3783,7 +4476,7 @@ NTSTATUS PhSetHandleInformationRemote(
         ProcessHandle,
         &runtimeLibrary,
 #ifdef _WIN64
-        & isWow64
+        &isWow64
 #else
         NULL
 #endif
@@ -3871,7 +4564,7 @@ NTSTATUS PhSetHandleInformationRemote(
     if (!NT_SUCCESS(status))
         goto CleanupExit;
 
-    status = PhWaitForSingleObject(threadHandle, 5000);
+    status = NtWaitForSingleObject(threadHandle, FALSE, Timeout);
 
     if (!NT_SUCCESS(status))
         goto CleanupExit;

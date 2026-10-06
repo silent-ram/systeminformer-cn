@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2011-2023
+ *     dmex    2011-2026
  *
  */
 
@@ -17,17 +17,20 @@
 #include <phapppub.h>
 #include <phappresource.h>
 #include <phconsole.h>
+#include <mapldr.h>
 #include <hndlinfo.h>
 #include <settings.h>
 #include <searchbox.h>
 
 #include <toolstatusintf.h>
+#include <commdlg.h>
 
 #include "resource.h"
 
 #define PLUGIN_NAME L"ToolStatus"
 #define SETTING_NAME_TOOLSTATUS_CONFIG (PLUGIN_NAME L".Config")
 #define SETTING_NAME_REBAR_CONFIG (PLUGIN_NAME L".RebarConfig")
+#define SETTING_NAME_REBAR_MENUBAR_CONFIG (PLUGIN_NAME L".RebarMenuBarConfig")
 #define SETTING_NAME_TOOLBAR_CONFIG (PLUGIN_NAME L".ToolbarButtonConfig")
 #define SETTING_NAME_TOOLBAR_GRAPH_CONFIG (PLUGIN_NAME L".ToolbarGraphConfig")
 #define SETTING_NAME_STATUSBAR_CONFIG (PLUGIN_NAME L".StatusbarConfig")
@@ -49,6 +52,19 @@
 #define TIDC_FINDWINDOWKILL (WM_APP + 3)
 #define TIDC_POWERMENUDROPDOWN (WM_APP + 4)
 
+// Stable, plugin-owned toolbar IDs used ONLY for persistence (settings serialization).
+// Never tied to PHAPP_ID_* (which may change between builds). Never reuse/renumber a value.
+#define TOOLBAR_SAVE_ID_BASE 0x9000
+#define TOOLBAR_SAVE_ID_REFRESH (TOOLBAR_SAVE_ID_BASE + 1)
+#define TOOLBAR_SAVE_ID_OPTIONS (TOOLBAR_SAVE_ID_BASE + 2)
+#define TOOLBAR_SAVE_ID_FINDHANDLESORDLLS (TOOLBAR_SAVE_ID_BASE + 3)
+#define TOOLBAR_SAVE_ID_SYSTEMINFORMATION (TOOLBAR_SAVE_ID_BASE + 4)
+#define TOOLBAR_SAVE_ID_SHOWDETAILSFORALLPROCESSES (TOOLBAR_SAVE_ID_BASE + 5)
+#define TOOLBAR_SAVE_ID_ALWAYSONTOP (TOOLBAR_SAVE_ID_BASE + 6)
+#define TOOLBAR_SAVE_ID_RUNASADMINISTRATOR (TOOLBAR_SAVE_ID_BASE + 7)
+
+#define TOOLSTATUS_ENABLE_MENUBAR 1
+
 typedef enum _TOOLBAR_DISPLAY_STYLE
 {
     TOOLBAR_DISPLAY_STYLE_IMAGEONLY,
@@ -60,6 +76,9 @@ typedef enum _TOOLBAR_COMMAND_ID
 {
     COMMAND_ID_ENABLE_MENU = 1,
     COMMAND_ID_ENABLE_SEARCHBOX,
+#if TOOLSTATUS_ENABLE_MENUBAR
+    COMMAND_ID_ENABLE_MENUBAR,
+#endif
     COMMAND_ID_TOOLBAR_LOCKUNLOCK,
     COMMAND_ID_TOOLBAR_CUSTOMIZE,
     COMMAND_ID_GRAPHS_CUSTOMIZE,
@@ -86,7 +105,10 @@ typedef enum _REBAR_BAND_ID
     REBAR_BAND_ID_CPUGRAPH,
     REBAR_BAND_ID_MEMGRAPH,
     REBAR_BAND_ID_COMMITGRAPH,
-    REBAR_BAND_ID_IOGRAPH
+    REBAR_BAND_ID_IOGRAPH,
+#if TOOLSTATUS_ENABLE_MENUBAR
+    REBAR_BAND_ID_MENUBAR
+#endif
 } REBAR_BAND;
 
 typedef enum _REBAR_DISPLAY_LOCATION
@@ -109,10 +131,13 @@ typedef union _TOOLSTATUS_CONFIG
         ULONG ResolveGhostWindows : 1;
         ULONG ModernIcons : 1;
         ULONG AutoHideMenu : 1;
-        ULONG Reserved : 4;
+        ULONG EnableMenuBar : 1;
+        ULONG Reserved : 3;
         ULONG SearchAutoFocus : 1;
         ULONG ToolBarLargeIcons : 1;
-        ULONG Spare : 19;
+        ULONG FindWindowOverlayHighlight : 1;
+        ULONG FindWindowSnapshot : 1;
+        ULONG Spare : 15;
     };
 } TOOLSTATUS_CONFIG;
 
@@ -120,7 +145,7 @@ extern TOOLSTATUS_CONFIG ToolStatusConfig;
 extern HWND ProcessTreeNewHandle;
 extern HWND ServiceTreeNewHandle;
 extern HWND NetworkTreeNewHandle;
-extern INT SelectedTabIndex;
+extern LONG SelectedTabIndex;
 extern BOOLEAN UpdateAutomatically;
 extern BOOLEAN UpdateGraphs;
 extern BOOLEAN EnableThemeSupport;
@@ -131,6 +156,9 @@ extern SEARCHBOX_DISPLAY_MODE SearchBoxDisplayMode;
 extern REBAR_DISPLAY_LOCATION RebarDisplayLocation;
 
 extern HWND RebarHandle;
+#if TOOLSTATUS_ENABLE_MENUBAR
+extern HWND MenuBarHandle;
+#endif
 extern HWND ToolBarHandle;
 extern HWND SearchboxHandle;
 extern HWND MainWindowHandle;
@@ -215,6 +243,10 @@ VOID RebarSetBarInfo(
     VOID
     );
 
+VOID RebarUpdateBandColors(
+    VOID
+    );
+
 _Success_(return)
 BOOLEAN RebarGetBandIndexStyle(
     _In_ ULONG BandIndex,
@@ -263,6 +295,80 @@ BOOLEAN RebarSetBandIndexStyleSize(
     _In_ PBAND_STYLE_SIZE RebarBandInfo
     );
 
+VOID ToolbarUpdateFont(
+    VOID
+    );
+
+VOID ToolbarUpdateImageList(
+    _In_ BOOLEAN DpiChanged
+    );
+
+VOID ToolbarUpdateWindowStyle(
+    VOID
+    );
+
+VOID RebarCreate(
+    VOID
+    );
+
+#if TOOLSTATUS_ENABLE_MENUBAR
+VOID MenuBarCreate(
+    VOID
+    );
+#endif
+
+VOID ToolBarCreate(
+    VOID
+    );
+
+VOID SearchBoxCreate(
+    VOID
+    );
+
+VOID SearchBoxUpdateRebarBand(
+    VOID
+    );
+
+VOID StatusBarCreate(
+    VOID
+    );
+
+VOID SearchBoxDestroy(
+    VOID
+    );
+
+#if TOOLSTATUS_ENABLE_MENUBAR
+VOID MenuBarDestroy(
+    VOID
+    );
+#endif
+
+VOID ToolBarDestroy(
+    VOID
+    );
+
+VOID RebarDestroy(
+    VOID
+    );
+
+#if TOOLSTATUS_ENABLE_MENUBAR
+VOID MenuBarApplySettings(
+    VOID
+    );
+#endif
+
+VOID ToolBarApplySettings(
+    _In_ BOOLEAN DpiChanged
+    );
+
+VOID SearchBoxApplySettings(
+    VOID
+    );
+
+VOID StatusBarApplySettings(
+    VOID
+    );
+
 VOID ToolbarLoadSettings(
     _In_ BOOLEAN DpiChanged
     );
@@ -276,11 +382,11 @@ VOID ToolbarResetSettings(
     );
 
 PWSTR ToolbarGetText(
-    _In_ UINT CommandID
+    _In_ ULONG CommandID
     );
 
 HBITMAP ToolbarGetImage(
-    _In_ UINT CommandID,
+    _In_ ULONG CommandID,
     _In_ LONG DpiValue
     );
 
@@ -313,6 +419,33 @@ LONG ToolStatusGetWindowFontSize(
     _In_ HFONT WindowFont
     );
 
+#if TOOLSTATUS_ENABLE_MENUBAR
+// menubar.c
+
+HWND ToolStatusMenuBarCreateWindow(
+    _In_ HWND ParentWindowHandle
+    );
+
+BOOLEAN ToolStatusMenuBarLoadMenu(
+    _In_ HWND WindowHandle,
+    _In_ HMENU MainMenuHandle
+    );
+
+BOOLEAN ToolStatusMenuBarHandleNotify(
+    _In_ LPNMHDR Header,
+    _Out_opt_ LRESULT* Result
+    );
+
+_Success_(return)
+BOOLEAN ToolStatusMenuBarHandleMessage(
+    _In_ HWND WindowHandle,
+    _In_ ULONG WindowMessage,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam,
+    _Out_opt_ LRESULT* Result
+    );
+#endif
+
 // main.c
 
 HWND GetCurrentTreeNewHandle(
@@ -325,6 +458,18 @@ VOID ShowCustomizeMenu(
 
 VOID InvalidateMainWindowLayout(
     VOID
+    );
+
+VOID ToolbarDestroyControls(
+    VOID
+    );
+
+VOID ToolbarCreateControls(
+    VOID
+    );
+
+VOID ToolStatusApplyMainMenuVisibility(
+    _In_ HWND WindowHandle
     );
 
 _Function_class_(PH_SEARCHCONTROL_CALLBACK)
@@ -366,6 +511,25 @@ BOOLEAN NetworkTreeFilterCallback(
     _In_opt_ PVOID Context
     );
 
+// find.c
+
+extern ULONG FindDialogMessage;
+
+VOID ShowFindDialog(
+    _In_ HWND OwnerWindow
+    );
+
+BOOLEAN ExecuteFindNext(
+    _In_ BOOLEAN RestartFromTop,
+    _In_ PCPH_STRINGREF String,
+    _In_ BOOLEAN MatchCase,
+    _In_ BOOLEAN MatchWholeWord
+    );
+
+VOID FindDialogHandleFindMessage(
+    _In_ LPARAM lParam
+    );
+
 // graph.c
 
 VOID ToolbarGraphLoadSettings(
@@ -391,6 +555,10 @@ VOID ToolbarRegisterGraph(
     _In_ ULONG Flags,
     _In_opt_ PVOID Context,
     _In_ PTOOLSTATUS_GRAPH_CALLBACK GraphCallback
+    );
+
+VOID ToolbarDestroyGraphs(
+    VOID
     );
 
 VOID ToolbarCreateGraphs(
@@ -444,7 +612,7 @@ VOID ToolbarGraphCreatePluginMenu(
     _In_ ULONG MenuId
     );
 
-_Function_class_(TOOLSTATUS_GRAPH_CALLBACK)
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
 BOOLEAN CpuHistoryGraphMessageCallback(
     _In_ HWND WindowHandle,
     _In_ ULONG Message,
@@ -453,7 +621,7 @@ BOOLEAN CpuHistoryGraphMessageCallback(
     _In_ PVOID Context
     );
 
-_Function_class_(TOOLSTATUS_GRAPH_CALLBACK)
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
 BOOLEAN PhysicalHistoryGraphMessageCallback(
     _In_ HWND WindowHandle,
     _In_ ULONG Message,
@@ -462,7 +630,7 @@ BOOLEAN PhysicalHistoryGraphMessageCallback(
     _In_ PVOID Context
     );
 
-_Function_class_(TOOLSTATUS_GRAPH_CALLBACK)
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
 BOOLEAN CommitHistoryGraphMessageCallback(
     _In_ HWND WindowHandle,
     _In_ ULONG Message,
@@ -471,7 +639,7 @@ BOOLEAN CommitHistoryGraphMessageCallback(
     _In_ PVOID Context
     );
 
-_Function_class_(TOOLSTATUS_GRAPH_CALLBACK)
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
 BOOLEAN IoHistoryGraphMessageCallback(
     _In_ HWND WindowHandle,
     _In_ ULONG Message,
@@ -548,7 +716,7 @@ VOID StatusBarShowCustomizeDialog(
 
 typedef struct _BUTTON_CONTEXT
 {
-    INT IdCommand;
+    LONG IdCommand;
     HICON IconHandle;
 
     union
@@ -573,9 +741,9 @@ typedef struct _CUSTOMIZE_CONTEXT
     COLORREF TextColor;
 
     LONG WindowDpi;
-    INT CXWidth;
-    INT ImageWidth;
-    INT ImageHeight;
+    LONG CXWidth;
+    LONG ImageWidth;
+    LONG ImageHeight;
 
     HWND WindowHandle;
     HWND AvailableListHandle;
@@ -588,7 +756,7 @@ typedef struct _CUSTOMIZE_CONTEXT
 
 HICON CustomizeGetToolbarIcon(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT CommandID,
+    _In_ LONG CommandID,
     _In_ LONG DpiValue
     );
 

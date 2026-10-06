@@ -5,15 +5,24 @@
  *
  * Authors:
  *
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
 #include "updater.h"
 
+/**
+ * \brief Callback procedure for the Download Progress task dialog page.
+ * \param WindowHandle Handle to the dialog window.
+ * \param WindowMessage The window message.
+ * \param wParam Additional message-specific information.
+ * \param lParam Additional message-specific information.
+ * \param dwRefData The updater context.
+ * \return HRESULT Successful or errant status.
+ */
 HRESULT CALLBACK ShowProgressCallbackProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -21,23 +30,27 @@ HRESULT CALLBACK ShowProgressCallbackProc(
 {
     PPH_UPDATER_CONTEXT context = (PPH_UPDATER_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_NAVIGATED:
         {
-            SendMessage(hwndDlg, TDM_SET_MARQUEE_PROGRESS_BAR, TRUE, 0);
-            SendMessage(hwndDlg, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 1);
+            SendMessage(WindowHandle, TDM_SET_MARQUEE_PROGRESS_BAR, TRUE, 0);
+            SendMessage(WindowHandle, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 1);
             context->ProgressMarquee = TRUE;
 
 #ifndef FORCE_NO_STATUS_TIMER
             if (!context->ProgressTimer)
             {
-                PhSetTimer(hwndDlg, 9000, SETTING_NAME_STATUS_TIMER_INTERVAL, NULL);
+                PhSetTimer(WindowHandle, 9000, SETTING_NAME_STATUS_TIMER_INTERVAL, NULL);
                 context->ProgressTimer = TRUE;
             }
 #endif
             PhReferenceObject(context);
-            PhCreateThread2(UpdateDownloadThread, context);
+#if defined(PH_BUILD_MSIX)
+            PhCreateThread2(UpdateMsixDownloadThread, context);
+#else
+            PhCreateThread2(UpdateInstallerDownloadThreadStage1, context);
+#endif
         }
         break;
     case TDN_HYPERLINK_CLICKED:
@@ -51,6 +64,10 @@ HRESULT CALLBACK ShowProgressCallbackProc(
     return S_OK;
 }
 
+/**
+ * \brief Shows the Download Progress dialog page.
+ * \param Context The updater context.
+ */
 VOID ShowProgressDialog(
     _In_ PPH_UPDATER_CONTEXT Context
     )
@@ -61,7 +78,7 @@ VOID ShowProgressDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS | TDF_SHOW_PROGRESS_BAR;
     config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, Context->WindowDpi);
     config.cxWidth = 200;
     config.lpCallbackData = (LONG_PTR)Context;
     config.pfCallback = ShowProgressCallbackProc;

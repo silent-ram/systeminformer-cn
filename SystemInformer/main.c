@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #include <phapp.h>
 #include <colorbox.h>
+#include <tabnew.h>
+#include <graphscroll.h>
 #include <hexedit.h>
 #include <hndlinfo.h>
 #include <objbase.h>
@@ -39,6 +41,11 @@ PH_STARTUP_PARAMETERS PhStartupParameters = { .UpdateChannel = PhInvalidChannel 
 PH_PROVIDER_THREAD PhPrimaryProviderThread;
 PH_PROVIDER_THREAD PhSecondaryProviderThread;
 PH_PROVIDER_THREAD PhTertiaryProviderThread;
+RTL_ATOM PhTreeWindowAtom = RTL_ATOM_INVALID_ATOM;
+RTL_ATOM PhGraphWindowAtom = RTL_ATOM_INVALID_ATOM;
+RTL_ATOM PhHexEditWindowAtom = RTL_ATOM_INVALID_ATOM;
+RTL_ATOM PhColorBoxWindowAtom = RTL_ATOM_INVALID_ATOM;
+RTL_ATOM PhTabNewWindowAtom = RTL_ATOM_INVALID_ATOM;
 static PPH_LIST DialogList = NULL;
 static PPH_LIST FilterList = NULL;
 static PH_AUTO_POOL BaseAutoPool;
@@ -61,6 +68,8 @@ INT WINAPI wWinMain(
         return 1;
     if (!NT_SUCCESS(PhInitializeExceptionPolicy()))
         return 1;
+    if (!NT_SUCCESS(PhInitializeExecutionPolicy()))
+        return 1;
     if (!NT_SUCCESS(PhInitializeNamespacePolicy()))
         return 1;
     if (!NT_SUCCESS(PhInitializeComPolicy()))
@@ -77,8 +86,16 @@ INT WINAPI wWinMain(
     PhGuiSupportInitialization();
 
     PhInitializeAppSettings();
+    PhInitializeCallbacks();
+
+    if (PhStartupParameters.Debug)
+    {
+        PhShowDebugConsole();
+    }
 
     PhInitializePreviousInstance();
+
+    PhInitializeCallbacks();
 
     if (PhEnableKsiSupport &&
         !PhStartupParameters.ShowOptions)
@@ -100,12 +117,11 @@ INT WINAPI wWinMain(
     PhInitializeCommonControls();
 
     PhInitializeAppSystem();
-    PhInitializeCallbacks();
     PhEmInitialization();
 
     if (PhStartupParameters.ShowOptions)
     {
-        PhShowOptionsDialog(PhStartupParameters.WindowHandle);
+        PhShowOptionsDialog(PhStartupParameters.WindowHandle, NULL);
         PhExitApplication(STATUS_SUCCESS);
     }
 
@@ -412,7 +428,7 @@ static BOOLEAN CALLBACK PhPreviousInstanceWindowEnumProc(
     {
         WCHAR className[256];
 
-        if (GetClassName(WindowHandle, className, RTL_NUMBER_OF(className)))
+        if (NT_SUCCESS(PhGetClassName(WindowHandle, className, RTL_NUMBER_OF(className), NULL)))
         {
             if (PhEqualStringZ(className, PhGetString(context->WindowName), FALSE))
             {
@@ -505,7 +521,7 @@ static VOID PhForegroundPreviousInstance(
     // Try to locate the window a few times because some users reported that it might not yet have been created. (dmex)
     do
     {
-        PhEnumWindows(PhPreviousInstanceWindowEnumProc, &context);
+        PhEnumWindowsEx(NULL, PhPreviousInstanceWindowEnumProc, &context);
         PhDelayExecution(500);
     } while (++attempts < 10);
 
@@ -605,7 +621,7 @@ NTSTATUS NTAPI PhpPreviousInstancesCallback(
     HANDLE objectHandle;
 
     if (!PhStartsWithStringRef2(Name, L"SiMutant_", FALSE))
-        return STATUS_NAME_TOO_LONG;
+        return STATUS_SUCCESS;
 
     if (NT_SUCCESS(PhOpenMutant(
         &objectHandle,
@@ -614,15 +630,11 @@ NTSTATUS NTAPI PhpPreviousInstancesCallback(
         Name
         )))
     {
-        if (NT_SUCCESS(PhGetMutantOwnerInformation(
-            objectHandle,
-            &objectInfo
-            )))
+        if (NT_SUCCESS(PhGetMutantOwnerInformation(objectHandle, &objectInfo)))
         {
             if (objectInfo.ClientId.UniqueProcess != NtCurrentProcessId())
             {
                 PhForegroundPreviousInstance(objectInfo.ClientId.UniqueProcess);
-
                 NtClose(objectHandle);
                 return STATUS_NO_MORE_ENTRIES;
             }
@@ -732,10 +744,12 @@ VOID PhInitializeCommonControls(
 
     InitCommonControlsEx(&icex);
 
-    PhTreeNewInitialization();
-    PhGraphControlInitialization();
-    PhHexEditInitialization();
-    PhColorBoxInitialization();
+    PhScrollNewWindowInitialization();
+    PhTreeWindowAtom = PhTreeNewInitialization();
+    PhGraphWindowAtom = PhGraphControlInitialization();
+    PhHexEditWindowAtom = PhHexEditInitialization();
+    PhColorBoxWindowAtom = PhColorBoxInitialization();
+    PhTabNewWindowAtom = PhTabNewInitialization();
 }
 
 /**
@@ -1084,12 +1098,11 @@ NTSTATUS PhInitializeNamespacePolicy(
     VOID
     )
 {
+    NTSTATUS status;
     HANDLE mutantHandle;
     SIZE_T returnLength;
     WCHAR formatBuffer[PH_INT64_STR_LEN_1];
-    OBJECT_ATTRIBUTES objectAttributes;
-    UNICODE_STRING objectName;
-    PH_STRINGREF objectNameSr;
+    PH_STRINGREF objectName;
     PH_FORMAT format[2];
 
     PhInitFormatS(&format[0], L"SiMutant_");
@@ -1106,28 +1119,21 @@ NTSTATUS PhInitializeNamespacePolicy(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    objectNameSr.Length = returnLength - sizeof(UNICODE_NULL);
-    objectNameSr.Buffer = formatBuffer;
-
-    if (!PhStringRefToUnicodeString(&objectNameSr, &objectName))
-        return STATUS_NAME_TOO_LONG;
-
-    InitializeObjectAttributes(
-        &objectAttributes,
+    PhInitializeBufferStringRef(
         &objectName,
-        OBJ_CASE_INSENSITIVE,
-        PhGetNamespaceHandle(),
-        NULL
+        formatBuffer,
+        returnLength - sizeof(UNICODE_NULL)
         );
 
-    NtCreateMutant(
+    status = PhCreateMutant(
         &mutantHandle,
         MUTANT_QUERY_STATE,
-        &objectAttributes,
+        PhGetNamespaceHandle(),
+        &objectName,
         TRUE
         );
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 /**
@@ -1143,15 +1149,16 @@ NTSTATUS PhInitializeComPolicy(
 {
 #ifdef PH_COM_SVC
     #include <cguid.h>
+    NTSTATUS status;
     IGlobalOptions* globalOptions;
     UCHAR securityDescriptorBuffer[SECURITY_DESCRIPTOR_MIN_LENGTH + 0x300];
     PSECURITY_DESCRIPTOR securityDescriptor = (PSECURITY_DESCRIPTOR)securityDescriptorBuffer;
+    PACL dacl = PTR_ADD_OFFSET(securityDescriptor, SECURITY_DESCRIPTOR_MIN_LENGTH);
     PSID administratorsSid = PhSeAdministratorsSid();
-    ULONG securityDescriptorAllocationLength;
-    PACL dacl;
+    ULONG daclLength;
 
     if (!SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
-        return TRUE; // Continue without COM support. (dmex)
+        return STATUS_SUCCESS; // Continue without COM support. (dmex)
 
     if (SUCCEEDED(PhGetClassObject(L"combase.dll", &CLSID_GlobalOptions, &IID_IGlobalOptions, &globalOptions)))
     {
@@ -1162,29 +1169,40 @@ NTSTATUS PhInitializeComPolicy(
         #define COMGLB_ADD_RESTRICTEDCODE_SID_TO_COM_CALLPERMISSIONS COMGLB_RESERVED3
         #define HKLM_ONLY_CLASSIC_COM_CATALOG COMGLB_RESERVED5
 
-        IGlobalOptions_Set(globalOptions, COMGLB_EXCEPTION_HANDLING, COMGLB_EXCEPTION_DONOT_HANDLE_ANY);
-        IGlobalOptions_Set(globalOptions, COMGLB_RO_SETTINGS, COMGLB_FAST_RUNDOWN | COMGLB_ENABLE_AGILE_OOP_PROXIES | HKLM_ONLY_CLASSIC_COM_CATALOG);
+        if (SUCCEEDED(IGlobalOptions_Set(globalOptions, COMGLB_EXCEPTION_HANDLING, COMGLB_EXCEPTION_DONOT_HANDLE_ANY)) &&
+            SUCCEEDED(IGlobalOptions_Set(globalOptions, COMGLB_RO_SETTINGS, COMGLB_FAST_RUNDOWN | COMGLB_ENABLE_AGILE_OOP_PROXIES | HKLM_ONLY_CLASSIC_COM_CATALOG)))
+        {
+            // Successfully configured global COM options.
+        }
+
         IGlobalOptions_Release(globalOptions);
     }
 
-    securityDescriptorAllocationLength = SECURITY_DESCRIPTOR_MIN_LENGTH +
-        (ULONG)sizeof(ACL) +
-        (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-        PhLengthSid(&PhSeAuthenticatedUserSid) +
-        (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-        PhLengthSid(&PhSeLocalSystemSid) +
-        (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-        PhLengthSid(&administratorsSid);
+    if (!NT_SUCCESS(status = RtlULongAdd(SECURITY_DESCRIPTOR_MIN_LENGTH, sizeof(ACL), &daclLength)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = RtlULongAdd(daclLength, UFIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) + PhLengthSid(&PhSeAuthenticatedUserSid), &daclLength)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = RtlULongAdd(daclLength, UFIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) + PhLengthSid(&PhSeLocalSystemSid), &daclLength)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = RtlULongAdd(daclLength, UFIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) + PhLengthSid(administratorsSid), &daclLength)))
+        goto CleanupExit;
 
-    dacl = PTR_ADD_OFFSET(securityDescriptor, SECURITY_DESCRIPTOR_MIN_LENGTH);
-    PhCreateSecurityDescriptor(securityDescriptor, SECURITY_DESCRIPTOR_REVISION);
-    PhCreateAcl(dacl, securityDescriptorAllocationLength - SECURITY_DESCRIPTOR_MIN_LENGTH, ACL_REVISION);
-    PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, &PhSeAuthenticatedUserSid);
-    PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, &PhSeLocalSystemSid);
-    PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, administratorsSid);
-    PhSetDaclSecurityDescriptor(securityDescriptor, TRUE, dacl, FALSE);
-    PhSetGroupSecurityDescriptor(securityDescriptor, administratorsSid, FALSE);
-    PhSetOwnerSecurityDescriptor(securityDescriptor, administratorsSid, FALSE);
+    if (!NT_SUCCESS(status = PhCreateSecurityDescriptor(securityDescriptor, SECURITY_DESCRIPTOR_REVISION)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhCreateAcl(dacl, daclLength - SECURITY_DESCRIPTOR_MIN_LENGTH, ACL_REVISION)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, &PhSeAuthenticatedUserSid)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, &PhSeLocalSystemSid)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhAddAccessAllowedAce(dacl, ACL_REVISION, FILE_READ_DATA | FILE_WRITE_DATA, administratorsSid)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhSetDaclSecurityDescriptor(securityDescriptor, TRUE, dacl, FALSE)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhSetGroupSecurityDescriptor(securityDescriptor, administratorsSid, FALSE)))
+        goto CleanupExit;
+    if (!NT_SUCCESS(status = PhSetOwnerSecurityDescriptor(securityDescriptor, administratorsSid, FALSE)))
+        goto CleanupExit;
 
     if (!SUCCEEDED(CoInitializeSecurity(
         securityDescriptor,
@@ -1198,16 +1216,16 @@ NTSTATUS PhInitializeComPolicy(
         NULL
         )))
     {
-        NOTHING;
+        goto CleanupExit;
     }
 
 #ifdef DEBUG
-    assert(RtlValidSecurityDescriptor(securityDescriptor));
+    assert(PhValidSecurityDescriptor(securityDescriptor));
     assert(securityDescriptorAllocationLength < sizeof(securityDescriptorBuffer));
-    assert(RtlLengthSecurityDescriptor(securityDescriptor) < sizeof(securityDescriptorBuffer));
+    assert(PhLengthSecurityDescriptor(securityDescriptor) < sizeof(securityDescriptorBuffer));
 #endif
-
-    return TRUE;
+CleanupExit:
+    return STATUS_SUCCESS;
 #else
     if (!SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
         NOTHING;
@@ -1217,12 +1235,41 @@ NTSTATUS PhInitializeComPolicy(
 }
 
 /**
+ * Initializes the execution policy for System Informer.
+ *
+ * This function checks if the Shift key is held down during startup. If so, it attempts
+ * to launch Task Manager (`taskmgr.exe`) instead of System Informer.
+ * This provides a quick way for users to access Task Manager if needed, for example,
+ * if System Informer is set as the default Task Manager replacement and the user
+ * wants to access the original Task Manager without changing settings.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhInitializeExecutionPolicy(
+    VOID
+    )
+{
+    // Note: GetAsyncKeyState queries the global keyboard bitmask without kernel transitions, blocking,
+    // handles, events or messages etc... The bitmask is also independent of any message loop or window.
+    // We can call it extremely early but only the high bit (0x8000) of the key state is valid without a message loop.
+
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+    {
+        if (NT_SUCCESS(PhShellExecuteEx(NULL, L"taskmgr.exe", NULL, NULL, SW_SHOW, 0, 0, NULL)))
+        {
+            PhExitApplication(STATUS_SUCCESS);
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+/**
  * Initializes the mitigation policies for the current process.
  *
  * This function configures process-level mitigations to prevent crashes by third party software. *
  * The function uses the Native API to set the mitigation policy. If the operating system does not
  * support the required mitigation policies, the function performs no action and returns success.
- * \return STATUS_SUCCESS on success, or an appropriate NTSTATUS error code on failure.
+ * \return NTSTATUS Successful or errant status.
  */
 NTSTATUS PhInitializeMitigationPolicy(
     VOID
@@ -1238,10 +1285,10 @@ NTSTATUS PhInitializeMitigationPolicy(
         //policyInfo.DynamicCodePolicy.ProhibitDynamicCode = TRUE;
         //NtSetInformationProcess(NtCurrentProcess(), ProcessMitigationPolicy, &policyInfo, sizeof(PROCESS_MITIGATION_POLICY_INFORMATION));
 
-        //policyInfo.Policy = ProcessExtensionPointDisablePolicy;
-        //policyInfo.ExtensionPointDisablePolicy.Flags = 0;
-        //policyInfo.ExtensionPointDisablePolicy.DisableExtensionPoints = TRUE;
-        //NtSetInformationProcess(NtCurrentProcess(), ProcessMitigationPolicy, &policyInfo, sizeof(PROCESS_MITIGATION_POLICY_INFORMATION));
+        policyInfo.Policy = ProcessExtensionPointDisablePolicy;
+        policyInfo.ExtensionPointDisablePolicy.Flags = 0;
+        policyInfo.ExtensionPointDisablePolicy.DisableExtensionPoints = TRUE;
+        NtSetInformationProcess(NtCurrentProcess(), ProcessMitigationPolicy, &policyInfo, sizeof(PROCESS_MITIGATION_POLICY_INFORMATION));
 
         policyInfo.Policy = ProcessSignaturePolicy;
         policyInfo.SignaturePolicy.Flags = 0;
@@ -1386,7 +1433,7 @@ NTSTATUS PhInitializeTimerPolicy(
 
 /**
  * Initializes the application system.
- * 
+ *
  * This function performs the necessary initialization of the System Informer
  * application system, setting up core components and resources required for
  * the application to function properly.
@@ -1428,6 +1475,9 @@ VOID PhInitializeAppSettings(
         // 2. A file named SystemInformer.exe.settings.json in the program directory. (This changes
         //    based on the executable file name.)
         // 3. The default location.
+        NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+        PPH_STRING settingsPath = NULL;
+        PPH_STRING basePath = NULL;
 
         // 1. File specified in command line
         if (PhStartupParameters.SettingsFileName)
@@ -1451,118 +1501,47 @@ VOID PhInitializeAppSettings(
                     }
                 }
             }
-        }
 
-        // 2. File in program directory
-        if (PhIsNullOrEmptyString(PhSettingsFileName))
-        {
-            PPH_STRING settingsFileName;
-
-            // Try .settings.json first
-            if (settingsFileName = PhGetApplicationFileNameZ(L".settings.json"))
+            if (PhSettingsFileName)
             {
-                if (PhDoesFileExist(&settingsFileName->sr))
-                {
-                    PhMoveReference(&PhSettingsFileName, settingsFileName);
-                    PhPortableEnabled = TRUE;
-                }
-                else
-                {
-                    PhDereferenceObject(settingsFileName);
-
-                    // Try .settings.xml (legacy)
-                    if (settingsFileName = PhGetApplicationFileNameZ(L".settings.xml"))
-                    {
-                        if (PhDoesFileExist(&settingsFileName->sr))
-                        {
-                            PPH_STRING jsonFileName = PhGetBaseNameChangeExtensionZ(&settingsFileName->sr, L".json");
-
-                            // Convert XML to JSON
-                            NTSTATUS convertStatus = PhConvertSettingsXmlToJson(
-                                &settingsFileName->sr,
-                                &jsonFileName->sr
-                                );
-
-                            if (NT_SUCCESS(convertStatus))
-                            {
-                                PhMoveReference(&PhSettingsFileName, jsonFileName);
-                                PhPortableEnabled = TRUE;
-                            }
-                            else
-                            {
-                                PhDereferenceObject(jsonFileName);
-                            }
-                        }
-                        else
-                        {
-                            PhDereferenceObject(settingsFileName);
-                        }
-                    }
-                }
+                status = PhLoadSettingsEx(&PhSettingsFileName->sr, &PhPortableEnabled);
             }
         }
 
-        // 3. Default location
-        if (PhIsNullOrEmptyString(PhSettingsFileName))
+        // 2. Default locations (AppData)
+        if (PhIsNullOrEmptyString(PhSettingsFileName) || !NT_SUCCESS(status))
         {
-            PhSettingsFileName = PhGetKnownLocationZ(PH_FOLDERID_RoamingAppData, L"\\SystemInformer\\settings.json", TRUE);
+            status = PhLoadSettingsAutoDetect(NULL, L"settings", &settingsPath, NULL, &PhPortableEnabled);
+
+            if (NT_SUCCESS(status) || status == STATUS_OBJECT_NAME_NOT_FOUND)
+            {
+                PhMoveReference(&PhSettingsFileName, settingsPath);
+            }
         }
 
-        if (!PhIsNullOrEmptyString(PhSettingsFileName))
+        // Handle errors
+        if (status == STATUS_FILE_CORRUPT_ERROR)
         {
-            NTSTATUS status;
-
-            status = PhLoadSettings(&PhSettingsFileName->sr);
-
-            // If JSON file not found, try to convert from XML
-            if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+            if (PhShowMessage2(
+                NULL,
+                TD_YES_BUTTON | TD_NO_BUTTON,
+                TD_WARNING_ICON,
+                L"System Informer's settings file is corrupt. Do you want to reset it?",
+                L"If you select No, the settings system will not function properly."
+                ) == IDYES)
             {
-                PPH_STRING xmlFileName = PhGetBaseNameChangeExtensionZ(&PhSettingsFileName->sr, L".xml");
-
-                if (!PhIsNullOrEmptyString(xmlFileName))
-                {
-                    if (PhDoesFileExist(&xmlFileName->sr))
-                    {
-                        // Convert XML to JSON
-                        NTSTATUS convertStatus = PhConvertSettingsXmlToJson(
-                            &xmlFileName->sr,
-                            &PhSettingsFileName->sr
-                            );
-
-                        if (NT_SUCCESS(convertStatus))
-                        {
-                            // Retry loading from newly created JSON file
-                            status = PhLoadSettings(&PhSettingsFileName->sr);
-                        }
-                    }
-
-                    PhDereferenceObject(xmlFileName);
-                }
-            }
-
-            // If we didn't find the file, it will be created. Otherwise,
-            // there was probably a parsing error and we don't want to
-            // change anything.
-            if (status == STATUS_FILE_CORRUPT_ERROR)
-            {
-                if (PhShowMessage2(
-                    NULL,
-                    TD_YES_BUTTON | TD_NO_BUTTON,
-                    TD_WARNING_ICON,
-                    L"System Informer's settings file is corrupt. Do you want to reset it?",
-                    L"If you select No, the settings system will not function properly."
-                    ) == IDYES)
-                {
+                if (PhSettingsFileName)
                     PhResetSettingsFile(&PhSettingsFileName->sr);
-                }
-                else
-                {
-                    // Pretend we don't have a settings store so bad things
-                    // don't happen.
-                    PhDereferenceObject(PhSettingsFileName);
-                    PhSettingsFileName = NULL;
-                }
             }
+            else
+            {
+                PhDereferenceObject(PhSettingsFileName);
+                PhSettingsFileName = NULL;
+            }
+        }
+        else if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_NOT_FOUND)
+        {
+            PhShowStatus(NULL, L"Unable to load the settings file.", status, 0);
         }
     }
 
@@ -1576,14 +1555,17 @@ VOID PhInitializeAppSettings(
     for (ULONG i = 0; i < PhMaxPrecisionUnit; i++)
         PhMaxPrecisionLimit /= 10;
     PhEnableWindowText = !!PhGetIntegerSetting(SETTING_ENABLE_WINDOW_TEXT);
+    PhEnableHighResolution = WindowsVersion >= WINDOWS_11 && PhGetIntegerSetting(SETTING_ENABLE_HIGH_RESOLUTION);
 
     PhEnableThemeSupport = !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT);
+    PhEnableWindowBorderColor = !!PhGetIntegerSetting(SETTING_ENABLE_WINDOW_BORDER_COLOR);
     PhThemeWindowForegroundColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_FOREGROUND_COLOR);
     PhThemeWindowBackgroundColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_BACKGROUND_COLOR);
     PhThemeWindowBackground2Color = PhGetIntegerSetting(SETTING_THEME_WINDOW_BACKGROUND2_COLOR);
     PhThemeWindowHighlightColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_HIGHLIGHT_COLOR);
     PhThemeWindowHighlight2Color = PhGetIntegerSetting(SETTING_THEME_WINDOW_HIGHLIGHT2_COLOR);
     PhThemeWindowTextColor = PhGetIntegerSetting(SETTING_THEME_WINDOW_TEXT_COLOR);
+
     PhEnableThemeAcrylicSupport = WindowsVersion >= WINDOWS_11 && !!PhGetIntegerSetting(SETTING_ENABLE_THEME_ACRYLIC_SUPPORT);
     PhEnableThemeAcrylicWindowSupport = WindowsVersion >= WINDOWS_11 && !!PhGetIntegerSetting(SETTING_ENABLE_THEME_ACRYLIC_WINDOW_SUPPORT);
     PhEnableThemeNativeButtons = !!PhGetIntegerSetting(SETTING_ENABLE_THEME_NATIVE_BUTTONS);
@@ -1606,6 +1588,27 @@ VOID PhInitializeAppSettings(
             sampleCount = 4096;
 
         PhSetIntegerSetting(SETTING_SAMPLE_COUNT, sampleCount);
+    }
+
+    {
+        PPH_STRING clientId = PhGetStringSetting(SETTING_CLIENT_ID);
+        if (PhIsNullOrEmptyString(clientId))
+        {
+            static const PH_STRINGREF trimSet = PH_STRINGREF_INIT(L"{}");
+            GUID guid;
+            PH_STRINGREF trimmed;
+
+            PhGenerateGuid(&guid);
+            PhMoveReference(&clientId, PhFormatGuid(&guid));
+
+            trimmed = clientId->sr;
+            PhTrimStringRef(&trimmed, &trimSet, 0);
+            PhLowerStringRef(&trimmed);
+
+            PhSetStringSetting2(SETTING_CLIENT_ID, &trimmed);
+        }
+
+        PhClearReference(&clientId);
     }
 
     if (PhStartupParameters.UpdateChannel != PhInvalidChannel)
@@ -1697,11 +1700,33 @@ BOOLEAN NTAPI PhpCommandLineOptionCallback(
             PhStartupParameters.NoKph = TRUE;
             break;
         case PH_ARG_DEBUG:
-            PhStartupParameters.Debug = TRUE;
+            {
+                PH_STRINGREF inputHandleString;
+                PH_STRINGREF outputHandleString;
+                ULONG64 inputHandle;
+                ULONG64 outputHandle;
+
+                if (Value && PhSplitStringRefAtChar(&Value->sr, L',', &inputHandleString, &outputHandleString))
+                {
+                    if (
+                        PhStringToUInt64(&inputHandleString, 16, &inputHandle) &&
+                        PhStringToUInt64(&outputHandleString, 16, &outputHandle)
+                        )
+                    {
+                        PhStartupParameters.DebugConsoleInputHandle = (HANDLE)(ULONG_PTR)inputHandle;
+                        PhStartupParameters.DebugConsoleOutputHandle = (HANDLE)(ULONG_PTR)outputHandle;
+                        PhStartupParameters.Debug = TRUE;
+                    }
+                }
+            }
             break;
         case PH_ARG_HWND:
-            if (Value && PhStringToInteger64(&Value->sr, 16, &integer))
-                PhStartupParameters.WindowHandle = (HWND)(ULONG_PTR)integer;
+            {
+                if (Value && PhStringToUInt64(&Value->sr, 16, &integer))
+                {
+                    PhStartupParameters.WindowHandle = (HWND)(ULONG_PTR)integer;
+                }
+            }
             break;
         case PH_ARG_POINT:
             {
@@ -1743,24 +1768,32 @@ BOOLEAN NTAPI PhpCommandLineOptionCallback(
             PhStartupParameters.Help = TRUE;
             break;
         case PH_ARG_SELECTPID:
-            if (Value && PhStringToInteger64(&Value->sr, 0, &integer))
-                PhStartupParameters.SelectPid = (ULONG)integer;
+            {
+                if (Value && PhStringToUInt64(&Value->sr, 0, &integer))
+                {
+                    PhStartupParameters.SelectPid = (ULONG)integer;
+                }
+            }
             break;
         case PH_ARG_PRIORITY:
-            if (Value && PhEqualString2(Value, L"r", TRUE))
-                PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_REALTIME;
-            else if (Value && PhEqualString2(Value, L"h", TRUE))
-                PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_HIGH;
-            else if (Value && PhEqualString2(Value, L"n", TRUE))
-                PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_NORMAL;
-            else if (Value && PhEqualString2(Value, L"l", TRUE))
-                PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_IDLE;
+            {
+                if (Value && PhEqualString2(Value, L"r", TRUE))
+                    PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_REALTIME;
+                else if (Value && PhEqualString2(Value, L"h", TRUE))
+                    PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_HIGH;
+                else if (Value && PhEqualString2(Value, L"n", TRUE))
+                    PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_NORMAL;
+                else if (Value && PhEqualString2(Value, L"l", TRUE))
+                    PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_IDLE;
+            }
             break;
         case PH_ARG_PLUGIN:
-            if (!PhStartupParameters.PluginParameters)
-                PhStartupParameters.PluginParameters = PhCreateList(3);
-            if (Value)
-                PhAddItemList(PhStartupParameters.PluginParameters, PhReferenceObject(Value));
+            {
+                if (!PhStartupParameters.PluginParameters)
+                    PhStartupParameters.PluginParameters = PhCreateList(3);
+                if (Value)
+                    PhAddItemList(PhStartupParameters.PluginParameters, PhReferenceObject(Value));
+            }
             break;
         case PH_ARG_SELECTTAB:
             PhSwapReference(&PhStartupParameters.SelectTab, Value);
@@ -1830,7 +1863,7 @@ VOID PhpProcessStartupParameters(
         { PH_ARG_SHOWHIDDEN, L"hide", NoArgumentType },
         { PH_ARG_RUNASSERVICEMODE, L"ras", MandatoryArgumentType },
         { PH_ARG_NOKPH, L"nokph", NoArgumentType },
-        { PH_ARG_DEBUG, L"debug", NoArgumentType },
+        { PH_ARG_DEBUG, L"debug", MandatoryArgumentType },
         { PH_ARG_HWND, L"hwnd", MandatoryArgumentType },
         { PH_ARG_POINT, L"point", MandatoryArgumentType },
         { PH_ARG_SHOWOPTIONS, L"showoptions", NoArgumentType },

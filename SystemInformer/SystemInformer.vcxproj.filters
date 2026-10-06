@@ -42,6 +42,9 @@
     <ClCompile Include="chdlg.c">
       <Filter>System Informer</Filter>
     </ClCompile>
+    <ClCompile Include="envdlg.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
     <ClCompile Include="chproc.c">
       <Filter>System Informer</Filter>
     </ClCompile>
@@ -333,9 +336,6 @@
     <ClCompile Include="notiftoast.cpp">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="ksidbg.c">
-      <Filter>System Informer</Filter>
-    </ClCompile>
     <ClCompile Include="thrdstks.c">
       <Filter>System Informer</Filter>
     </ClCompile>
@@ -349,6 +349,12 @@
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="netsup.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="informerwnd.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="runaspkg.c">
       <Filter>System Informer</Filter>
     </ClCompile>
   </ItemGroup>
@@ -555,7 +561,7 @@
     <ResourceCompile Include="version.rc">
       <Filter>Resources</Filter>
     </ResourceCompile>
-    <ResourceCompile Include="..\kphlib\include\sistatus.rc">
+    <ResourceCompile Include="$(SystemInformerRoot)kphlib\bin\$(Configuration)$(PlatformArchitecture)\sistatus.rc">
       <Filter>Resources</Filter>
     </ResourceCompile>
   </ItemGroup>

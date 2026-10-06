@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -69,6 +69,14 @@ PhGetProcedureAddress(
     _In_opt_ USHORT ProcedureNumber
     );
 
+#if defined(__cplusplus)
+#define PhGetProcedureAddressT(BaseAddress, Name) \
+    reinterpret_cast<decltype(&(Name))>(PhGetProcedureAddress((BaseAddress), #Name, 0))
+#else
+#define PhGetProcedureAddressT(BaseAddress, Name) \
+    (typeof(&(Name)))PhGetProcedureAddress((BaseAddress), #Name, 0)
+#endif
+
 PHLIBAPI
 NTSTATUS
 NTAPI
@@ -129,6 +137,14 @@ PhLoadResourceCopy(
 PHLIBAPI
 PPH_STRING
 NTAPI
+PhLoadString(
+    _In_ PVOID DllBase,
+    _In_ ULONG ResourceId
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
 PhLoadIndirectString(
     _In_ PCPH_STRINGREF SourceString
     );
@@ -175,13 +191,15 @@ PhGetLoaderEntryDataZ(
         );
 }
 
+_Success_(return != NULL)
 PHLIBAPI
 PVOID
 NTAPI
-PhGetLoaderEntryAddressDllBase(
+PhGetLoaderEntryPcToFileHeader(
     _In_ PVOID PcAddress
     );
 
+_Success_(return != NULL)
 PHLIBAPI
 PVOID
 NTAPI
@@ -241,10 +259,30 @@ PHLIBAPI
 PVOID
 NTAPI
 PhGetDllProcedureAddress(
-    _In_ PCWSTR DllName,
+    _In_ PCPH_STRINGREF DllName,
     _In_opt_ PCSTR ProcedureName,
     _In_opt_ USHORT ProcedureNumber
     );
+
+FORCEINLINE
+PVOID
+NTAPI
+PhGetDllProcedureAddressZ(
+    _In_ PCWSTR DllName,
+    _In_opt_ PCSTR ProcedureName,
+    _In_opt_ USHORT ProcedureNumber
+    )
+{
+    PH_STRINGREF fileName;
+
+    PhInitializeStringRef(&fileName, DllName);
+
+    return PhGetDllProcedureAddress(
+        &fileName,
+        ProcedureName,
+        ProcedureNumber
+        );
+}
 
 PHLIBAPI
 NTSTATUS
@@ -282,7 +320,7 @@ NTSTATUS
 NTAPI
 PhLoaderEntryImageRvaToSection(
     _In_ PIMAGE_NT_HEADERS ImageNtHeader,
-    _In_ ULONG Rva,
+    _In_ ULONG_PTR Rva,
     _Out_ PIMAGE_SECTION_HEADER *ImageSection,
     _Out_ SIZE_T *ImageSectionLength
     );
@@ -292,14 +330,14 @@ NTSTATUS
 NTAPI
 PhLoaderEntryImageRvaToVa(
     _In_ PVOID BaseAddress,
-    _In_ ULONG Rva,
+    _In_ ULONG_PTR Rva,
     _Out_ PVOID *Va
     );
 
 PHLIBAPI
 BOOLEAN
 NTAPI
-PhLoaderEntryImageExportSupressionPresent(
+PhLoaderEntryImageExportSuppressionPresent(
     _In_ PVOID BaseAddress,
     _In_ PIMAGE_NT_HEADERS ImageNtHeader
     );
@@ -316,6 +354,7 @@ PVOID
 NTAPI
 PhGetLoaderEntryImageExportFunction(
     _In_ PVOID BaseAddress,
+    _In_ PIMAGE_NT_HEADERS ImageNtHeader,
     _In_ PIMAGE_DATA_DIRECTORY DataDirectory,
     _In_ PIMAGE_EXPORT_DIRECTORY ExportDirectory,
     _In_opt_ PCSTR ExportName,

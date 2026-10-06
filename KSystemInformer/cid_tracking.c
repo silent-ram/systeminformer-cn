@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     jxy-s   2022-2024
+ *     jxy-s   2022-2026
  *
  */
 
@@ -28,6 +28,7 @@ PKPH_OBJECT_TYPE KphThreadContextType = NULL;
 static PKPH_NPAGED_LOOKASIDE_OBJECT KphpCidApcLookaside = NULL;
 static PKPH_NPAGED_LOOKASIDE_OBJECT KphpProcessContextLookaside = NULL;
 static PKPH_NPAGED_LOOKASIDE_OBJECT KphpThreadContextLookaside = NULL;
+static PKPH_PROCESS_CONTEXT KphpSystemProcessContext = NULL;
 KPH_PROTECTED_DATA_SECTION_POP();
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
 static const UNICODE_STRING KphpCidApcTypeName = RTL_CONSTANT_STRING(L"KphCidApc");
@@ -37,10 +38,9 @@ static const LARGE_INTEGER KphpCidApcTimeout = KPH_TIMEOUT(3 * 1000);
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 static BOOLEAN KphpCidTrackingInitialized = FALSE;
 static KPH_CID_TABLE KphpCidTable;
-static volatile LONG KphpCidPopulated = 0;
+static LONG KphpCidPopulated = 0;
 static KEVENT KphpCidPopulatedEvent;
-static PKPH_PROCESS_CONTEXT KphpSystemProcessContext = NULL;
-static volatile ULONG64 KphpProcessSequence = 0;
+static ULONG64 KphpProcessSequence = 0;
 
 /**
  * \brief Looks up a context object in the CID tracking.
@@ -52,7 +52,7 @@ static volatile ULONG64 KphpProcessSequence = 0;
  * not of the expected type. The caller *must* dereference the object when
  * they are through with it.
  */
-_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PVOID KphpLookupContext(
     _In_ HANDLE Cid,
@@ -62,9 +62,9 @@ PVOID KphpLookupContext(
     PVOID object;
     PKPH_CID_TABLE_ENTRY entry;
 
-    KPH_NPAGED_CODE_DISPATCH_MAX();
+    KPH_NPAGED_CODE_HIGH_MAX();
 
-    entry = KphCidGetEntry(Cid, &KphpCidTable);
+    entry = KphCidLookupEntry(Cid, &KphpCidTable);
     if (!entry)
     {
         return NULL;
@@ -73,7 +73,7 @@ PVOID KphpLookupContext(
     object = KphCidReferenceObject(entry);
     if (object && (KphGetObjectType(object) != ObjectType))
     {
-        KphDereferenceObject(object);
+        KphDereferenceObjectDeferDelete(object);
         object = NULL;
     }
 
@@ -86,13 +86,13 @@ PVOID KphpLookupContext(
  * \return Pointer to the system process context, null if not found. The caller
  * *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_PROCESS_CONTEXT KphGetSystemProcessContext(
     VOID
     )
 {
-    KPH_NPAGED_CODE_DISPATCH_MAX();
+    KPH_NPAGED_CODE_HIGH_MAX();
 
     if (KphpSystemProcessContext)
     {
@@ -110,13 +110,13 @@ PKPH_PROCESS_CONTEXT KphGetSystemProcessContext(
  * \return Pointer to the process context, null if not found. The caller
  * *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_PROCESS_CONTEXT KphGetProcessContext(
     _In_ HANDLE ProcessId
     )
 {
-    KPH_NPAGED_CODE_DISPATCH_MAX();
+    KPH_NPAGED_CODE_HIGH_MAX();
 
     return KphpLookupContext(ProcessId, KphProcessContextType);
 }
@@ -129,20 +129,24 @@ PKPH_PROCESS_CONTEXT KphGetProcessContext(
  * \return Pointer to the process context, null if not found. The caller
  * *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_PROCESS_CONTEXT KphGetEProcessContext(
     _In_ PEPROCESS Process
     )
 {
-    KPH_NPAGED_CODE_DISPATCH_MAX();
+    HANDLE processId;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
 
     if (Process == PsInitialSystemProcess)
     {
         return KphGetSystemProcessContext();
     }
 
-    return KphGetProcessContext(PsGetProcessId(Process));
+    processId = PsGetProcessId(Process);
+
+    return KphGetProcessContext(processId);
 }
 
 /**
@@ -153,13 +157,13 @@ PKPH_PROCESS_CONTEXT KphGetEProcessContext(
  * \return Pointer to the thread context, null if not found. The caller
  * *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_THREAD_CONTEXT KphGetThreadContext(
     _In_ HANDLE ThreadId
     )
 {
-    KPH_NPAGED_CODE_DISPATCH_MAX();
+    KPH_NPAGED_CODE_HIGH_MAX();
 
     return KphpLookupContext(ThreadId, KphThreadContextType);
 }
@@ -181,10 +185,7 @@ VOID KphCidMarkPopulated(
         return;
     }
 
-    if (InterlockedExchange(&KphpCidPopulated, 1))
-    {
-        return;
-    }
+    WriteRelease(&KphpCidPopulated, 1);
 
     KphTracePrint(TRACE_LEVEL_VERBOSE,
                   TRACKING,
@@ -196,14 +197,14 @@ VOID KphCidMarkPopulated(
 /**
  * \brief Waits for the CID tracking to be marked as populated.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 VOID KphpCidWaitForPopulate(
     VOID
     )
 {
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
-    if (KphpCidPopulated)
+    if (ReadAcquire(&KphpCidPopulated))
     {
         return;
     }
@@ -251,7 +252,7 @@ PVOID KSIAPI KphpAllocateCidApc(
 /**
  * \brief Initializes a CID APC object.
  *
- * \param[in] Object The CID APC object to initialize.
+ * \param[in,out] Object The CID APC object to initialize.
  * \param[in] Parameter Unused.
  *
  * \return STATUS_SUCCESS
@@ -280,7 +281,7 @@ NTSTATUS KSIAPI KphpInitializeCidApc(
 /**
  * \brief Deletes a CID APC object.
  *
- * \param[in] Object The CID APC  object to delete.
+ * \param[in,out] Object The CID APC  object to delete.
  */
 _Function_class_(KPH_TYPE_DELETE_PROCEDURE)
 _IRQL_requires_max_(APC_LEVEL)
@@ -380,10 +381,10 @@ PVOID KSIAPI KphpAllocateProcessContext(
 /**
  * \brief Initializes a process context.
  *
- * \param[in] Object The process context object to initialize.
+ * \param[in,out] Object The process context object to initialize.
  * \param[in] Parameter The kernel process object associated with this context.
  *
- * \return STATUS_SUCCESS
+ * \return Successful or errant result.
  */
 _Function_class_(KPH_TYPE_INITIALIZE_PROCEDURE)
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -405,9 +406,6 @@ NTSTATUS KSIAPI KphpInitializeProcessContext(
     processObject = Parameter;
 
     process->SequenceNumber = InterlockedIncrementU64(&KphpProcessSequence);
-
-    KphSetInformerSettings(&process->InformerFilter,
-                           &KphDefaultInformerProcessFilter);
 
     status = ObOpenObjectByPointer(processObject,
                                    OBJ_KERNEL_HANDLE,
@@ -526,7 +524,10 @@ NTSTATUS KSIAPI KphpInitializeProcessContext(
     KphInitializeRWLock(&process->ThreadListLock);
     InitializeListHead(&process->ThreadListHead);
 
-    KphInitializeRWLock(&process->ProtectionLock);
+    KphInitializeRWLock(&process->Protection.AllowedMaskLock);
+    KeInitializeEvent(&process->Protection.CompletionEvent,
+                      NotificationEvent,
+                      FALSE);
 
     status = PsReferenceProcessFilePointer(process->EProcess,
                                            &process->FileObject);
@@ -644,6 +645,8 @@ NTSTATUS KSIAPI KphpInitializeProcessContext(
         KphpSystemProcessContext = process;
     }
 
+    KphValidateLsass(process->EProcess);
+
     status = STATUS_SUCCESS;
 
 Exit:
@@ -659,7 +662,7 @@ Exit:
 /**
  * \brief Deletes a process context.
  *
- * \param[in] Object The process context object to delete.
+ * \param[in,out] Object The process context object to delete.
  */
 _Function_class_(KPH_TYPE_DELETE_PROCEDURE)
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -673,12 +676,8 @@ VOID KSIAPI KphpDeleteProcessContext(
 
     process = Object;
 
+    KphAtomicAssignObjectReference(&process->InformerState.Atomic, NULL);
     KphAtomicAssignObjectReference(&process->SessionToken.Atomic, NULL);
-
-    if (process->Protected)
-    {
-        KphStopProtectingProcess(process);
-    }
 
     if (process->ImageFileName)
     {
@@ -702,11 +701,13 @@ VOID KSIAPI KphpDeleteProcessContext(
         ObDereferenceObject(process->FileObject);
     }
 
-    KphDeleteRWLock(&process->ProtectionLock);
+    KphDeleteRWLock(&process->Protection.AllowedMaskLock);
 
     NT_ASSERT(IsListEmpty(&process->ThreadListHead));
     NT_ASSERT(process->NumberOfThreads == 0);
     KphDeleteRWLock(&process->ThreadListLock);
+
+    KphInvalidateLsass(process->EProcess);
 
     NT_ASSERT(process->EProcess);
     ObDereferenceObject(process->EProcess);
@@ -739,7 +740,7 @@ VOID KSIAPI KphpFreeProcessContext(
  * \return Allocated thread context object, null on allocation failure.
  */
 _Function_class_(KPH_TYPE_ALLOCATE_PROCEDURE)
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 _Return_allocatesMem_size_(Size)
 PVOID KSIAPI KphpAllocateThreadContext(
     _In_ SIZE_T Size
@@ -747,7 +748,7 @@ PVOID KSIAPI KphpAllocateThreadContext(
 {
     PVOID object;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     DBG_UNREFERENCED_PARAMETER(Size);
     NT_ASSERT(KphpThreadContextLookaside);
@@ -777,7 +778,7 @@ VOID KphpInitializeWSLThreadContext(
     PVOID picoContext;
     PVOID value;
 
-    KPH_PAGED_CODE();
+    KPH_PAGED_CODE_APC();
 
     //
     // We use an APC here to reach into the thread pico context. We could
@@ -832,10 +833,10 @@ VOID KphpInitializeWSLThreadContext(
  * \brief APC routine for thread tracking.
  *
  * \param[in] Apc The ACP executed, contained within the CID APC.
- * \param[in] NormalRoutine Unused.
- * \param[in] NormalContext Unused.
- * \param[in] SystemArgument1 Unused.
- * \param[in] SystemArgument2 Unused.
+ * \param[in,out] NormalRoutine Unused.
+ * \param[in,out] NormalContext Unused.
+ * \param[in,out] SystemArgument1 Unused.
+ * \param[in,out] SystemArgument2 Unused.
  */
 _Function_class_(KSI_KKERNEL_ROUTINE)
 _IRQL_requires_(APC_LEVEL)
@@ -852,7 +853,7 @@ VOID KSIAPI KphpInitializeThreadContextSpecialApc(
     PKPH_DYN dyn;
     PTEB teb;
 
-    KPH_PAGED_CODE();
+    KPH_PAGED_CODE_APC();
 
     UNREFERENCED_PARAMETER(NormalRoutine);
     UNREFERENCED_PARAMETER(NormalContext);
@@ -862,13 +863,16 @@ VOID KSIAPI KphpInitializeThreadContextSpecialApc(
     apc = CONTAINING_RECORD(Apc, KPH_CID_APC, Apc);
 
     NT_ASSERT(apc->Thread->EThread == KeGetCurrentThread());
+#ifdef _WIN64
+    C_ASSERT(FIELD_OFFSET(TEB, SubProcessTag) == 0x1720);
+#endif
 
     teb = PsGetCurrentThreadTeb();
     if (teb)
     {
         __try
         {
-            apc->Thread->SubProcessTag = teb->SubProcessTag;
+            apc->Thread->SubProcessTag = ReadPointerFromUser(&teb->SubProcessTag);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -992,13 +996,13 @@ Exit:
 /**
  * \brief Initializes a thread context.
  *
- * \param[in] Object The thread context object to initialize.
- * \param[in] Parameter Unused
+ * \param[in,out] Object The thread context object to initialize.
+ * \param[in] Parameter The kernel thread object associated with this context.
  *
- * \return STATUS_SUCCESS
+ * \return Successful or errant result.
  */
 _Function_class_(KPH_TYPE_INITIALIZE_PROCEDURE)
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 _Must_inspect_result_
 NTSTATUS KSIAPI KphpInitializeThreadContext(
     _Inout_ PVOID Object,
@@ -1010,7 +1014,9 @@ NTSTATUS KSIAPI KphpInitializeThreadContext(
     PETHREAD threadObject;
     HANDLE threadHandle;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
+
+    NT_ASSERT(Parameter);
 
     thread = Object;
     threadObject = Parameter;
@@ -1099,7 +1105,7 @@ Exit:
 /**
  * \brief Deletes a thread context.
  *
- * \param[in] Object The thread context object to delete.
+ * \param[in,out] Object The thread context object to delete.
  */
 _Function_class_(KPH_TYPE_DELETE_PROCEDURE)
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -1165,6 +1171,11 @@ NTSTATUS KphCidInitialize(
     status = KphCidTableCreate(&KphpCidTable);
     if (!NT_SUCCESS(status))
     {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      TRACKING,
+                      "KphCidTableCreate failed: %!STATUS!",
+                      status);
+
         return status;
     }
 
@@ -1324,7 +1335,7 @@ VOID KphpUnlinkProcessContextThreadContexts(
  */
 _Function_class_(KPH_CID_RUNDOWN_CALLBACK)
 _IRQL_requires_max_(PASSIVE_LEVEL)
-BOOLEAN KSIAPI KphpCidCleanupCallback(
+VOID KSIAPI KphpCidCleanupCallback(
     _In_ PVOID Object,
     _In_opt_ PVOID Parameter
     )
@@ -1341,8 +1352,6 @@ BOOLEAN KSIAPI KphpCidCleanupCallback(
 
         KphpUnlinkProcessContextThreadContexts(process);
     }
-
-    return FALSE;
 }
 
 /**
@@ -1387,7 +1396,7 @@ VOID KphCidCleanup(
  * object is already being tracked and is not of the expected type. The caller
  * *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 _Must_inspect_result_
 PVOID KphpTrackContext(
     _In_ HANDLE Cid,
@@ -1400,7 +1409,7 @@ PVOID KphpTrackContext(
     PKPH_CID_TABLE_ENTRY entry;
     PVOID object;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     entry = KphCidGetEntry(Cid, &KphpCidTable);
     if (!entry)
@@ -1442,7 +1451,6 @@ PVOID KphpTrackContext(
  *
  * \param[in] Cid The CID of the object to being tracking.
  * \param[in] ObjectType The expected object type if the CID.
- * \param[in] ObjectBodySize The size of the context body.
  *
  * \return Pointer to the context object, null if not found or the object is
  * not of the expected type. The caller *must* dereference the object when they
@@ -1460,7 +1468,7 @@ PVOID KphpUntrackContext(
 
     KPH_PAGED_CODE();
 
-    entry = KphCidGetEntry(Cid, &KphpCidTable);
+    entry = KphCidLookupEntry(Cid, &KphpCidTable);
     if (!entry)
     {
         return NULL;
@@ -1477,39 +1485,6 @@ PVOID KphpUntrackContext(
     KphCidAssignObject(entry, NULL);
 
     return object;
-}
-
-/**
- * \brief Performs actions post population of CID table.
- *
- * \param[in] Process The context being enumerated.
- * \param[in] Parameter Unused.
- *
- * \return FALSE
- */
-_Function_class_(KPH_ENUM_CID_CONTEXTS_CALLBACK)
-_Must_inspect_result_
-BOOLEAN KSIAPI KphpCidEnumPostPopulate(
-    _In_ PVOID Context,
-    _In_opt_ PVOID Parameter
-    )
-{
-    PKPH_OBJECT_TYPE objectType;
-    PKPH_PROCESS_CONTEXT process;
-
-    KPH_PAGED_CODE_PASSIVE();
-
-    UNREFERENCED_PARAMETER(Parameter);
-
-    objectType = KphGetObjectType(Context);
-
-    if (objectType == KphProcessContextType)
-    {
-        process = Context;
-        KphVerifyProcessAndProtectIfAppropriate(process);
-    }
-
-    return FALSE;
 }
 
 // from phnative.h
@@ -1616,6 +1591,7 @@ NTSTATUS KphCidPopulate(
 
     for (info = KPH_FIRST_PROCESS(buffer); info; info = KPH_NEXT_PROCESS(info))
     {
+        NTSTATUS lookupStatus;
         PKPH_PROCESS_CONTEXT process;
         PEPROCESS processObject;
 
@@ -1641,39 +1617,31 @@ NTSTATUS KphCidPopulate(
         }
         else
         {
-            LARGE_INTEGER timeout;
-
             //
             // Check if we should track this process during population.
             // Ultimately here we're ensuring the process isn't already exited.
             // Otherwise there is the possibility of an object leak from TOCTOU.
             //
 
-            status = PsLookupProcessByProcessId(info->UniqueProcessId,
-                                                &processObject);
-            if (!NT_SUCCESS(status))
+            lookupStatus = PsLookupProcessByProcessId(info->UniqueProcessId,
+                                                      &processObject);
+            if (!NT_SUCCESS(lookupStatus))
             {
                 KphTracePrint(TRACE_LEVEL_VERBOSE,
                               TRACKING,
                               "PsLookupProcessByProcessId failed: %!STATUS!",
-                              status);
+                              lookupStatus);
 
                 continue;
             }
 
-            timeout.QuadPart = 0;
-            status = KeWaitForSingleObject(processObject,
-                                           Executive,
-                                           KernelMode,
-                                           FALSE,
-                                           &timeout);
-            if (status != STATUS_TIMEOUT)
+            if (PsGetProcessExitProcessCalled(processObject))
             {
                 KphTracePrint(TRACE_LEVEL_VERBOSE,
                               TRACKING,
-                              "KeWaitForSingleObject(processObject) "
-                              "reported: %!STATUS!",
-                              status);
+                              "PsGetProcessExitProcessCalled reported TRUE "
+                              "(process %lu)",
+                              HandleToULong(info->UniqueProcessId));
 
                 ObDereferenceObject(processObject);
                 continue;
@@ -1694,6 +1662,7 @@ NTSTATUS KphCidPopulate(
                           TRACKING,
                           "KphpTrackContext failed (process %lu)",
                           HandleToULong(info->UniqueProcessId));
+
             continue;
         }
 
@@ -1714,9 +1683,9 @@ NTSTATUS KphCidPopulate(
 
             threadInfo = &info->Threads[i];
 
-            status = PsLookupThreadByThreadId(threadInfo->ClientId.UniqueThread,
-                                              &threadObject);
-            if (!NT_SUCCESS(status))
+            lookupStatus = PsLookupThreadByThreadId(threadInfo->ClientId.UniqueThread,
+                                                    &threadObject);
+            if (!NT_SUCCESS(lookupStatus))
             {
                 KphTracePrint(TRACE_LEVEL_VERBOSE,
                               TRACKING,
@@ -1725,7 +1694,7 @@ NTSTATUS KphCidPopulate(
                               HandleToULong(threadInfo->ClientId.UniqueThread),
                               &process->ImageName,
                               HandleToULong(process->ProcessId),
-                              status);
+                              lookupStatus);
 
                 continue;
             }
@@ -1787,11 +1756,6 @@ Exit:
     if (buffer)
     {
         KphFree(buffer, KPH_TAG_CID_POPULATE);
-    }
-
-    if (NT_SUCCESS(status))
-    {
-        KphEnumerateCidContexts(KphpCidEnumPostPopulate, NULL);
     }
 
     return status;
@@ -1862,13 +1826,13 @@ PKPH_PROCESS_CONTEXT KphUntrackProcessContext(
  * return an existing thread context if the thread is already tracked. The
  * caller *must* dereference the object when they are through with it.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 _Must_inspect_result_
 PKPH_THREAD_CONTEXT KphTrackThreadContext(
     _In_ PETHREAD Thread
     )
 {
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     KphpCidWaitForPopulate();
 
@@ -1886,7 +1850,7 @@ PKPH_THREAD_CONTEXT KphTrackThreadContext(
  * \return Pointer to the thread context, null if not found. The caller *must*
  * dereference the object when they are through with it.
  */
-_IRQL_requires_max_(PASSIVE_LEVEL)
+_IRQL_requires_max_(APC_LEVEL)
 _Must_inspect_result_
 PKPH_THREAD_CONTEXT KphUntrackThreadContext(
     _In_ HANDLE ThreadId
@@ -1894,7 +1858,7 @@ PKPH_THREAD_CONTEXT KphUntrackThreadContext(
 {
     PKPH_THREAD_CONTEXT thread;
 
-    KPH_PAGED_CODE_PASSIVE();
+    KPH_PAGED_CODE();
 
     KphpCidWaitForPopulate();
 
@@ -1945,7 +1909,7 @@ typedef struct _KPH_ENUM_CONTEXT
  * \return FALSE to keep enumerating if the object type is not what was asked
  * for or the return value from callers callback.
  */
-_Function_class_(CID_ENUMERATE_CALLBACK)
+_Function_class_(KPH_CID_ENUMERATE_CALLBACK)
 BOOLEAN KSIAPI KphpEnumerateContexts(
     _In_ PVOID Object,
     _In_opt_ PVOID Parameter
@@ -2118,7 +2082,7 @@ NTSTATUS KphCheckProcessApcNoopRoutine(
     status = ZwQueryInformationProcess(processHandle,
                                        ProcessMitigationPolicy,
                                        &policyInfo,
-                                       sizeof(policyInfo),
+                                       sizeof(PROCESS_MITIGATION_POLICY_INFORMATION),
                                        NULL);
     if (!NT_SUCCESS(status))
     {
@@ -2175,76 +2139,6 @@ Exit:
 }
 
 /**
- * \brief Performs actions to verify a process and begin protecting it. Process
- * protection is only started processes that meet the necessary requirements.
- *
- * \param[in] Process The context of a process verify and protect.
- */
-_IRQL_requires_max_(PASSIVE_LEVEL)
-VOID KphVerifyProcessAndProtectIfAppropriate(
-    _In_ PKPH_PROCESS_CONTEXT Process
-    )
-{
-    NTSTATUS status;
-    KPH_PROCESS_STATE processState;
-
-    KPH_PAGED_CODE_PASSIVE();
-
-    if (Process->ImageFileName &&
-        Process->FileObject &&
-        !Process->VerifiedProcess)
-    {
-        status = KphVerifyFile(Process->ImageFileName, Process->FileObject);
-
-        KphTracePrint(TRACE_LEVEL_VERBOSE,
-                      VERIFY,
-                      "KphVerifyFile: %lu \"%wZ\": %!STATUS!",
-                      HandleToULong(Process->ProcessId),
-                      Process->ImageFileName,
-                      status);
-
-        if (NT_SUCCESS(status))
-        {
-            Process->VerifiedProcess = TRUE;
-        }
-    }
-
-    processState = KphGetProcessState(Process);
-    if ((processState & KPH_PROCESS_STATE_LOW) == KPH_PROCESS_STATE_LOW)
-    {
-        ACCESS_MASK processAllowedMask;
-        ACCESS_MASK threadAllowedMask;
-
-        if (KphProtectionsSuppressed())
-        {
-            //
-            // Allow all access, but still exercise the code by registering.
-            //
-            processAllowedMask = ((ACCESS_MASK)-1);
-            threadAllowedMask = ((ACCESS_MASK)-1);
-        }
-        else
-        {
-            processAllowedMask = KPH_PROTECTED_PROCESS_MASK;
-            threadAllowedMask = KPH_PROTECTED_THREAD_MASK;
-        }
-
-        status = KphStartProtectingProcess(Process,
-                                           processAllowedMask,
-                                           threadAllowedMask);
-        if (!NT_SUCCESS(status))
-        {
-            KphTracePrint(TRACE_LEVEL_VERBOSE,
-                          PROTECTION,
-                          "KphStartProtectingProcess failed: %!STATUS!",
-                          status);
-
-            NT_ASSERT(!Process->Protected);
-        }
-    }
-}
-
-/**
  * \brief Gets the process image name for a given thread.
  *
  * \details The image name of a thread might not be available if there is no
@@ -2286,6 +2180,7 @@ KPH_PROCESS_STATE KphGetProcessState(
     )
 {
     KPH_PROCESS_STATE processState;
+    KPH_PROTECTION_STATE protectionState;
 
     KPH_PAGED_CODE();
 
@@ -2303,29 +2198,43 @@ KPH_PROCESS_STATE KphGetProcessState(
         processState = 0;
     }
 
-    if (Process->SecurelyCreated)
+    protectionState = KphGetProtectionState(Process);
+
+    if (FlagOn(protectionState, KPH_PROTECTION_TCB))
     {
-        processState |= KPH_PROCESS_SECURELY_CREATED;
+        SetFlag(processState, KPH_PROCESS_SECURELY_CREATED);
     }
 
-    if (Process->VerifiedProcess)
+    if (FlagOn(protectionState, KPH_PROTECTION_VERIFIED))
     {
-        processState |= KPH_PROCESS_VERIFIED_PROCESS;
+        SetFlag(processState, KPH_PROCESS_VERIFIED_PROCESS);
     }
 
-    if (Process->Protected)
+    if (FlagOn(protectionState, KPH_PROTECTION_ACTIVE))
     {
-        processState |= KPH_PROCESS_PROTECTED_PROCESS;
+        SetFlag(processState, KPH_PROCESS_PROTECTED_PROCESS);
     }
 
-    if (Process->NumberOfUntrustedImageLoads == 0)
+    if (Process->CreateNotification)
     {
-        processState |= KPH_PROCESS_NO_UNTRUSTED_IMAGES;
+        SetFlag(processState, KPH_PROCESS_CREATE_NOTIFICATION);
     }
 
-    if (!PsIsProcessBeingDebugged(Process->EProcess))
+    if (ReadSizeTAcquire(&Process->NumberOfUntrustedImageLoads) == 0)
     {
-        processState |= KPH_PROCESS_NOT_BEING_DEBUGGED;
+        SetFlag(processState, KPH_PROCESS_NO_UNTRUSTED_IMAGES);
+    }
+
+    if (!Process->StateTracking.Debugged)
+    {
+        if (!PsIsProcessBeingDebugged(Process->EProcess))
+        {
+            SetFlag(processState, KPH_PROCESS_NOT_BEING_DEBUGGED);
+        }
+        else
+        {
+            Process->StateTracking.Debugged = TRUE;
+        }
     }
 
     if (!Process->FileObject)
@@ -2333,16 +2242,30 @@ KPH_PROCESS_STATE KphGetProcessState(
         return processState;
     }
 
-    processState |= KPH_PROCESS_HAS_FILE_OBJECT;
+    SetFlag(processState, KPH_PROCESS_HAS_FILE_OBJECT);
 
-    if (!Process->FileObject->WriteAccess || !Process->FileObject->SharedWrite)
+    if (!Process->StateTracking.FileObjectWritable)
     {
-        processState |= KPH_PROCESS_NO_WRITABLE_FILE_OBJECT;
+        if (!Process->FileObject->WriteAccess || !Process->FileObject->SharedWrite)
+        {
+            SetFlag(processState, KPH_PROCESS_NO_WRITABLE_FILE_OBJECT);
+        }
+        else
+        {
+            Process->StateTracking.FileObjectWritable = TRUE;
+        }
     }
 
-    if (!IoGetTransactionParameterBlock(Process->FileObject))
+    if (!Process->StateTracking.FileObjectTransaction)
     {
-        processState |= KPH_PROCESS_NO_FILE_TRANSACTION;
+        if (!IoGetTransactionParameterBlock(Process->FileObject))
+        {
+            SetFlag(processState, KPH_PROCESS_NO_FILE_TRANSACTION);
+        }
+        else
+        {
+            Process->StateTracking.FileObjectTransaction = TRUE;
+        }
     }
 
     if (!Process->FileObject->SectionObjectPointer)
@@ -2350,11 +2273,18 @@ KPH_PROCESS_STATE KphGetProcessState(
         return processState;
     }
 
-    processState |= KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS;
+    SetFlag(processState, KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS);
 
-    if (!MmDoesFileHaveUserWritableReferences(Process->FileObject->SectionObjectPointer))
+    if (!Process->StateTracking.UserWritableReferences)
     {
-        processState |= KPH_PROCESS_NO_USER_WRITABLE_REFERENCES;
+        if (!MmDoesFileHaveUserWritableReferences(Process->FileObject->SectionObjectPointer))
+        {
+            SetFlag(processState, KPH_PROCESS_NO_USER_WRITABLE_REFERENCES);
+        }
+        else
+        {
+            Process->StateTracking.UserWritableReferences = TRUE;
+        }
     }
 
     return processState;
@@ -2372,7 +2302,7 @@ KPH_PROCESS_STATE KphGetProcessState(
  * \param[in] InformationClass The information class to query.
  * \param[out] Information Optional buffer to receive the information.
  * \param[in] InformationLength The size of the information buffer.
- * \param[out] ReturnLength Optionally receives the length of the information.
+ * \param[out] ReturnLength Receives the number of bytes written or required.
  *
  * \return Successful or errant status.
  */
@@ -2480,7 +2410,7 @@ Exit:
  * \param[in] InformationClass The information class to query.
  * \param[out] Information Optional buffer to receive the information.
  * \param[in] InformationLength The size of the information buffer.
- * \param[out] ReturnLength Optionally receives the length of the information.
+ * \param[out] ReturnLength Receives the number of bytes written or required.
  *
  * \return Successful or errant status.
  */
